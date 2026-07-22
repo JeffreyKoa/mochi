@@ -3,6 +3,7 @@ package realtime
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 type SessionState string
@@ -26,6 +27,8 @@ type Session struct {
 
 	pipelineMu     sync.Mutex
 	pipelineCancel context.CancelFunc
+
+	turnLat *TurnLatency
 
 	onStateChange func(SessionState)
 }
@@ -100,4 +103,24 @@ func (s *Session) EndPipeline() {
 	s.pipelineMu.Lock()
 	defer s.pipelineMu.Unlock()
 	s.pipelineCancel = nil
+}
+
+func (s *Session) BeginTurn(origin time.Time) *TurnLatency {
+	lat := NewTurnLatency(origin)
+	s.mu.Lock()
+	s.turnLat = lat
+	s.mu.Unlock()
+	return lat
+}
+
+func (s *Session) TurnLatency() *TurnLatency {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.turnLat
+}
+
+func (s *Session) ClearTurnLatency() {
+	s.mu.Lock()
+	s.turnLat = nil
+	s.mu.Unlock()
 }

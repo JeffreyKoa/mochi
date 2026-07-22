@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/mochi-ai/server/internal/chat"
 	"github.com/mochi-ai/server/internal/config"
@@ -60,6 +62,22 @@ func (p *Pipeline) StartASRSession(ctx context.Context, onPartial func(text stri
 	return p.asr.StartSession(ctx, onPartial)
 }
 
+// PrewarmTTS primes the TTS provider with a minimal synthesis (best-effort).
+func (p *Pipeline) PrewarmTTS(ctx context.Context) {
+	if p.tts == nil {
+		return
+	}
+	go func() {
+		warmCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		if err := p.tts.Synthesize(warmCtx, "。", func([]byte) {}); err != nil {
+			log.Printf("[realtime] tts prewarm: %v", err)
+			return
+		}
+		log.Printf("[realtime] tts prewarm ok")
+	}()
+}
+
 func (p *Pipeline) OnSpeechEnd(ctx context.Context, sess *Session, audio []byte, send Sender) {
 	sess.SetState(StateThinking)
 	send.SendAnimation(StateThinking)
@@ -94,18 +112,27 @@ func (p *Pipeline) OnSpeechEnd(ctx context.Context, sess *Session, audio []byte,
 	if text == "" {
 		text = lastPartial
 	}
+	if lat := sess.TurnLatency(); lat != nil {
+		lat.MarkASRFinal()
+	}
 	p.onTranscriptWithMode(pipeCtx, sess, text, send, true)
 }
 
 func (p *Pipeline) OnTranscript(ctx context.Context, sess *Session, text string, send Sender) {
 	pipeCtx := sess.BeginPipeline(ctx)
 	defer sess.EndPipeline()
+	if lat := sess.TurnLatency(); lat != nil {
+		lat.MarkASRFinal()
+	}
 	p.onTranscriptWithMode(pipeCtx, sess, text, send, true)
 }
 
 func (p *Pipeline) OnTextInput(ctx context.Context, sess *Session, text string, send Sender) {
 	pipeCtx := sess.BeginPipeline(ctx)
 	defer sess.EndPipeline()
+	if lat := sess.TurnLatency(); lat != nil {
+		lat.MarkASRFinal()
+	}
 	p.onTranscriptWithMode(pipeCtx, sess, text, send, false)
 }
 
@@ -135,12 +162,103 @@ func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text
 	}
 }
 
+type segmentSynthResult struct {
+	chunks [][]byte
+	err    error
+}
+
+func (p *Pipeline) synthSegmentBuffered(ctx context.Context, text string) segmentSynthResult {
+	var chunks [][]byte
+	err := p.tts.Synthesize(ctx, text, func(audio []byte) {
+		if len(audio) == 0 {
+			return
+		}
+		chunks = append(chunks, append([]byte(nil), audio...))
+	})
+	return segmentSynthResult{chunks: chunks, err: err}
+}
+
+func (p *Pipeline) asyncSynthSegment(ctx context.Context, text string) <-chan segmentSynthResult {
+	ch := make(chan segmentSynthResult, 1)
+	go func() {
+		ch <- p.synthSegmentBuffered(ctx, text)
+	}()
+	return ch
+}
+
+// runPrefetchSegmentTTS synthesizes segments with one-ahead prefetch to hide inter-sentence gaps.
+func (p *Pipeline) runPrefetchSegmentTTS(ctx context.Context, segCh <-chan string, onChunk func([]byte)) error {
+	var ttsErr error
+
+	var ahead <-chan segmentSynthResult
+
+	for {
+		var seg string
+		var ok bool
+
+		if ahead != nil {
+			res := p.playSegmentResult(<-ahead, onChunk)
+			if res.err != nil && ttsErr == nil {
+				ttsErr = res.err
+			}
+			ahead = nil
+
+			select {
+			case seg, ok = <-segCh:
+				if !ok {
+					return ttsErr
+				}
+				ahead = p.asyncSynthSegment(ctx, seg)
+			default:
+			}
+			continue
+		}
+
+		seg, ok = <-segCh
+		if !ok {
+			return ttsErr
+		}
+
+		cur := p.asyncSynthSegment(ctx, seg)
+
+		select {
+		case nextSeg, nextOK := <-segCh:
+			if nextOK {
+				ahead = p.asyncSynthSegment(ctx, nextSeg)
+			} else {
+				res := p.playSegmentResult(<-cur, onChunk)
+				if res.err != nil && ttsErr == nil {
+					ttsErr = res.err
+				}
+				return ttsErr
+			}
+		default:
+		}
+
+		res := p.playSegmentResult(<-cur, onChunk)
+		if res.err != nil && ttsErr == nil {
+			ttsErr = res.err
+		}
+	}
+}
+
+func (p *Pipeline) playSegmentResult(res segmentSynthResult, onChunk func([]byte)) segmentSynthResult {
+	for _, chunk := range res.chunks {
+		onChunk(chunk)
+	}
+	return res
+}
+
 // streamLLMAndVoice runs LLM token streaming and pipes sentence chunks to TTS asynchronously.
 func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Sender, userText string, withVoice bool) bool {
 	var tokenBuf strings.Builder
 	speaking := false
 	audioChunks := 0
 	var ttsErr error
+	var ttsErrMu sync.Mutex
+	lat := sess.TurnLatency()
+	llmTokenSeen := false
+	sentenceFlushed := false
 
 	onAudio := func(audio []byte) {
 		if len(audio) == 0 {
@@ -152,6 +270,9 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		default:
 		}
 		audioChunks++
+		if lat != nil {
+			lat.MarkTTSFirstByte()
+		}
 		if !speaking {
 			speaking = true
 			sess.SetState(StateSpeaking)
@@ -169,17 +290,18 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 	var segCh chan string
 	var ttsDone chan struct{}
 	if withVoice && p.tts != nil {
-		// Per-segment Synthesize: Dashscope duplex session closes after the first
-		// continue-task chunk, causing "use of closed network connection" on later sentences.
 		segCh = make(chan string, 16)
 		ttsDone = make(chan struct{})
 		go func() {
 			defer close(ttsDone)
-			for seg := range segCh {
-				if err := p.tts.Synthesize(ctx, seg, onAudio); err != nil && ttsErr == nil {
+			err := p.runPrefetchSegmentTTS(ctx, segCh, onAudio)
+			if err != nil {
+				ttsErrMu.Lock()
+				if ttsErr == nil {
 					ttsErr = err
-					log.Printf("[realtime] tts segment error session=%s: %v", sess.ID, err)
 				}
+				ttsErrMu.Unlock()
+				log.Printf("[realtime] tts segment error session=%s: %v", sess.ID, err)
 			}
 		}()
 	}
@@ -188,6 +310,10 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		text = strings.TrimSpace(text)
 		if text == "" || segCh == nil {
 			return
+		}
+		if lat != nil && !sentenceFlushed {
+			sentenceFlushed = true
+			lat.MarkLLMFirstSentence()
 		}
 		select {
 		case segCh <- text:
@@ -206,6 +332,10 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 	}
 
 	reply, err := p.chat.StreamMessage(ctx, sess.UserID, userText, func(token string) {
+		if lat != nil && !llmTokenSeen {
+			llmTokenSeen = true
+			lat.MarkLLMFirstToken()
+		}
 		_ = send.Send(MsgLLMToken, LLMToken{Token: token})
 		tokenBuf.WriteString(token)
 		if withVoice && p.tts != nil {
@@ -255,8 +385,12 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		close(segCh)
 		<-ttsDone
 
+		ttsErrMu.Lock()
+		errSnapshot := ttsErr
+		ttsErrMu.Unlock()
+
 		if audioChunks == 0 {
-			if ttsErr != nil {
+			if errSnapshot != nil {
 				p.failTurn(ctx, sess, send, "TTS_FAILED", "语音合成失败，请稍后再试")
 				return false
 			}
@@ -264,12 +398,10 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 			if !p.speakAudio(ctx, sess, send, reply) {
 				return false
 			}
+		} else if errSnapshot != nil {
+			log.Printf("[realtime] partial tts error after %d chunks session=%s: %v", audioChunks, sess.ID, errSnapshot)
 		} else {
-			if ttsErr != nil {
-				log.Printf("[realtime] partial tts error after %d chunks session=%s: %v", audioChunks, sess.ID, ttsErr)
-			} else {
-				log.Printf("[realtime] sentence tts sent %d audio chunks session=%s", audioChunks, sess.ID)
-			}
+			log.Printf("[realtime] sentence tts sent %d audio chunks session=%s", audioChunks, sess.ID)
 		}
 	}
 
@@ -289,6 +421,7 @@ func (p *Pipeline) speakReply(ctx context.Context, sess *Session, send Sender, r
 }
 
 func (p *Pipeline) speakAudio(ctx context.Context, sess *Session, send Sender, reply string) bool {
+	lat := sess.TurnLatency()
 	var chunks int
 	if err := p.tts.Synthesize(ctx, reply, func(audio []byte) {
 		select {
@@ -300,6 +433,9 @@ func (p *Pipeline) speakAudio(ctx context.Context, sess *Session, send Sender, r
 			return
 		}
 		chunks++
+		if lat != nil {
+			lat.MarkTTSFirstByte()
+		}
 		seq := sess.NextTTSSeq()
 		_ = send.Send(MsgTTSAudio, TTSAudio{
 			PCM:    base64.StdEncoding.EncodeToString(audio),
@@ -331,6 +467,10 @@ func (p *Pipeline) speakAudio(ctx context.Context, sess *Session, send Sender, r
 
 // completeTurn always sends tts_done so the client can resume listening.
 func (p *Pipeline) completeTurn(sess *Session, send Sender) {
+	if lat := sess.TurnLatency(); lat != nil {
+		_ = send.Send(MsgTurnMetrics, lat.ToMetrics())
+		lat.LogSummary(sess.ID)
+	}
 	_ = send.Send(MsgTTSDone, map[string]any{})
 	p.setListening(sess, send)
 }
@@ -340,6 +480,7 @@ func (p *Pipeline) handleCancelled(ctx context.Context, sess *Session, send Send
 		return false
 	}
 	log.Printf("[realtime] pipeline interrupted session=%s", sess.ID)
+	sess.ClearTurnLatency()
 	_ = send.Send(MsgInterrupted, map[string]any{})
 	_ = send.Send(MsgTTSDone, map[string]any{})
 	p.setListening(sess, send)
@@ -352,6 +493,11 @@ func (p *Pipeline) setListening(sess *Session, send Sender) {
 }
 
 func (p *Pipeline) failTurn(_ context.Context, sess *Session, send Sender, code, message string) {
+	if lat := sess.TurnLatency(); lat != nil {
+		lat.LogSummary(sess.ID)
+		_ = send.Send(MsgTurnMetrics, lat.ToMetrics())
+		sess.ClearTurnLatency()
+	}
 	_ = send.Send(MsgError, ErrorData{Code: code, Message: message})
 	_ = send.Send(MsgTTSDone, map[string]any{})
 	p.setListening(sess, send)
@@ -359,6 +505,7 @@ func (p *Pipeline) failTurn(_ context.Context, sess *Session, send Sender, code,
 
 func (p *Pipeline) Interrupt(sess *Session, send Sender) {
 	sess.CancelPipeline()
+	sess.ClearTurnLatency()
 	_ = send.Send(MsgInterrupted, map[string]any{})
 	_ = send.Send(MsgTTSDone, map[string]any{})
 	p.setListening(sess, send)
