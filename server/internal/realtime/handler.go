@@ -205,6 +205,12 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 			return
 		}
 
+		// Don't cancel Mochi mid-reply; user must barge-in explicitly while speaking.
+		if st := sess.State(); st == StateSpeaking || st == StateThinking {
+			log.Printf("[realtime] ignore utterance while busy state=%s session=%s", st, sessionID)
+			return
+		}
+
 		processingMu.Lock()
 		if processing {
 			processingMu.Unlock()

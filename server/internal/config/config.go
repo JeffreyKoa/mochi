@@ -234,7 +234,7 @@ func (r *RealtimeConfig) applyDefaults() {
 		r.Pipeline.TTSMinChars = 5
 	}
 	if r.Pipeline.TTSPunctuation == "" {
-		r.Pipeline.TTSPunctuation = "。！？，、"
+		r.Pipeline.TTSPunctuation = "。！？，、~.!?,;"
 	}
 }
 

@@ -43,7 +43,7 @@ async function close() {
 }
 
 async function finishSpeaking() {
-  rt.submitUtterance(true)
+  rt.submitUtterance(false)
 }
 
 async function stopConversation() {
@@ -108,7 +108,7 @@ onUnmounted(() => {
         <div v-if="showStreamingReply" class="message assistant">
           <div class="bubble streaming">{{ rt.replyText }}</div>
         </div>
-        <div v-if="rt.talking && !rt.partialText && !showStreamingReply && !rt.processing" class="message user">
+        <div v-if="rt.userSpeaking && !rt.partialText" class="message user">
           <div class="bubble streaming">正在听...</div>
         </div>
       </div>
@@ -142,6 +142,9 @@ onUnmounted(() => {
         </button>
         <button v-else-if="rt.resting" class="mic-btn resting" type="button" disabled>
           休息中 · 说话即可
+        </button>
+        <button v-else-if="rt.processing" class="mic-btn resting" type="button" disabled>
+          处理中...
         </button>
         <button v-else class="mic-btn recording" type="button" @click="finishSpeaking">
           说完了
