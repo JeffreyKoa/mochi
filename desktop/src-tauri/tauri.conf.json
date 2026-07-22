@@ -1,0 +1,55 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Mochi",
+  "version": "0.1.0",
+  "identifier": "com.mochi.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "pet",
+        "title": "Mochi",
+        "width": 200,
+        "height": 220,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": false,
+        "resizable": true,
+        "shadow": false,
+        "center": true,
+        "visible": true
+      },
+      {
+        "label": "chat",
+        "title": "Mochi Chat",
+        "width": 320,
+        "height": 440,
+        "transparent": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": false,
+        "resizable": false,
+        "shadow": true,
+        "center": false,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": null,
+      "capabilities": ["pet-chat"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.png"
+    ]
+  }
+}

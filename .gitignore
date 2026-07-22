@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+dist/
+
+# Tauri
+desktop/src-tauri/target/
+docs/
+# Go
+server/bin/
+*.exe
+
+# IDE
+.idea/
+.vscode/
+
+# Logs
+logs/
+*.log
+server/logs/
+
+#config
+config.yaml
