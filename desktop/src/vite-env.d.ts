@@ -1,0 +1,26 @@
+/// <reference types="vite/client" />
+
+interface ImportMetaEnv {
+  readonly TAURI_ENV_PLATFORM?: string
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv
+}
+
+declare abstract class AudioWorkletProcessor {
+  readonly port: MessagePort
+  constructor(options?: AudioWorkletNodeOptions)
+  abstract process(
+    inputs: Float32Array[][],
+    outputs: Float32Array[][],
+    parameters: Record<string, Float32Array>,
+  ): boolean
+}
+
+declare function registerProcessor(
+  name: string,
+  processorCtor: new (options?: AudioWorkletNodeOptions) => AudioWorkletProcessor,
+): void
+
+declare const sampleRate: number

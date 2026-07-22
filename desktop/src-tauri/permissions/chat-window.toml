@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-chat-window"
+description = "Allow chat window show/hide and pet resize"
+commands.allow = [
+  "show_chat_window",
+  "hide_chat_window",
+  "expand_pet_for_chat",
+  "collapse_pet_chat",
+]
