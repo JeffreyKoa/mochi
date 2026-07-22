@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { PCMCapture, arrayBufferToBase64, pcmPeakLevel, amplifyPCM } from '@/services/pcmCapture'
 import { realtimeSession, type RealtimeEvent } from '@/services/realtimeSession'
 import { usePetStore } from '@/stores/petStore'
@@ -23,9 +23,9 @@ export interface ChatMessage {
 const WAKE_PEAK = 0.022
 const SPEECH_PEAK = 0.025
 const SILENCE_MS = 900
-const BARGE_IN_PEAK = 0.07
-const BARGE_IN_MS = 600
-const ECHO_GUARD_MS = 1200
+const BARGE_IN_PEAK = 0.09
+const BARGE_IN_MS = 800
+const ECHO_GUARD_MS = 3200
 const TTS_WATCHDOG_MS = 45000
 const MAX_UTTERANCE_MS = 25000
 
@@ -41,6 +41,10 @@ export const useRealtimeStore = defineStore('realtime', () => {
   const micLevel = ref(0)
   const chunksSent = ref(0)
   const processingRef = ref(false)
+
+  const userSpeaking = computed(
+    () => talking.value && !resting.value && !processingRef.value,
+  )
 
   const capture = new PCMCapture()
   const ttsPlayer = new TTSAudioQueue()
@@ -186,12 +190,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
       return
     }
     if (phase === 'resting') return
-    if (phase === 'processing' && !force) {
-      statusText.value = '处理中，请稍候...'
-      return
-    }
-    if (phase === 'agent_speaking' && !force) {
-      statusText.value = 'Mochi 正在说话，请稍候或大声说话打断'
+    if (phase !== 'user_speaking') {
+      if (phase === 'processing') statusText.value = '处理中，请稍候...'
+      else if (phase === 'agent_speaking') statusText.value = 'Mochi 正在说话，请稍候或大声说话打断'
       return
     }
     if (submitLock && !force) return
@@ -449,17 +450,18 @@ export const useRealtimeStore = defineStore('realtime', () => {
         statusText.value = 'Mochi 正在想...'
         break
       case 'llm_token':
-        if (!replyText.value) statusText.value = 'Mochi 正在回复...'
+        if (recording && phase === 'processing') {
+          statusText.value = 'Mochi 正在回复...'
+        }
         replyText.value += ev.token
         break
       case 'llm_done':
         replyText.value = ev.text
         commitAssistantMessage(ev.text)
         if (recording) {
-          setPhase('agent_speaking')
-          ttsStartedAt = Date.now()
-          bargeAccumMs = 0
-          statusText.value = 'Mochi 正在说话...'
+          if (phase !== 'agent_speaking') {
+            statusText.value = 'Mochi 正在回复...'
+          }
         } else {
           statusText.value = 'Mochi 已回复'
         }
@@ -533,6 +535,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     micLevel,
     chunksSent,
     processing: processingRef,
+    userSpeaking,
     connect,
     disconnect,
     startTalk,

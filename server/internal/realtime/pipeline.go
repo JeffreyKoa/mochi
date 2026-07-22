@@ -109,7 +109,7 @@ func (p *Pipeline) OnTextInput(ctx context.Context, sess *Session, text string, 
 	p.onTranscriptWithMode(pipeCtx, sess, text, send, false)
 }
 
-// onTranscriptWithMode: LLM streams text tokens; voice turns also batch TTS after reply.
+// onTranscriptWithMode: LLM streams tokens; voice turns pipe sentences to TTS as they complete.
 func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text string, send Sender, withVoice bool) {
 	turnStarted := false
 	defer func() {
@@ -130,13 +130,95 @@ func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text
 	send.SendAnimation(StateThinking)
 	turnStarted = true
 
-	reply, err := p.chat.StreamMessage(ctx, sess.UserID, text, func(token string) {
+	if ok := p.streamLLMAndVoice(ctx, sess, send, text, withVoice); !ok {
+		turnStarted = false
+	}
+}
+
+// streamLLMAndVoice runs LLM token streaming and pipes sentence chunks to TTS asynchronously.
+func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Sender, userText string, withVoice bool) bool {
+	var tokenBuf strings.Builder
+	speaking := false
+	audioChunks := 0
+	var ttsErr error
+
+	onAudio := func(audio []byte) {
+		if len(audio) == 0 {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		audioChunks++
+		if !speaking {
+			speaking = true
+			sess.SetState(StateSpeaking)
+			send.SendAnimation(StateSpeaking)
+			log.Printf("[realtime] tts first audio session=%s", sess.ID)
+		}
+		seq := sess.NextTTSSeq()
+		_ = send.Send(MsgTTSAudio, TTSAudio{
+			PCM:    base64.StdEncoding.EncodeToString(audio),
+			Format: p.ttsFormat,
+			Seq:    seq,
+		})
+	}
+
+	var segCh chan string
+	var ttsDone chan struct{}
+	if withVoice && p.tts != nil {
+		// Per-segment Synthesize: Dashscope duplex session closes after the first
+		// continue-task chunk, causing "use of closed network connection" on later sentences.
+		segCh = make(chan string, 16)
+		ttsDone = make(chan struct{})
+		go func() {
+			defer close(ttsDone)
+			for seg := range segCh {
+				if err := p.tts.Synthesize(ctx, seg, onAudio); err != nil && ttsErr == nil {
+					ttsErr = err
+					log.Printf("[realtime] tts segment error session=%s: %v", sess.ID, err)
+				}
+			}
+		}()
+	}
+
+	enqueueSeg := func(text string) {
+		text = strings.TrimSpace(text)
+		if text == "" || segCh == nil {
+			return
+		}
+		select {
+		case segCh <- text:
+		case <-ctx.Done():
+		}
+	}
+
+	flushBuffer := func() {
+		for {
+			seg := takeFlushSegment(&tokenBuf, p.cfg.Pipeline)
+			if seg == "" {
+				break
+			}
+			enqueueSeg(seg)
+		}
+	}
+
+	reply, err := p.chat.StreamMessage(ctx, sess.UserID, userText, func(token string) {
 		_ = send.Send(MsgLLMToken, LLMToken{Token: token})
+		tokenBuf.WriteString(token)
+		if withVoice && p.tts != nil {
+			flushBuffer()
+		}
 	})
 	if err != nil {
+		if segCh != nil {
+			close(segCh)
+			<-ttsDone
+		}
 		if p.handleCancelled(ctx, sess, send, err) {
-			turnStarted = false
-			return
+			return false
 		}
 		log.Printf("[realtime] llm error session=%s: %v", sess.ID, err)
 		msg := fmt.Sprintf("AI 回复失败: %v", err)
@@ -146,37 +228,52 @@ func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text
 			msg = "数据库连接不稳定，请稍后再试"
 		}
 		p.failTurn(ctx, sess, send, "LLM_FAILED", msg)
-		turnStarted = false
-		return
+		return false
 	}
 
 	if errors.Is(ctx.Err(), context.Canceled) {
+		if segCh != nil {
+			close(segCh)
+			<-ttsDone
+		}
 		p.handleCancelled(ctx, sess, send, ctx.Err())
-		turnStarted = false
-		return
+		return false
 	}
 
+	if reply == "" {
+		reply = strings.TrimSpace(tokenBuf.String())
+	}
 	if reply == "" {
 		reply = "嗯... 让我想想~"
 	}
 	_ = send.Send(MsgLLMDone, LLMDone{Text: reply})
 
-	if errors.Is(ctx.Err(), context.Canceled) {
-		p.handleCancelled(ctx, sess, send, ctx.Err())
-		turnStarted = false
-		return
+	if withVoice && p.tts != nil && segCh != nil {
+		if remainder := strings.TrimSpace(tokenBuf.String()); remainder != "" {
+			enqueueSeg(remainder)
+		}
+		close(segCh)
+		<-ttsDone
+
+		if audioChunks == 0 {
+			if ttsErr != nil {
+				p.failTurn(ctx, sess, send, "TTS_FAILED", "语音合成失败，请稍后再试")
+				return false
+			}
+			log.Printf("[realtime] sentence tts empty, batch fallback session=%s", sess.ID)
+			if !p.speakAudio(ctx, sess, send, reply) {
+				return false
+			}
+		} else {
+			if ttsErr != nil {
+				log.Printf("[realtime] partial tts error after %d chunks session=%s: %v", audioChunks, sess.ID, ttsErr)
+			} else {
+				log.Printf("[realtime] sentence tts sent %d audio chunks session=%s", audioChunks, sess.ID)
+			}
+		}
 	}
 
-	if !withVoice || p.tts == nil || reply == "" {
-		return
-	}
-
-	sess.SetState(StateSpeaking)
-	send.SendAnimation(StateSpeaking)
-
-	if !p.speakAudio(ctx, sess, send, reply) {
-		turnStarted = false
-	}
+	return true
 }
 
 func (p *Pipeline) speakReply(ctx context.Context, sess *Session, send Sender, reply string) {
