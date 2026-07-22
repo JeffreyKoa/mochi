@@ -11,12 +11,22 @@ export type RealtimeEvent =
   | { type: 'tts_done' }
   | { type: 'interrupted' }
   | { type: 'turn_ack' }
+  | { type: 'turn_metrics'; metrics: TurnMetrics }
   | { type: 'animation'; state: string }
   | { type: 'error'; code: string; message: string }
   | { type: 'connected' }
   | { type: 'disconnected' }
 
 type Listener = (ev: RealtimeEvent) => void
+
+export interface TurnMetrics {
+  audioEndMs: number
+  asrFinalMs: number
+  llmFirstTokenMs: number
+  llmFirstSentenceMs: number
+  ttsFirstByteMs: number
+  playbackStartMs: number
+}
 
 export class RealtimeSession {
   private ws: WebSocket | null = null
@@ -91,6 +101,14 @@ export class RealtimeSession {
     return this.send('text_input', { text })
   }
 
+  sendPrewarm(): boolean {
+    return this.send('prewarm', {})
+  }
+
+  sendPlaybackMark(atMs: number): boolean {
+    return this.send('playback_mark', { at_ms: atMs })
+  }
+
   sendTurnAck(): boolean {
     return this.send('turn_ack', {})
   }
@@ -148,6 +166,19 @@ export class RealtimeSession {
         break
       case 'turn_ack':
         this.emit({ type: 'turn_ack' })
+        break
+      case 'turn_metrics':
+        this.emit({
+          type: 'turn_metrics',
+          metrics: {
+            audioEndMs: Number(data.audio_end_ms ?? -1),
+            asrFinalMs: Number(data.asr_final_ms ?? -1),
+            llmFirstTokenMs: Number(data.llm_first_token_ms ?? -1),
+            llmFirstSentenceMs: Number(data.llm_first_sentence_ms ?? -1),
+            ttsFirstByteMs: Number(data.tts_first_byte_ms ?? -1),
+            playbackStartMs: Number(data.playback_start_ms ?? -1),
+          },
+        })
         break
       case 'animation':
         this.emit({ type: 'animation', state: String(data.state) })

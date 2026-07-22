@@ -73,11 +73,12 @@ type ClientConfig struct {
 }
 
 type RealtimeConfig struct {
-	Enabled  bool            `yaml:"enabled"`
-	VAD      RealtimeVAD     `yaml:"vad"`
-	ASR      RealtimeASR     `yaml:"asr"`
-	TTS      RealtimeTTS     `yaml:"tts"`
-	Pipeline RealtimePipeline `yaml:"pipeline"`
+	Enabled        bool             `yaml:"enabled"`
+	PrewarmEnabled bool             `yaml:"prewarm_enabled"`
+	VAD            RealtimeVAD      `yaml:"vad"`
+	ASR            RealtimeASR      `yaml:"asr"`
+	TTS            RealtimeTTS      `yaml:"tts"`
+	Pipeline       RealtimePipeline `yaml:"pipeline"`
 }
 
 type RealtimeVAD struct {

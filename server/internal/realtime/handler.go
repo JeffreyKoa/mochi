@@ -149,6 +149,13 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 		asrSess = s
 	}
 
+	if streamingASR {
+		ensureASR()
+	}
+	if h.cfg.PrewarmEnabled && h.pipeline != nil {
+		h.pipeline.PrewarmTTS(ctx)
+	}
+
 	interrupt := func() {
 		h.pipeline.Interrupt(sess, sender)
 		resetASR()
@@ -166,6 +173,8 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 		if text == "" {
 			return
 		}
+
+		sess.BeginTurn(time.Now())
 
 		processingMu.Lock()
 		if processing {
@@ -209,6 +218,11 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 		if st := sess.State(); st == StateSpeaking || st == StateThinking {
 			log.Printf("[realtime] ignore utterance while busy state=%s session=%s", st, sessionID)
 			return
+		}
+
+		sess.BeginTurn(time.Now())
+		if lat := sess.TurnLatency(); lat != nil {
+			lat.MarkAudioEnd()
 		}
 
 		processingMu.Lock()
@@ -284,6 +298,22 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 		switch msgType {
 		case MsgHeartbeat:
 			conn.SetReadDeadline(time.Now().Add(120 * time.Second))
+
+		case MsgPrewarm:
+			ensureASR()
+			if h.cfg.PrewarmEnabled && h.pipeline != nil {
+				h.pipeline.PrewarmTTS(ctx)
+			}
+
+		case MsgPlaybackMark:
+			var in PlaybackMark
+			if err := json.Unmarshal(data, &in); err == nil {
+				if lat := sess.TurnLatency(); lat != nil {
+					lat.MarkPlaybackFromClient(in.AtMS)
+					lat.LogSummary(sessionID)
+					sess.ClearTurnLatency()
+				}
+			}
 
 		case MsgAudioStart:
 			// Client detected owner speech — begin a fresh utterance buffer.

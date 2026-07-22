@@ -8,8 +8,10 @@ const (
 	MsgAudioStart = "audio_start"
 	MsgAudioEnd   = "audio_end"
 	MsgTextInput  = "text_input"
-	MsgHeartbeat  = "heartbeat"
-	MsgInterrupt  = "interrupt"
+	MsgHeartbeat    = "heartbeat"
+	MsgInterrupt    = "interrupt"
+	MsgPrewarm      = "prewarm"
+	MsgPlaybackMark = "playback_mark"
 )
 
 // Server → Client message types
@@ -27,6 +29,7 @@ const (
 	MsgAnimation    = "animation"
 	MsgError        = "error"
 	MsgAck          = "ack"
+	MsgTurnMetrics  = "turn_metrics"
 )
 
 type Envelope struct {
@@ -82,6 +85,19 @@ type SessionStart struct {
 
 type AckData struct {
 	Seq int64 `json:"seq"`
+}
+
+type TurnMetrics struct {
+	AudioEndMS          int64 `json:"audio_end_ms"`
+	ASRFinalMS          int64 `json:"asr_final_ms"`
+	LLMFirstTokenMS     int64 `json:"llm_first_token_ms"`
+	LLMFirstSentenceMS  int64 `json:"llm_first_sentence_ms"`
+	TTSFirstByteMS      int64 `json:"tts_first_byte_ms"`
+	PlaybackStartMS     int64 `json:"playback_start_ms"`
+}
+
+type PlaybackMark struct {
+	AtMS int64 `json:"at_ms"`
 }
 
 func marshalMsg(msgType string, data any, seq int64) ([]byte, error) {

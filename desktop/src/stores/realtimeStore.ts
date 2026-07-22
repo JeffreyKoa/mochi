@@ -64,7 +64,21 @@ export const useRealtimeStore = defineStore('realtime', () => {
   let ttsStartedAt = 0
   let bargeAccumMs = 0
   let textSending = false
+  let turnStartAt = 0
+  let playbackMarked = false
+  let lastTurnMetrics: import('@/services/realtimeSession').TurnMetrics | null = null
 
+  function resetTurnTiming() {
+    turnStartAt = 0
+    playbackMarked = false
+  }
+
+  function markPlaybackStart() {
+    if (playbackMarked || turnStartAt <= 0) return
+    playbackMarked = true
+    const atMs = Date.now() - turnStartAt
+    realtimeSession.sendPlaybackMark(atMs)
+  }
   function commitUserMessage(text: string, source: 'voice' | 'text') {
     const trimmed = text.trim()
     if (!trimmed) return
@@ -157,6 +171,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     utteranceStartedAt = 0
     bargeAccumMs = 0
     ttsStartedAt = 0
+    resetTurnTiming()
     chunksSent.value = 0
     speechVad?.reset()
     if (recording) {
@@ -220,6 +235,8 @@ export const useRealtimeStore = defineStore('realtime', () => {
     bargeAccumMs = 0
     speechVad?.reset()
     statusText.value = '处理中...'
+    turnStartAt = Date.now()
+    playbackMarked = false
 
     const sent = realtimeSession.sendAudioEnd()
     if (!sent) {
@@ -318,6 +335,8 @@ export const useRealtimeStore = defineStore('realtime', () => {
     setPhase('processing')
     startTtsWatchdog()
     statusText.value = 'Mochi 正在想...'
+    turnStartAt = Date.now()
+    playbackMarked = false
 
     const sent = realtimeSession.sendTextInput(trimmed)
     if (!sent) {
@@ -335,6 +354,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     unsub = realtimeSession.on(handleEvent)
     await realtimeSession.connect()
     connected.value = true
+    realtimeSession.sendPrewarm()
     statusText.value = recording ? '点击开始对话' : '输入消息或开始语音对话'
   }
 
@@ -351,6 +371,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     if (recording) return
 
     await connect()
+    realtimeSession.sendPrewarm()
     await initVad()
 
     partialText.value = ''
@@ -470,10 +491,17 @@ export const useRealtimeStore = defineStore('realtime', () => {
         setPhase('agent_speaking')
         if (!ttsStartedAt) ttsStartedAt = Date.now()
         statusText.value = 'Mochi 正在说话...（大声说话可打断）'
-        ttsPlayer.enqueue(ev.pcm, ev.format)
+        ttsPlayer.enqueue(ev.pcm, ev.format, markPlaybackStart)
         break
       case 'tts_done':
         finishTextTurn()
+        resetTurnTiming()
+        break
+      case 'turn_metrics':
+        lastTurnMetrics = ev.metrics
+        if (import.meta.env.DEV) {
+          console.debug('[realtime] turn_metrics', ev.metrics)
+        }
         break
       case 'turn_ack':
         setPhase('processing')
