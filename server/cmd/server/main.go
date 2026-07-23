@@ -5,15 +5,22 @@ import (
 
 	"github.com/mochi-ai/server/internal/auth"
 	"github.com/mochi-ai/server/internal/bond"
+	"github.com/mochi-ai/server/internal/brief"
 	"github.com/mochi-ai/server/internal/chat"
 	"github.com/mochi-ai/server/internal/companion"
 	"github.com/mochi-ai/server/internal/config"
 	"github.com/mochi-ai/server/internal/database"
 	"github.com/mochi-ai/server/internal/emotion"
 	"github.com/mochi-ai/server/internal/life"
+	"github.com/mochi-ai/server/internal/lifecycle"
 	"github.com/mochi-ai/server/internal/memory"
+	"github.com/mochi-ai/server/internal/onboarding"
+	"github.com/mochi-ai/server/internal/catalog"
 	"github.com/mochi-ai/server/internal/pet"
+	"github.com/mochi-ai/server/internal/subscribe"
+	"github.com/mochi-ai/server/internal/tools"
 	"github.com/mochi-ai/server/internal/realtime"
+	"github.com/mochi-ai/server/internal/reflection"
 	"github.com/mochi-ai/server/internal/router"
 	"github.com/mochi-ai/server/internal/voice"
 	"github.com/mochi-ai/server/internal/ws"
@@ -41,18 +48,26 @@ func main() {
 		log.Println("[WARN] ai.api_key not set in config.yaml")
 	}
 
-	memSvc := memory.NewService(db, rdb, aiProvider)
 	bondSvc := bond.NewService(db)
+	briefSvc := brief.NewService(db, cfg.Growth)
+	memSvc := memory.NewService(db, rdb, aiProvider, briefSvc)
 	emotionSvc := emotion.NewService(rdb, aiProvider)
 	hub := ws.NewHub()
 
 	lifeSvc := life.NewService(db, hub)
 	lifeSvc.StartTicker()
 
-	chatSvc := chat.NewService(db, aiProvider, memSvc, lifeSvc, bondSvc, emotionSvc)
+	lifecycleSvc := lifecycle.NewService(db, hub)
+	lifecycleSvc.StartTicker()
+
+	reflectionSvc := reflection.NewService(db, aiProvider, briefSvc, bondSvc, cfg.Growth)
+	toolsSvc := tools.NewService(db, cfg.Tools)
+	toolsOrch := tools.NewOrchestrator(toolsSvc, aiProvider, cfg.Tools)
+	toolsHandler := tools.NewHandler(db, toolsSvc)
+	chatSvc := chat.NewService(db, aiProvider, memSvc, lifeSvc, lifecycleSvc, bondSvc, emotionSvc, briefSvc, reflectionSvc, cfg.Growth, toolsOrch)
 	chatHandler := chat.NewHandler(chatSvc)
 
-	companionScheduler := companion.NewScheduler(db, rdb, aiProvider, bondSvc, cfg.Companion, hub)
+	companionScheduler := companion.NewScheduler(db, rdb, aiProvider, bondSvc, cfg.Companion, hub, toolsSvc, cfg.Tools)
 	companionScheduler.Start()
 
 	authSvc := auth.NewService(db, cfg.JWT.Secret)
@@ -61,7 +76,12 @@ func main() {
 	voiceSvc := voice.NewService(cfg)
 	voiceHandler := voice.NewHandler(voiceSvc, chatSvc)
 
-	petHandler := pet.NewHandler(db, lifeSvc, memSvc)
+	onboardingSvc := onboarding.NewService(db, bondSvc, briefSvc)
+	petHandler := pet.NewHandler(db, lifeSvc, lifecycleSvc, memSvc, briefSvc, onboardingSvc)
+
+	catalogSvc := catalog.NewService(db)
+	subscribeSvc := subscribe.NewService(db, catalogSvc)
+	subscribeHandler := subscribe.NewHandler(catalogSvc, subscribeSvc)
 
 	realtimeHandler := realtime.NewHandler(authSvc, chatSvc, cfg)
 
@@ -69,12 +89,16 @@ func main() {
 		Auth:            authHandler,
 		Chat:            chatHandler,
 		Pet:             petHandler,
+		Subscribe:       subscribeHandler,
 		Voice:           voiceHandler,
 		Realtime:        realtimeHandler,
+		Tools:           toolsHandler,
 		Hub:             hub,
 		AuthSvc:         authSvc,
 		ClientAPIBase:   cfg.Client.APIBase,
 		RealtimeEnabled: cfg.Realtime.Enabled,
+		WriteApproval:   cfg.Growth.WriteApproval,
+		GrowthEnabled:   cfg.Growth.Enabled,
 	})
 
 	addr := ":" + cfg.ServerPort()

@@ -4,7 +4,7 @@ import { login, register } from '@/services/api'
 
 export const useAuthStore = defineStore('auth', () => {
   const token = ref<string | null>(localStorage.getItem('mochi_token'))
-  const email = ref('')
+  const email = ref(localStorage.getItem('mochi_email') ?? '')
   const isLoggedIn = ref(!!token.value)
   const error = ref('')
 
@@ -16,7 +16,9 @@ export const useAuthStore = defineStore('auth', () => {
 
   function logout() {
     token.value = null
+    email.value = ''
     localStorage.removeItem('mochi_token')
+    localStorage.removeItem('mochi_email')
     isLoggedIn.value = false
   }
 
@@ -35,6 +37,7 @@ export const useAuthStore = defineStore('auth', () => {
     const data = await login(e, password)
     setToken(data.token)
     email.value = e
+    localStorage.setItem('mochi_email', e)
     return data
   }
 
@@ -43,6 +46,7 @@ export const useAuthStore = defineStore('auth', () => {
     const data = await register(e, password, petName)
     setToken(data.token)
     email.value = e
+    localStorage.setItem('mochi_email', e)
     return data
   }
 

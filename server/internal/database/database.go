@@ -56,6 +56,12 @@ func NewMySQL(dsn string, cfg config.DatabaseConfig) (*gorm.DB, error) {
 			&models.Memory{},
 			&models.LifeState{},
 			&models.BondProfile{},
+			&models.UserBrief{},
+			&models.UserBriefEntry{},
+			&models.PetSKU{},
+			&models.PetOrder{},
+			&models.Reminder{},
+			&models.Todo{},
 		); err != nil {
 			return nil, fmt.Errorf("auto migrate: %w", err)
 		}

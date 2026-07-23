@@ -18,6 +18,8 @@ type Config struct {
 	Client   ClientConfig   `yaml:"client"`
 	Realtime RealtimeConfig `yaml:"realtime"`
 	Companion CompanionConfig `yaml:"companion"`
+	Growth    GrowthConfig    `yaml:"growth"`
+	Tools     ToolsConfig     `yaml:"tools"`
 }
 
 type ServerConfig struct {
@@ -121,6 +123,26 @@ type CompanionConfig struct {
 	EveningGreeting    bool  `yaml:"evening_greeting"`
 }
 
+type GrowthConfig struct {
+	Enabled                 bool `yaml:"enabled"`
+	UserBriefCharBudget     int  `yaml:"user_brief_char_budget"`
+	MemoryPromptCharBudget  int  `yaml:"memory_prompt_char_budget"`
+	ReflectionEnabled       bool `yaml:"reflection_enabled"`
+	ReflectionMinTurnChars  int  `yaml:"reflection_min_turn_chars"`
+	WriteApproval           bool `yaml:"write_approval"`
+	StyleEvolutionEnabled   bool `yaml:"style_evolution_enabled"`
+	StyleEvolutionThreshold int  `yaml:"style_evolution_threshold"`
+}
+
+type ToolsConfig struct {
+	Enabled              bool `yaml:"enabled"`
+	MinRapportForSuggest int  `yaml:"min_rapport_for_suggest"`
+	MinTrustForAutoCreate int `yaml:"min_trust_for_auto_create"`
+	ReminderTickSeconds  int  `yaml:"reminder_tick_seconds"`
+	MaxPendingReminders  int  `yaml:"max_pending_reminders"`
+	RouterLLMEnabled     bool `yaml:"router_llm_enabled"`
+}
+
 func (c *Config) MySQLDSN() string {
 	return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local&timeout=10s&readTimeout=30s&writeTimeout=30s",
 		c.Database.User, c.Database.Password, c.Database.Host, c.Database.Port, c.Database.Name)
@@ -194,6 +216,8 @@ func (c *Config) applyDefaults() {
 	}
 	c.Realtime.applyDefaults()
 	c.Companion.applyDefaults()
+	c.Growth.applyDefaults()
+	c.Tools.applyDefaults()
 }
 
 func (c *CompanionConfig) applyDefaults() {
@@ -202,6 +226,36 @@ func (c *CompanionConfig) applyDefaults() {
 	}
 	if len(c.QuietHours) == 0 {
 		c.QuietHours = []int{23, 8}
+	}
+}
+
+func (c *GrowthConfig) applyDefaults() {
+	if c.UserBriefCharBudget == 0 {
+		c.UserBriefCharBudget = 1400
+	}
+	if c.MemoryPromptCharBudget == 0 {
+		c.MemoryPromptCharBudget = 400
+	}
+	if c.ReflectionMinTurnChars == 0 {
+		c.ReflectionMinTurnChars = 4
+	}
+	if c.StyleEvolutionThreshold == 0 {
+		c.StyleEvolutionThreshold = 3
+	}
+}
+
+func (c *ToolsConfig) applyDefaults() {
+	if c.MinRapportForSuggest == 0 {
+		c.MinRapportForSuggest = 60
+	}
+	if c.MinTrustForAutoCreate == 0 {
+		c.MinTrustForAutoCreate = 30
+	}
+	if c.ReminderTickSeconds == 0 {
+		c.ReminderTickSeconds = 60
+	}
+	if c.MaxPendingReminders == 0 {
+		c.MaxPendingReminders = 50
 	}
 }
 

@@ -630,6 +630,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     startTalk,
     sendTextMessage,
     loadHistory,
+    appendAssistantMessage: commitAssistantMessage,
     submitUtterance,
     endConversation,
     stopTalk: submitUtterance,

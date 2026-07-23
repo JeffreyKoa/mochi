@@ -5,7 +5,7 @@ import (
 )
 
 func formatMemories(memories []models.Memory) string {
-	return formatCompanionMemories(memories)
+	return formatCompanionMemoriesBudget(memories, defaultMemoryPromptBudget)
 }
 
 func describeMood(mood uint8) string {

@@ -4,7 +4,10 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { PhysicalPosition } from '@tauri-apps/api/dpi'
 import { useAuthStore } from '@/stores/authStore'
 import { usePetStore } from '@/stores/petStore'
-import { interact } from '@/services/api'
+import { useGrowthStore } from '@/stores/growthStore'
+import { useRealtimeStore } from '@/stores/realtimeStore'
+import { interact, ApiError } from '@/services/api'
+import { healthMonitor } from '@/services/healthMonitor'
 import {
   PetRoamer,
   canRoam,
@@ -24,8 +27,12 @@ import {
 import PetCanvas from '@/components/pet/PetCanvas.vue'
 import ChatPanel from '@/components/chat/ChatPanel.vue'
 
+const { sidePanelOpen = false } = defineProps<{ sidePanelOpen?: boolean }>()
+
 const pet = usePetStore()
 const auth = useAuthStore()
+const growth = useGrowthStore()
+const rt = useRealtimeStore()
 const menuVisible = ref(false)
 const menuPos = ref({ x: 0, y: 0 })
 const isDragging = ref(false)
@@ -46,6 +53,32 @@ let dragWindowBase = { x: 0, y: 0 }
 let dragPointerStart = { x: 0, y: 0 }
 let dragRaf = 0
 let dragPendingPos: PhysicalPosition | null = null
+
+async function interactWithRetry(type: 'touch' | 'feed' | 'play') {
+  try {
+    return await interact(type)
+  } catch (e) {
+    if (!(e instanceof ApiError) || (e.kind !== 'network' && e.kind !== 'server')) {
+      throw e
+    }
+    const recovered = await healthMonitor.poke(() => {})
+    if (recovered) {
+      return await interact(type)
+    }
+    if (healthMonitor.watching) throw e
+    return await new Promise<Awaited<ReturnType<typeof interact>>>((resolve, reject) => {
+      pet.showPersistentBubble('网络有点卡，我在自动重连…')
+      healthMonitor.start(async () => {
+        pet.hideSpeechBubble()
+        try {
+          resolve(await interact(type))
+        } catch (err) {
+          reject(err)
+        }
+      })
+    })
+  }
+}
 
 function scheduleWindowMove(x: number, y: number) {
   if (!dragWindow) return
@@ -125,10 +158,17 @@ function onDragStart(e: PointerEvent) {
 }
 
 function startRoamer() {
-  if (!dragWindow || roamer) return
+  if (!dragWindow || roamer || sidePanelOpen) return
   roamer = new PetRoamer()
   roamer.start(dragWindow, {
-    isPaused: () => !canRoam(pet.lifeState.energy, pet.isChatOpen, isDragging.value),
+    isPaused: () =>
+      !canRoam(
+        pet.lifeState.energy,
+        pet.isChatOpen,
+        isDragging.value,
+        sidePanelOpen || growth.showSettings,
+        rt.connected && (rt.talking || rt.processing),
+      ),
     onWalkStart: (facing) => {
       pet.setFacing(facing)
       pet.setRoaming(true)
@@ -189,6 +229,21 @@ onUnmounted(() => {
   window.removeEventListener('pointercancel', onWindowPointerUp)
   if (dragRaf) cancelAnimationFrame(dragRaf)
 })
+
+watch(
+  () => [sidePanelOpen, growth.showSettings, pet.isChatOpen, rt.talking, rt.processing] as const,
+  ([panelOpen, settings, chat, talking, processing]) => {
+    if (panelOpen || settings || chat || talking || processing) {
+      roamer?.pause()
+      if (pet.isRoaming) {
+        pet.setRoaming(false)
+        pet.syncAnimationFromState()
+      }
+    } else {
+      roamer?.resume()
+    }
+  },
+)
 
 watch(
   () => pet.isChatOpen,
@@ -259,7 +314,7 @@ async function onPetClick() {
     roamer?.pause()
     pet.setAnimation('happy')
     try {
-      const result = await interact('touch')
+      const result = await interactWithRetry('touch')
       pet.updateLifeState(result.state)
       pet.setAnimation(result.animation)
       pet.showSpeechBubble('嘿嘿~')
@@ -280,7 +335,7 @@ async function onFeed() {
   menuVisible.value = false
   roamer?.pause()
   try {
-    const result = await interact('feed')
+    const result = await interactWithRetry('feed')
     pet.updateLifeState(result.state)
     pet.setAnimation('eat')
     pet.showSpeechBubble('好吃~ 谢谢主人！')
@@ -298,7 +353,7 @@ async function onPlay() {
   menuVisible.value = false
   roamer?.pause()
   try {
-    const result = await interact('play')
+    const result = await interactWithRetry('play')
     pet.updateLifeState(result.state)
     pet.setAnimation('happy')
     pet.showSpeechBubble('好开心！')
@@ -310,6 +365,11 @@ async function onPlay() {
     pet.showSpeechBubble('现在玩不动...')
     roamer?.resume()
   }
+}
+
+function openSettingsFromMenu() {
+  closeMenu()
+  growth.openSettings()
 }
 
 function onContextMenu(e: MouseEvent) {
@@ -342,7 +402,11 @@ function onDblClick() {
 <template>
   <div
     class="pet-shell"
-    :class="{ 'chat-open': chatInline, dragging: isDragging && dragMoved }"
+    :class="{
+      'chat-open': chatInline,
+      'side-panel-open': sidePanelOpen,
+      dragging: isDragging && dragMoved,
+    }"
     :style="chatInline && !isTauri() ? {
       width: PET_WITH_CHAT_W + 'px',
       height: PET_WITH_CHAT_H + 'px',
@@ -374,6 +438,7 @@ function onDblClick() {
       <button type="button" @click.stop="onFeed">🍙 喂食</button>
       <button type="button" @click.stop="onPlay">🎾 玩耍</button>
       <button type="button" @pointerdown.stop @click.stop="openChatFromMenu">💬 聊天</button>
+      <button type="button" @click.stop="openSettingsFromMenu">⚙️ 设置</button>
     </div>
   </div>
 </template>
@@ -392,6 +457,17 @@ function onDblClick() {
 .pet-shell.dragging,
 .pet-shell.dragging .pet-area {
   cursor: grabbing;
+}
+
+.pet-shell.side-panel-open {
+  width: 200px;
+  height: 100%;
+  min-height: 440px;
+  cursor: default;
+}
+
+.pet-shell.side-panel-open .pet-area {
+  height: 100%;
 }
 
 .pet-shell.chat-open {

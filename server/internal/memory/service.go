@@ -12,6 +12,7 @@ import (
 
 	"github.com/mochi-ai/server/internal/models"
 	"github.com/mochi-ai/server/internal/emotion"
+	"github.com/mochi-ai/server/internal/brief"
 	"github.com/mochi-ai/server/pkg/ai"
 )
 
@@ -19,13 +20,14 @@ const shortTermLimit = 20
 const shortTermKeyPrefix = "mochi:chat:short:"
 
 type Service struct {
-	db  *gorm.DB
-	rdb *redis.Client
-	ai  *ai.Provider
+	db    *gorm.DB
+	rdb   *redis.Client
+	ai    *ai.Provider
+	brief *brief.Service
 }
 
-func NewService(db *gorm.DB, rdb *redis.Client, aiProvider *ai.Provider) *Service {
-	return &Service{db: db, rdb: rdb, ai: aiProvider}
+func NewService(db *gorm.DB, rdb *redis.Client, aiProvider *ai.Provider, briefSvc *brief.Service) *Service {
+	return &Service{db: db, rdb: rdb, ai: aiProvider, brief: briefSvc}
 }
 
 type ExtractedMemory struct {
@@ -146,6 +148,7 @@ func (s *Service) ExtractAndStore(ctx context.Context, petID uint64, userMsg, pe
 		return nil // silently skip bad extraction
 	}
 
+	briefTouched := false
 	for _, m := range extracted {
 		if m.Content == "" {
 			continue
@@ -170,6 +173,15 @@ func (s *Service) ExtractAndStore(ctx context.Context, petID uint64, userMsg, pe
 			Content:    m.Content,
 			Importance: m.Importance,
 		})
+		if s.brief != nil {
+			s.brief.SyncFromMemory(ctx, petID, memType, m.Content, m.Importance)
+			if memType == "long" || memType == "relation" || (memType == "topic" && m.Importance >= 0.8) {
+				briefTouched = true
+			}
+		}
+	}
+	if briefTouched && s.brief != nil {
+		s.brief.RecompileAsync(petID)
 	}
 	return nil
 }

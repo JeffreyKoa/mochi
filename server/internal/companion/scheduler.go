@@ -16,34 +16,59 @@ import (
 	"github.com/mochi-ai/server/internal/emotion"
 	"github.com/mochi-ai/server/internal/life"
 	"github.com/mochi-ai/server/internal/models"
+	"github.com/mochi-ai/server/internal/tools"
 	"github.com/mochi-ai/server/pkg/ai"
 )
 
 const proactiveCountPrefix = "mochi:proactive:count:"
 
 type Scheduler struct {
-	db      *gorm.DB
-	rdb     *redis.Client
-	ai      *ai.Provider
-	bond    *bond.Service
-	cfg     config.CompanionConfig
+	db          *gorm.DB
+	rdb         *redis.Client
+	ai          *ai.Provider
+	bond        *bond.Service
+	cfg         config.CompanionConfig
+	toolsSvc    *tools.Service
+	toolsCfg    config.ToolsConfig
 	broadcaster life.StateBroadcaster
-	done    chan struct{}
+	done        chan struct{}
 }
 
-func NewScheduler(db *gorm.DB, rdb *redis.Client, aiProvider *ai.Provider, bondSvc *bond.Service, cfg config.CompanionConfig, hub life.StateBroadcaster) *Scheduler {
+func NewScheduler(db *gorm.DB, rdb *redis.Client, aiProvider *ai.Provider, bondSvc *bond.Service, cfg config.CompanionConfig, hub life.StateBroadcaster, toolsSvc *tools.Service, toolsCfg config.ToolsConfig) *Scheduler {
 	return &Scheduler{
 		db:          db,
 		rdb:         rdb,
 		ai:          aiProvider,
 		bond:        bondSvc,
 		cfg:         cfg,
+		toolsSvc:    toolsSvc,
+		toolsCfg:    toolsCfg,
 		broadcaster: hub,
 		done:        make(chan struct{}),
 	}
 }
 
 func (s *Scheduler) Start() {
+	if s.toolsSvc != nil && s.toolsSvc.Enabled() {
+		tickSec := s.toolsCfg.ReminderTickSeconds
+		if tickSec <= 0 {
+			tickSec = 60
+		}
+		reminderTicker := time.NewTicker(time.Duration(tickSec) * time.Second)
+		go func() {
+			for {
+				select {
+				case <-reminderTicker.C:
+					s.scanDueReminders()
+				case <-s.done:
+					reminderTicker.Stop()
+					return
+				}
+			}
+		}()
+		log.Printf("[Companion] reminder tick started (every %ds)", tickSec)
+	}
+
 	if !s.cfg.ProactiveEnabled {
 		log.Println("[Companion] proactive disabled")
 		return
@@ -81,6 +106,9 @@ func (s *Scheduler) scanAll() {
 }
 
 func (s *Scheduler) scanPet(ctx context.Context, pet models.Pet) {
+	if !pet.IsAlive || pet.LifeStage == "departed" {
+		return
+	}
 	if !s.canSendToday(ctx, pet.ID) {
 		return
 	}
@@ -97,13 +125,16 @@ func (s *Scheduler) scanPet(ctx context.Context, pet models.Pet) {
 		return
 	}
 
-	msg, err := s.generateMessage(ctx, pet, bondProfile, state, trigger, memorySnippet)
-	if err != nil || msg == "" {
+	var user models.User
+	if s.db.First(&user, pet.UserID).Error != nil {
+		return
+	}
+	if !user.ProactiveEnabled && !s.isFollowUpTrigger(trigger) {
 		return
 	}
 
-	var user models.User
-	if s.db.First(&user, pet.UserID).Error != nil {
+	msg, err := s.generateMessage(ctx, pet, bondProfile, state, trigger, memorySnippet)
+	if err != nil || msg == "" {
 		return
 	}
 
@@ -112,6 +143,10 @@ func (s *Scheduler) scanPet(ctx context.Context, pet models.Pet) {
 	}
 	s.incrementDailyCount(ctx, pet.ID)
 	log.Printf("[Companion] proactive sent pet=%d trigger=%s", pet.ID, trigger)
+}
+
+func (s *Scheduler) isFollowUpTrigger(trigger triggerKind) bool {
+	return trigger == triggerEmotionFollowUp || trigger == triggerEventFollowUp
 }
 
 type triggerKind string
@@ -247,4 +282,53 @@ func orDefault(s, def string) string {
 		return def
 	}
 	return s
+}
+
+func (s *Scheduler) scanDueReminders() {
+	if s.toolsSvc == nil || !s.toolsSvc.Enabled() || s.inQuietHours() {
+		return
+	}
+	ctx := context.Background()
+	due, err := s.toolsSvc.DueReminders(ctx, time.Now())
+	if err != nil || len(due) == 0 {
+		return
+	}
+	for _, r := range due {
+		var pet models.Pet
+		if s.db.First(&pet, r.PetID).Error != nil {
+			continue
+		}
+		if !pet.IsAlive || pet.LifeStage == "departed" {
+			_ = s.toolsSvc.MarkReminderFired(ctx, r.ID)
+			continue
+		}
+		var user models.User
+		if s.db.First(&user, r.UserID).Error != nil {
+			continue
+		}
+
+		msg := s.reminderMessage(ctx, pet, r)
+		if s.broadcaster != nil && msg != "" {
+			s.broadcaster.SendProactive(user.ID, msg, "happy")
+		}
+		_ = s.toolsSvc.MarkReminderFired(ctx, r.ID)
+		log.Printf("[Companion] reminder fired id=%d pet=%d", r.ID, r.PetID)
+	}
+}
+
+func (s *Scheduler) reminderMessage(ctx context.Context, pet models.Pet, r models.Reminder) string {
+	if s.ai != nil {
+		prompt := fmt.Sprintf(`你是桌宠 %s，提醒主人一件事（50字以内，口语，第一人称，适合语音朗读）。
+提醒内容：%s
+要求：自然亲切，像伙伴轻轻叫你，不要像系统通知。只输出正文。`, pet.Name, r.Title)
+		resp, err := s.ai.Chat(ctx, ai.ChatRequest{
+			Messages:    []ai.Message{{Role: "user", Content: prompt}},
+			Temperature: 0.85,
+			MaxTokens:   80,
+		})
+		if err == nil && strings.TrimSpace(resp.Content) != "" {
+			return strings.TrimSpace(resp.Content)
+		}
+	}
+	return fmt.Sprintf("到啦~ 记得%s哦", r.Title)
 }

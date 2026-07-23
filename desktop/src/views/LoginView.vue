@@ -19,6 +19,7 @@ async function submit() {
     if (mode.value === 'login') {
       await auth.doLogin(email.value, password.value)
     } else {
+      sessionStorage.setItem('mochi_pending_pet_name', petName.value.trim() || 'Mochi')
       await auth.doRegister(email.value, password.value, petName.value)
     }
     emit('success')

@@ -253,7 +253,13 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-export function canRoam(_energy: number, isChatOpen: boolean, isDragging: boolean): boolean {
-  if (isChatOpen || isDragging) return false
+export function canRoam(
+  _energy: number,
+  isChatOpen: boolean,
+  isDragging: boolean,
+  settingsOpen = false,
+  voiceActive = false,
+): boolean {
+  if (isChatOpen || isDragging || settingsOpen || voiceActive) return false
   return true
 }

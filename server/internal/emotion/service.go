@@ -54,7 +54,8 @@ func QuickDetect(message string) Hint {
 		h.Intent = "joke"
 		h.Temperature = 0.9
 	}
-	if strings.Contains(msg, "提醒") || strings.Contains(msg, "记得") || strings.Contains(msg, "明天") {
+	if strings.Contains(msg, "提醒") || strings.Contains(msg, "记得") || strings.Contains(msg, "明天") ||
+		strings.Contains(msg, "今天") || strings.Contains(msg, "今晚") {
 		h.Intent = "plan"
 	}
 	if strings.Contains(msg, "？") || strings.Contains(msg, "?") || strings.Contains(msg, "怎么") || strings.Contains(msg, "什么") {
@@ -159,17 +160,24 @@ func MergeHint(cached, quick Hint, currentMsg string) Hint {
 	if quick.NeedsEmpathy || quick.Intent == "vent" {
 		return quick
 	}
+	merged := quick
 	if cached.UserMood != "" && cached.UserMood != "neutral" {
-		merged := cached
-		if quick.Intent != "chat" {
-			merged.Intent = quick.Intent
-		}
-		if quick.Temperature != 0 {
-			merged.Temperature = quick.Temperature
-		}
-		return merged
+		merged.UserMood = cached.UserMood
 	}
-	return quick
+	if cached.Topic != "" && merged.Topic == "" {
+		merged.Topic = cached.Topic
+	}
+	if quick.Intent == "chat" && cached.Intent != "" && cached.Intent != "vent" {
+		merged.Intent = cached.Intent
+	}
+	if quick.Intent != "chat" {
+		merged.Intent = quick.Intent
+	}
+	merged.NeedsEmpathy = false
+	if merged.Temperature == 0 {
+		merged.Temperature = 0.85
+	}
+	return merged
 }
 
 func IsNegativeMood(mood string) bool {
