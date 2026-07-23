@@ -1,7 +1,7 @@
 import { getApiBase } from '@/config'
 
-const INTERVAL_MS = 3000
-const MAX_ATTEMPTS = 30
+const INTERVAL_MS = 5000
+const MAX_ATTEMPTS = 120
 const TIMEOUT_MS = 3000
 
 function healthUrl(): string {
@@ -55,6 +55,7 @@ class HealthMonitor {
     if (!this.timer) return
     if (this.attempts >= MAX_ATTEMPTS) {
       this.stop()
+      this.onTick?.(this.attempts, false)
       return
     }
     this.attempts++
@@ -65,6 +66,17 @@ class HealthMonitor {
       this.stop()
       recovered?.()
     }
+  }
+
+  /** 手动触发一次探活（如用户点击宠物重试） */
+  async poke(onRecovered: RecoveredHandler) {
+    const up = await pingHealth()
+    if (up) {
+      this.stop()
+      onRecovered()
+      return true
+    }
+    return false
   }
 }
 

@@ -19,6 +19,20 @@ export const usePetStore = defineStore('pet', () => {
   const isChatOpen = ref(false)
   const bubbleText = ref('')
   const showBubble = ref(false)
+  const bootFailed = ref(false)
+  let retryBootFn: (() => void) | null = null
+
+  function registerBootRetry(fn: () => void) {
+    retryBootFn = fn
+  }
+
+  function retryBoot() {
+    if (retryBootFn) retryBootFn()
+  }
+
+  function setBootFailed(failed: boolean) {
+    bootFailed.value = failed
+  }
 
   const moodEmoji = computed(() => {
     const mood = lifeState.value.mood
@@ -42,6 +56,15 @@ export const usePetStore = defineStore('pet', () => {
     setTimeout(() => {
       showBubble.value = false
     }, duration)
+  }
+
+  function showPersistentBubble(text: string) {
+    bubbleText.value = text
+    showBubble.value = true
+  }
+
+  function hideSpeechBubble() {
+    showBubble.value = false
   }
 
   function syncAnimationFromState() {
@@ -73,12 +96,18 @@ export const usePetStore = defineStore('pet', () => {
     isChatOpen,
     bubbleText,
     showBubble,
+    bootFailed,
     moodEmoji,
     updateLifeState,
     setAnimation,
     setFacing,
     setRoaming,
     showSpeechBubble,
+    showPersistentBubble,
+    hideSpeechBubble,
+    registerBootRetry,
+    retryBoot,
+    setBootFailed,
     syncAnimationFromState,
   }
 })

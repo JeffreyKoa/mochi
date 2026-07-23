@@ -12,6 +12,9 @@ export class WSManager {
   connect() {
     const url = getWSUrl()
     if (!url.includes('token=') || url.endsWith('token=')) return
+    if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) {
+      return
+    }
 
     this.ws = new WebSocket(url)
 

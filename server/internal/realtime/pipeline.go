@@ -142,7 +142,15 @@ func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text
 
 	if text == "" {
 		turnStarted = true
-		p.speakReply(ctx, sess, send, "没有听清楚，可以再说一次吗？")
+		msg := "没有听清楚，可以再说一次吗？"
+		if !withVoice {
+			msg = "你好像还没输入内容？"
+		}
+		if withVoice {
+			p.speakReply(ctx, sess, send, msg)
+		} else {
+			_ = send.Send(MsgLLMDone, LLMDone{Text: msg})
+		}
 		return
 	}
 
@@ -477,7 +485,7 @@ func (p *Pipeline) speakAudio(ctx context.Context, sess *Session, send Sender, r
 			return false
 		}
 		log.Printf("[realtime] tts synthesize error session=%s: %v", sess.ID, err)
-		p.failTurn(ctx, sess, send, "TTS_FAILED", fmt.Sprintf("语音合成失败: %v", err))
+		p.failTurn(ctx, sess, send, "TTS_FAILED", "语音播放失败，请稍后再试")
 		return false
 	}
 
@@ -488,7 +496,7 @@ func (p *Pipeline) speakAudio(ctx context.Context, sess *Session, send Sender, r
 
 	if chunks == 0 {
 		log.Printf("[realtime] tts returned no audio session=%s", sess.ID)
-		p.failTurn(ctx, sess, send, "TTS_FAILED", "语音合成未返回音频")
+		p.failTurn(ctx, sess, send, "TTS_FAILED", "语音播放失败，请稍后再试")
 		return false
 	}
 	log.Printf("[realtime] tts sent %d chunks session=%s", chunks, sess.ID)

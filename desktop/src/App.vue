@@ -31,6 +31,17 @@ const isBrowserDev = computed(() => !isTauri())
 const isChatWindow = computed(() => winLabel.value === 'chat')
 const isPetShell = computed(() => isBrowserDev.value || isPetWindowLabel(winLabel.value))
 
+function friendlyLoadError(e: unknown): string {
+  if (e instanceof ApiError) {
+    if (e.kind === 'network') return '网络有点卡，点我一下重试~'
+    if (e.status === 503 || e.status === 500) return '后端有点忙，点我一下重试~'
+  }
+  if (e instanceof Error && (e.message.includes('500') || e.message.includes('503') || e.message.includes('重试'))) {
+    return '连接不太稳，点我一下重试~'
+  }
+  return e instanceof Error ? e.message : '加载失败，点我一下重试~'
+}
+
 function setupWs() {
   if (!isPetShell.value || isChatWindow.value) return
   if (!wsInitialized.value) {
@@ -51,15 +62,18 @@ function setupWs() {
 
 function startHealthWatch() {
   if (healthMonitor.watching) return
+  pet.setBootFailed(true)
+  pet.showPersistentBubble('网络有点卡，我在自动重连…')
   healthMonitor.start(
     () => {
       loadError.value = ''
+      pet.hideSpeechBubble()
       pet.showSpeechBubble('连上了~')
       void loadUserData()
     },
     (_attempt, up) => {
-      if (!up && !loadError.value.includes('重试')) {
-        loadError.value = '无法连接后端，Mochi 在等你…'
+      if (!up && _attempt >= 120) {
+        pet.showPersistentBubble('还是连不上，点我一下再试~')
       }
     },
   )
@@ -68,11 +82,27 @@ function startHealthWatch() {
 function handleLoadFailure(e: unknown) {
   if (e instanceof AuthError) {
     healthMonitor.stop()
+    pet.setBootFailed(false)
+    pet.hideSpeechBubble()
     auth.logout()
     return
   }
-  loadError.value = e instanceof Error ? e.message : '加载数据失败'
+  const msg = friendlyLoadError(e)
+  loadError.value = msg
+  pet.setBootFailed(true)
+  pet.showPersistentBubble(msg)
   if (e instanceof ApiError && (e.kind === 'network' || e.kind === 'server')) {
+    startHealthWatch()
+  }
+}
+
+async function retryLoadUserData() {
+  pet.showSpeechBubble('再试一次~', 2000)
+  const ok = await healthMonitor.poke(() => {
+    loadError.value = ''
+    void loadUserData()
+  })
+  if (!ok) {
     startHealthWatch()
   }
 }
@@ -87,24 +117,33 @@ async function loadUserData() {
     pet.petName = petData.name
     if (petData.life_state) {
       pet.updateLifeState(petData.life_state)
-      pet.syncAnimationFromState()
     } else {
-      const state = await getLifeState()
-      pet.updateLifeState(state)
-      pet.syncAnimationFromState()
+      try {
+        const state = await getLifeState()
+        pet.updateLifeState(state as Parameters<typeof pet.updateLifeState>[0])
+      } catch (e) {
+        console.warn('[load] life state optional, skipped', e)
+      }
     }
+    pet.syncAnimationFromState()
 
-    const history = await getChatHistory()
-    rt.loadHistory(
-      (history ?? []).map((m: { role: string; content: string }) => ({
-        role: m.role as 'user' | 'assistant',
-        content: m.content,
-      })),
-    )
+    try {
+      const history = await getChatHistory()
+      rt.loadHistory(
+        (history ?? []).map((m: { role: string; content: string }) => ({
+          role: m.role as 'user' | 'assistant',
+          content: m.content,
+        })),
+      )
+    } catch (e) {
+      console.warn('[load] chat history optional, skipped', e)
+    }
 
     setupWs()
     healthMonitor.stop()
     loadError.value = ''
+    pet.setBootFailed(false)
+    pet.hideSpeechBubble()
   } catch (e) {
     console.error('load user data failed', e)
     handleLoadFailure(e)
@@ -121,6 +160,7 @@ onMounted(async () => {
   }
 
   ready.value = true
+  pet.registerBootRetry(() => void retryLoadUserData())
 
   if (isChatWindow.value) {
     auth.syncFromStorage()

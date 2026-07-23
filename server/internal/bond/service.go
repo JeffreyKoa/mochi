@@ -73,7 +73,7 @@ func (s *Service) RecordChatTurn(ctx context.Context, petID uint64, needsEmpathy
 	}
 
 	bond.UpdatedAt = time.Now()
-	return s.db.WithContext(ctx).Save(&bond).Error
+	return s.saveBond(ctx, bond, "rapport_level", "trust_level", "total_turns", "last_chat_day", "streak_days", "updated_at")
 }
 
 func (s *Service) UpdateMood(ctx context.Context, petID uint64, mood, intent string) error {
@@ -85,7 +85,7 @@ func (s *Service) UpdateMood(ctx context.Context, petID uint64, mood, intent str
 	bond.LastIntent = intent
 	bond.LastMoodAt = time.Now()
 	bond.UpdatedAt = time.Now()
-	return s.db.WithContext(ctx).Save(&bond).Error
+	return s.saveBond(ctx, bond, "last_mood_tag", "last_intent", "last_mood_at", "updated_at")
 }
 
 func (s *Service) DecayInactive(ctx context.Context, petID uint64, hoursSince float64) error {
@@ -99,7 +99,7 @@ func (s *Service) DecayInactive(ctx context.Context, petID uint64, hoursSince fl
 	if bond.RapportLevel > 0 {
 		bond.RapportLevel--
 		bond.UpdatedAt = time.Now()
-		return s.db.WithContext(ctx).Save(&bond).Error
+		return s.saveBond(ctx, bond, "rapport_level", "updated_at")
 	}
 	return nil
 }
@@ -123,7 +123,7 @@ func (s *Service) MergeNicknames(ctx context.Context, petID uint64, userCallsPet
 	data, _ := json.Marshal(nn)
 	bond.Nicknames = data
 	bond.UpdatedAt = time.Now()
-	return s.db.WithContext(ctx).Save(&bond).Error
+	return s.saveBond(ctx, bond, "nicknames", "updated_at")
 }
 
 func (s *Service) AddInsideJoke(ctx context.Context, petID uint64, content string) error {
@@ -143,7 +143,14 @@ func (s *Service) AddInsideJoke(ctx context.Context, petID uint64, content strin
 	data, _ := json.Marshal(jokes)
 	bond.InsideJokes = data
 	bond.UpdatedAt = time.Now()
-	return s.db.WithContext(ctx).Save(&bond).Error
+	return s.saveBond(ctx, bond, "inside_jokes", "updated_at")
+}
+
+func (s *Service) saveBond(ctx context.Context, bond models.BondProfile, fields ...string) error {
+	if len(fields) == 0 {
+		return s.db.WithContext(ctx).Save(&bond).Error
+	}
+	return s.db.WithContext(ctx).Model(&bond).Select(fields).Updates(&bond).Error
 }
 
 func ParseNicknames(raw []byte) models.BondNicknames {

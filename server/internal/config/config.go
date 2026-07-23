@@ -17,6 +17,7 @@ type Config struct {
 	AI       AIConfig       `yaml:"ai"`
 	Client   ClientConfig   `yaml:"client"`
 	Realtime RealtimeConfig `yaml:"realtime"`
+	Companion CompanionConfig `yaml:"companion"`
 }
 
 type ServerConfig struct {
@@ -111,8 +112,17 @@ type RealtimeThinkingFiller struct {
 	Phrases     []string `yaml:"phrases"`
 }
 
+type CompanionConfig struct {
+	ProactiveEnabled   bool  `yaml:"proactive_enabled"`
+	MaxDailyProactive  int   `yaml:"max_daily_proactive"`
+	QuietHours         []int `yaml:"quiet_hours"`
+	FollowUpEnabled    bool  `yaml:"follow_up_enabled"`
+	MorningGreeting    bool  `yaml:"morning_greeting"`
+	EveningGreeting    bool  `yaml:"evening_greeting"`
+}
+
 func (c *Config) MySQLDSN() string {
-	return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
+	return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local&timeout=10s&readTimeout=30s&writeTimeout=30s",
 		c.Database.User, c.Database.Password, c.Database.Host, c.Database.Port, c.Database.Name)
 }
 
@@ -183,6 +193,16 @@ func (c *Config) applyDefaults() {
 		c.Client.APIBase = fmt.Sprintf("http://localhost:%d", c.Server.Port)
 	}
 	c.Realtime.applyDefaults()
+	c.Companion.applyDefaults()
+}
+
+func (c *CompanionConfig) applyDefaults() {
+	if c.MaxDailyProactive == 0 {
+		c.MaxDailyProactive = 3
+	}
+	if len(c.QuietHours) == 0 {
+		c.QuietHours = []int{23, 8}
+	}
 }
 
 func (r *RealtimeConfig) applyDefaults() {

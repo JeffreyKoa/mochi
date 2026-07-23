@@ -12,6 +12,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/mochi-ai/server/internal/bond"
+	"github.com/mochi-ai/server/internal/emotion"
 	"github.com/mochi-ai/server/internal/life"
 	"github.com/mochi-ai/server/internal/memory"
 	"github.com/mochi-ai/server/internal/models"
@@ -19,21 +21,40 @@ import (
 	"github.com/mochi-ai/server/pkg/ai"
 )
 
+type chatBuildResult struct {
+	pet         *models.Pet
+	messages    []ai.Message
+	temperature float64
+	emotionHint emotion.Hint
+}
+
 type Service struct {
-	db     *gorm.DB
-	ai     *ai.Provider
-	memory *memory.Service
-	life   *life.Service
+	db      *gorm.DB
+	ai      *ai.Provider
+	memory  *memory.Service
+	life    *life.Service
+	bond    *bond.Service
+	emotion *emotion.Service
 }
 
-func NewService(db *gorm.DB, aiProvider *ai.Provider, memSvc *memory.Service, lifeSvc *life.Service) *Service {
-	return &Service{db: db, ai: aiProvider, memory: memSvc, life: lifeSvc}
+func NewService(db *gorm.DB, aiProvider *ai.Provider, memSvc *memory.Service, lifeSvc *life.Service, bondSvc *bond.Service, emotionSvc *emotion.Service) *Service {
+	return &Service{
+		db:      db,
+		ai:      aiProvider,
+		memory:  memSvc,
+		life:    lifeSvc,
+		bond:    bondSvc,
+		emotion: emotionSvc,
+	}
 }
 
-func (s *Service) GetPetByUser(userID uint64) (*models.Pet, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+func (s *Service) GetPetByUser(ctx context.Context, userID uint64) (*models.Pet, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	dbCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	return s.getPetByUser(ctx, userID)
+	return s.getPetByUser(dbCtx, userID)
 }
 
 func (s *Service) getPetByUser(ctx context.Context, userID uint64) (*models.Pet, error) {
@@ -54,15 +75,14 @@ func (s *Service) GetHistory(ctx context.Context, petID uint64, limit int) ([]mo
 	if err != nil {
 		return nil, err
 	}
-	// reverse to chronological order
 	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
 		messages[i], messages[j] = messages[j], messages[i]
 	}
 	return messages, nil
 }
 
-func (s *Service) buildChatMessages(_ context.Context, userID uint64, message string) (*models.Pet, []ai.Message, error) {
-	dbCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+func (s *Service) buildChatMessages(ctx context.Context, userID uint64, message string) (*chatBuildResult, error) {
+	dbCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
 	var pet *models.Pet
@@ -78,13 +98,19 @@ func (s *Service) buildChatMessages(_ context.Context, userID uint64, message st
 	}
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil, fmt.Errorf("pet not found")
+			return nil, fmt.Errorf("pet not found")
 		}
-		return nil, nil, fmt.Errorf("load pet: %w", err)
+		return nil, fmt.Errorf("load pet: %w", err)
 	}
 
 	shortHistory, _ := s.memory.GetShortTerm(dbCtx, pet.ID)
-	memories, _ := s.memory.RetrieveRelevant(dbCtx, pet.ID, message, 5)
+
+	cached := s.emotion.GetCached(dbCtx, pet.ID)
+	quick := emotion.QuickDetect(message)
+	hint := emotion.MergeHint(cached, quick, message)
+
+	memories, _ := s.memory.RetrieveRelevant(dbCtx, pet.ID, message, 5, hint.UserMood)
+	bondProfile, _ := s.bond.GetOrCreate(dbCtx, pet.ID)
 
 	var personality models.Personality
 	_ = json.Unmarshal(pet.PersonalityJSON, &personality)
@@ -94,21 +120,34 @@ func (s *Service) buildChatMessages(_ context.Context, userID uint64, message st
 		state = *pet.LifeState
 	}
 
-	messages := prompt.BuildChatPrompt(pet.Name, personality, state, memories, shortHistory)
+	messages := prompt.BuildCompanionPrompt(prompt.CompanionContext{
+		PetName:      pet.Name,
+		Personality:  personality,
+		State:        state,
+		Bond:         bondProfile,
+		Memories:     memories,
+		ShortHistory: shortHistory,
+		Emotion:      hint,
+	})
 	messages = append(messages, ai.Message{Role: "user", Content: message})
-	return pet, messages, nil
+
+	return &chatBuildResult{
+		pet:         pet,
+		messages:    messages,
+		temperature: hint.Temperature,
+		emotionHint: hint,
+	}, nil
 }
 
-// StreamMessage streams an AI reply token-by-token (realtime voice D5).
 func (s *Service) StreamMessage(ctx context.Context, userID uint64, message string, onToken func(token string)) (string, error) {
-	pet, messages, err := s.buildChatMessages(ctx, userID, message)
+	built, err := s.buildChatMessages(ctx, userID, message)
 	if err != nil {
 		return "", err
 	}
 
 	chunkChan, err := s.ai.ChatStream(ctx, ai.ChatRequest{
-		Messages:    messages,
-		Temperature: 0.8,
+		Messages:    built.messages,
+		Temperature: built.temperature,
 	})
 	if err != nil {
 		return "", err
@@ -125,7 +164,7 @@ func (s *Service) StreamMessage(ctx context.Context, userID uint64, message stri
 			}
 			if chunk.Done {
 				reply := strings.TrimSpace(fullResponse.String())
-				go s.postProcess(context.Background(), pet.ID, message, reply)
+				go s.postProcess(context.Background(), built.pet.ID, message, reply, built.emotionHint)
 				return reply, nil
 			}
 			if chunk.Content == "" {
@@ -140,7 +179,7 @@ func (s *Service) StreamMessage(ctx context.Context, userID uint64, message stri
 }
 
 func (s *Service) SendMessageStream(c *gin.Context, userID uint64, message string) {
-	pet, err := s.GetPetByUser(userID)
+	built, err := s.buildChatMessages(c.Request.Context(), userID, message)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "pet not found"})
 		return
@@ -148,28 +187,14 @@ func (s *Service) SendMessageStream(c *gin.Context, userID uint64, message strin
 
 	ctx := c.Request.Context()
 
-	shortHistory, _ := s.memory.GetShortTerm(ctx, pet.ID)
-	memories, _ := s.memory.RetrieveRelevant(ctx, pet.ID, message, 5)
-
-	var personality models.Personality
-	_ = json.Unmarshal(pet.PersonalityJSON, &personality)
-
-	state := models.LifeState{Mood: 70, Love: 60, Hungry: 30, Energy: 80}
-	if pet.LifeState != nil {
-		state = *pet.LifeState
-	}
-
-	messages := prompt.BuildChatPrompt(pet.Name, personality, state, memories, shortHistory)
-	messages = append(messages, ai.Message{Role: "user", Content: message})
-
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 
 	chunkChan, err := s.ai.ChatStream(ctx, ai.ChatRequest{
-		Messages:    messages,
-		Temperature: 0.8,
+		Messages:    built.messages,
+		Temperature: built.temperature,
 	})
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
@@ -184,7 +209,7 @@ func (s *Service) SendMessageStream(c *gin.Context, userID uint64, message strin
 				return false
 			}
 			if chunk.Done {
-				go s.postProcess(context.Background(), pet.ID, message, fullResponse)
+				go s.postProcess(context.Background(), built.pet.ID, message, fullResponse, built.emotionHint)
 				fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]interface{}{"content": "", "done": true}))
 				return false
 			}
@@ -197,7 +222,7 @@ func (s *Service) SendMessageStream(c *gin.Context, userID uint64, message strin
 	})
 }
 
-func (s *Service) postProcess(ctx context.Context, petID uint64, userMsg, petReply string) {
+func (s *Service) postProcess(ctx context.Context, petID uint64, userMsg, petReply string, quickHint emotion.Hint) {
 	s.db.Create(&models.ChatMessage{PetID: petID, Role: "user", Content: userMsg})
 	s.db.Create(&models.ChatMessage{PetID: petID, Role: "assistant", Content: petReply})
 
@@ -207,26 +232,51 @@ func (s *Service) postProcess(ctx context.Context, petID uint64, userMsg, petRep
 	extractPrompt := prompt.MemoryExtractPrompt(userMsg, petReply)
 	go s.memory.ExtractAndStore(ctx, petID, userMsg, petReply, extractPrompt)
 
+	_ = s.bond.RecordChatTurn(ctx, petID, quickHint.NeedsEmpathy)
+	_ = s.bond.UpdateMood(ctx, petID, quickHint.UserMood, quickHint.Intent)
+
+	shortHistory, _ := s.memory.GetShortTerm(ctx, petID)
+	s.emotion.ClassifyAsync(ctx, petID, userMsg, petReply, shortHistory)
+
+	s.applyBondFromMessage(ctx, petID, userMsg, petReply)
+
 	s.life.Interact(ctx, petID, "chat")
 }
 
-// CompleteMessage 非流式完整回复（语音对话使用）
+func (s *Service) applyBondFromMessage(ctx context.Context, petID uint64, userMsg, petReply string) {
+	if strings.Contains(userMsg, "叫你") || strings.Contains(userMsg, "称呼") {
+		for _, part := range []string{"叫你", "称呼你"} {
+			if idx := strings.Index(userMsg, part); idx >= 0 {
+				rest := strings.TrimSpace(userMsg[idx+len(part):])
+				rest = strings.Trim(rest, "「」\"'吧了。！")
+				if rest != "" && len([]rune(rest)) <= 8 {
+					_ = s.bond.MergeNicknames(ctx, petID, rest, "")
+				}
+			}
+		}
+	}
+	if strings.Contains(userMsg, "哈哈") && len([]rune(userMsg)) < 30 {
+		_ = s.bond.AddInsideJoke(ctx, petID, userMsg)
+	}
+	_ = petReply
+}
+
 func (s *Service) CompleteMessage(ctx context.Context, userID uint64, message string) (string, error) {
-	pet, messages, err := s.buildChatMessages(ctx, userID, message)
+	built, err := s.buildChatMessages(ctx, userID, message)
 	if err != nil {
 		return "", err
 	}
 
 	resp, err := s.ai.Chat(ctx, ai.ChatRequest{
-		Messages:    messages,
-		Temperature: 0.8,
+		Messages:    built.messages,
+		Temperature: built.temperature,
 	})
 	if err != nil {
 		return "", err
 	}
 
 	reply := strings.TrimSpace(resp.Content)
-	go s.postProcess(context.Background(), pet.ID, message, reply)
+	go s.postProcess(context.Background(), built.pet.ID, message, reply, built.emotionHint)
 	return reply, nil
 }
 

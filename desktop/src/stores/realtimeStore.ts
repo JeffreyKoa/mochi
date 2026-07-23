@@ -326,9 +326,29 @@ export const useRealtimeStore = defineStore('realtime', () => {
     await speechVad.init()
   }
 
+  async function pauseVoiceForText() {
+    if (!recording) return
+    clearSilenceWatch()
+    clearTtsWatchdog()
+    ttsPlayer.stop()
+    submitLock = false
+    micLevel.value = 0
+    heardSpeech = false
+    resting.value = false
+    partialText.value = ''
+    speechVad?.destroy()
+    speechVad = null
+    recording = false
+    talking.value = false
+    await capture.stop()
+    setPhase('idle')
+  }
+
   async function sendTextMessage(text: string) {
     const trimmed = text.trim()
     if (!trimmed || textSending) return
+
+    await pauseVoiceForText()
 
     await connect()
     if (!realtimeSession.isOpen()) {
@@ -479,6 +499,10 @@ export const useRealtimeStore = defineStore('realtime', () => {
         }
         break
       case 'asr_final':
+        if (textSending) {
+          partialText.value = ''
+          break
+        }
         commitUserMessage(ev.text, 'voice')
         partialText.value = ''
         replyText.value = ''
@@ -499,6 +523,8 @@ export const useRealtimeStore = defineStore('realtime', () => {
           if (phase !== 'agent_speaking') {
             statusText.value = 'Mochi 正在回复...'
           }
+        } else if (textSending) {
+          finishTextTurn()
         } else {
           statusText.value = 'Mochi 已回复'
         }
@@ -510,7 +536,12 @@ export const useRealtimeStore = defineStore('realtime', () => {
         ttsPlayer.enqueue(ev.pcm, ev.format, markPlaybackStart)
         break
       case 'tts_done':
-        finishTextTurn()
+        if (phase !== 'resting' && phase !== 'idle') {
+          finishTextTurn()
+        } else {
+          clearTtsWatchdog()
+          textSending = false
+        }
         resetTurnTiming()
         break
       case 'turn_metrics':
@@ -543,8 +574,21 @@ export const useRealtimeStore = defineStore('realtime', () => {
         ttsPlayer.stop()
         clearTtsWatchdog()
         textSending = false
+        replyText.value = ''
+        if (ev.code === 'TTS_FAILED') {
+          const hasAssistant = messages.value.some((m) => m.role === 'assistant')
+          if (recording) {
+            enterResting()
+            statusText.value = hasAssistant
+              ? '语音播放失败了，回复已在上面~'
+              : '语音合成暂时不可用，请稍后再试'
+          } else {
+            setPhase('idle')
+            statusText.value = hasAssistant ? 'Mochi 已回复（语音不可用）' : '语音合成暂时不可用'
+          }
+          break
+        }
         if (ev.code !== 'ASR_FAILED') {
-          replyText.value = ev.message
           commitAssistantMessage(ev.message)
         }
         if (recording) {

@@ -83,7 +83,17 @@ func (c *TTSClient) StartSession(ctx context.Context, onAudio func([]byte)) (*TT
 	}
 
 	dialer := websocket.Dialer{HandshakeTimeout: 30 * time.Second}
-	conn, _, err := dialer.DialContext(dialCtx, c.wsURL, header)
+	var conn *websocket.Conn
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		conn, _, err = dialer.DialContext(dialCtx, c.wsURL, header)
+		if err == nil {
+			break
+		}
+		if attempt < 2 {
+			time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("tts dial: %w", err)
 	}

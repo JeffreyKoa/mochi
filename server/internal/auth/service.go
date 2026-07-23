@@ -82,7 +82,19 @@ func (s *Service) Register(in RegisterInput) (string, *models.User, error) {
 			Energy:          80,
 			LastInteraction: time.Now(),
 		}
-		return tx.Create(&state).Error
+		if err := tx.Create(&state).Error; err != nil {
+			return err
+		}
+		bondProfile := models.BondProfile{
+			PetID:        pet.ID,
+			RapportLevel: 20,
+			TrustLevel:   15,
+			SharedTopics: []byte("[]"),
+			Nicknames:    []byte("{}"),
+			InsideJokes:  []byte("[]"),
+			UpdatedAt:    time.Now(),
+		}
+		return tx.Create(&bondProfile).Error
 	})
 	if err != nil {
 		return "", nil, err

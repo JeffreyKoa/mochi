@@ -249,6 +249,10 @@ function openChatFromMenu() {
 
 async function onPetClick() {
   if (didDragWindow.value || suppressClick) return
+  if (pet.bootFailed) {
+    pet.retryBoot()
+    return
+  }
   if (clickTimer) clearTimeout(clickTimer)
   clickTimer = setTimeout(async () => {
     clickTimer = null
