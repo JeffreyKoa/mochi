@@ -13,11 +13,16 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/mochi-ai/server/internal/bond"
+	"github.com/mochi-ai/server/internal/brief"
+	"github.com/mochi-ai/server/internal/config"
 	"github.com/mochi-ai/server/internal/emotion"
 	"github.com/mochi-ai/server/internal/life"
+	"github.com/mochi-ai/server/internal/lifecycle"
 	"github.com/mochi-ai/server/internal/memory"
 	"github.com/mochi-ai/server/internal/models"
 	"github.com/mochi-ai/server/internal/prompt"
+	"github.com/mochi-ai/server/internal/reflection"
+	"github.com/mochi-ai/server/internal/tools"
 	"github.com/mochi-ai/server/pkg/ai"
 )
 
@@ -29,22 +34,32 @@ type chatBuildResult struct {
 }
 
 type Service struct {
-	db      *gorm.DB
-	ai      *ai.Provider
-	memory  *memory.Service
-	life    *life.Service
-	bond    *bond.Service
-	emotion *emotion.Service
+	db         *gorm.DB
+	ai         *ai.Provider
+	memory     *memory.Service
+	life       *life.Service
+	lifecycle  *lifecycle.Service
+	bond       *bond.Service
+	emotion    *emotion.Service
+	brief      *brief.Service
+	reflection *reflection.Service
+	growth     config.GrowthConfig
+	tools      *tools.Orchestrator
 }
 
-func NewService(db *gorm.DB, aiProvider *ai.Provider, memSvc *memory.Service, lifeSvc *life.Service, bondSvc *bond.Service, emotionSvc *emotion.Service) *Service {
+func NewService(db *gorm.DB, aiProvider *ai.Provider, memSvc *memory.Service, lifeSvc *life.Service, lifecycleSvc *lifecycle.Service, bondSvc *bond.Service, emotionSvc *emotion.Service, briefSvc *brief.Service, reflectionSvc *reflection.Service, growthCfg config.GrowthConfig, toolsOrch *tools.Orchestrator) *Service {
 	return &Service{
-		db:      db,
-		ai:      aiProvider,
-		memory:  memSvc,
-		life:    lifeSvc,
-		bond:    bondSvc,
-		emotion: emotionSvc,
+		db:         db,
+		ai:         aiProvider,
+		memory:     memSvc,
+		life:       lifeSvc,
+		lifecycle:  lifecycleSvc,
+		bond:       bondSvc,
+		emotion:    emotionSvc,
+		brief:      briefSvc,
+		reflection: reflectionSvc,
+		growth:     growthCfg,
+		tools:      toolsOrch,
 	}
 }
 
@@ -103,6 +118,11 @@ func (s *Service) buildChatMessages(ctx context.Context, userID uint64, message 
 		return nil, fmt.Errorf("load pet: %w", err)
 	}
 
+	ageInfo, _, _ := s.lifecycle.SyncPet(dbCtx, pet)
+	if !ageInfo.IsAlive || ageInfo.Stage == "departed" {
+		return nil, fmt.Errorf("pet has departed")
+	}
+
 	shortHistory, _ := s.memory.GetShortTerm(dbCtx, pet.ID)
 
 	cached := s.emotion.GetCached(dbCtx, pet.ID)
@@ -112,6 +132,16 @@ func (s *Service) buildChatMessages(ctx context.Context, userID uint64, message 
 	memories, _ := s.memory.RetrieveRelevant(dbCtx, pet.ID, message, 5, hint.UserMood)
 	bondProfile, _ := s.bond.GetOrCreate(dbCtx, pet.ID)
 
+	var toolNote string
+	if s.tools != nil {
+		hr := s.tools.Handle(dbCtx, pet, userID, message, hint, bondProfile)
+		if hr.Ran {
+			toolNote = hr.ToolNote
+		}
+	}
+
+	userBrief, _ := s.brief.GetCompiled(dbCtx, pet.ID)
+
 	var personality models.Personality
 	_ = json.Unmarshal(pet.PersonalityJSON, &personality)
 
@@ -120,14 +150,27 @@ func (s *Service) buildChatMessages(ctx context.Context, userID uint64, message 
 		state = *pet.LifeState
 	}
 
+	memBudget := s.growth.MemoryPromptCharBudget
+	if memBudget <= 0 {
+		memBudget = 400
+	}
+
 	messages := prompt.BuildCompanionPrompt(prompt.CompanionContext{
-		PetName:      pet.Name,
-		Personality:  personality,
-		State:        state,
-		Bond:         bondProfile,
-		Memories:     memories,
-		ShortHistory: shortHistory,
-		Emotion:      hint,
+		PetName:            pet.Name,
+		Personality:        personality,
+		State:              state,
+		Bond:               bondProfile,
+		UserBrief:          userBrief,
+		Memories:           memories,
+		ShortHistory:       shortHistory,
+		Emotion:            hint,
+		Now:                time.Now(),
+		MemoryPromptBudget: memBudget,
+		LifeStage:          ageInfo.Stage,
+		AgeDays:            ageInfo.AgeDays,
+		RemainingDays:      ageInfo.RemainingDays,
+		Species:            pet.Species,
+		ToolNote:           toolNote,
 	})
 	messages = append(messages, ai.Message{Role: "user", Content: message})
 
@@ -239,6 +282,11 @@ func (s *Service) postProcess(ctx context.Context, petID uint64, userMsg, petRep
 	s.emotion.ClassifyAsync(ctx, petID, userMsg, petReply, shortHistory)
 
 	s.applyBondFromMessage(ctx, petID, userMsg, petReply)
+
+	bondProfile, _ := s.bond.GetOrCreate(ctx, petID)
+	if s.reflection != nil {
+		s.reflection.ReflectAsync(ctx, petID, userMsg, petReply, bondProfile, quickHint.NeedsEmpathy)
+	}
 
 	s.life.Interact(ctx, petID, "chat")
 }

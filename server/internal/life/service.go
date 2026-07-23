@@ -110,8 +110,21 @@ func (s *Service) tickAll() {
 }
 
 func (s *Service) tick(state *models.LifeState) {
+	var pet models.Pet
+	hasPet := s.db.First(&pet, state.PetID).Error == nil
+
+	energyDecay := 1
+	if hasPet {
+		switch pet.LifeStage {
+		case "elder", "twilight":
+			energyDecay = 2
+		case "youth", "prime":
+			energyDecay = 0
+		}
+	}
+
 	state.Hungry = clampInt(int(state.Hungry) + 1)
-	state.Energy = clampInt(int(state.Energy) - 1)
+	state.Energy = clampInt(int(state.Energy) - energyDecay)
 	if state.Mood > 0 {
 		state.Mood = clampInt(int(state.Mood) - 1)
 	}

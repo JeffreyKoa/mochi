@@ -1,4 +1,4 @@
-import { getApiBase, initClientConfig, setApiBase } from '@/config'
+import { getApiBase, initClientConfig, setApiBase, getClientConfig } from '@/config'
 
 export type ApiErrorKind = 'network' | 'server' | 'client'
 
@@ -52,7 +52,8 @@ async function request<T = Record<string, unknown>>(url: string, init?: RequestI
     try {
       data = JSON.parse(text) as T
     } catch {
-      throw new ApiError('client', '服务器响应格式错误', res.status)
+      const hint = res.status === 404 ? '接口不存在，请确认后端已更新并重启' : `服务器响应格式错误 (${res.status})`
+      throw new ApiError('client', hint, res.status)
     }
   } else {
     data = {} as T
@@ -99,6 +100,20 @@ export async function getPet() {
   return data
 }
 
+export async function getCatalogSKUs() {
+  const { data } = await request<{ skus?: unknown[] }>(`${getApiBase()}/api/v1/catalog/skus`)
+  return data.skus ?? []
+}
+
+export async function adoptPet(skuId: string, petName?: string) {
+  const { data } = await request(`${getApiBase()}/api/v1/subscribe/adopt`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ sku_id: skuId, pet_name: petName }),
+  })
+  return data
+}
+
 export async function getLifeState() {
   const { data } = await request(`${getApiBase()}/api/v1/life/state`, { headers: authHeaders() })
   return data
@@ -135,6 +150,127 @@ export async function deleteMemory(id: number) {
   })
 }
 
+export async function getBond() {
+  const { data } = await request(`${getApiBase()}/api/v1/bond`, { headers: authHeaders() })
+  return data
+}
+
+export async function getBrief() {
+  const { data } = await request<{
+    brief?: unknown
+    entries?: unknown[]
+    pending_entries?: unknown[]
+    write_approval?: boolean
+  }>(`${getApiBase()}/api/v1/brief`, { headers: authHeaders() })
+  return data
+}
+
+export async function approveBriefEntry(id: number) {
+  const { data } = await request(`${getApiBase()}/api/v1/brief/entries/${id}/approve`, {
+    method: 'POST',
+    headers: authHeaders(),
+  })
+  return data
+}
+
+export async function rejectBriefEntry(id: number) {
+  const { data } = await request(`${getApiBase()}/api/v1/brief/entries/${id}/reject`, {
+    method: 'POST',
+    headers: authHeaders(),
+  })
+  return data
+}
+
+export async function getUserPreferences() {
+  const { data } = await request<{ proactive_enabled?: boolean }>(
+    `${getApiBase()}/api/v1/user/preferences`,
+    { headers: authHeaders() },
+  )
+  return data
+}
+
+export async function updateUserPreferences(body: { proactive_enabled: boolean }) {
+  const { data } = await request(`${getApiBase()}/api/v1/user/preferences`, {
+    method: 'PUT',
+    headers: authHeaders(),
+    body: JSON.stringify(body),
+  })
+  return data
+}
+
+export async function completeOnboarding(body: {
+  user_calls_pet?: string
+  pet_calls_user?: string
+  traits?: string
+  speech_style?: string
+  first_topic?: string
+  first_joke?: string
+}) {
+  const { data } = await request(`${getApiBase()}/api/v1/pet/onboarding`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(body),
+  })
+  return data
+}
+
+export async function updatePetName(name: string) {
+  const { data } = await request(`${getApiBase()}/api/v1/pet/name`, {
+    method: 'PUT',
+    headers: authHeaders(),
+    body: JSON.stringify({ name }),
+  })
+  return data
+}
+
+export interface ReminderItem {
+  id: number
+  title: string
+  fire_at: string
+  status: string
+}
+
+export interface TodoItem {
+  id: number
+  title: string
+  due_at?: string
+  done: boolean
+}
+
+export async function getReminders(status = 'pending') {
+  const { data } = await request<{ reminders?: ReminderItem[] }>(
+    `${getApiBase()}/api/v1/reminders?status=${encodeURIComponent(status)}`,
+    { headers: authHeaders() },
+  )
+  return data.reminders ?? []
+}
+
+export async function cancelReminder(id: number) {
+  const { data } = await request(`${getApiBase()}/api/v1/reminders/${id}`, {
+    method: 'PATCH',
+    headers: authHeaders(),
+    body: JSON.stringify({ status: 'cancelled' }),
+  })
+  return data
+}
+
+export async function getTodos(done = false) {
+  const { data } = await request<{ todos?: TodoItem[] }>(
+    `${getApiBase()}/api/v1/todos?done=${done}`,
+    { headers: authHeaders() },
+  )
+  return data.todos ?? []
+}
+
+export async function completeTodo(id: number) {
+  const { data } = await request(`${getApiBase()}/api/v1/todos/${id}`, {
+    method: 'PATCH',
+    headers: authHeaders(),
+    body: JSON.stringify({ done: true }),
+  })
+  return data
+}
+
 export function getWSUrl(): string {
   const token = getToken()
   const base = getApiBase()
@@ -146,4 +282,4 @@ export function getWSUrl(): string {
   return `${wsBase}/ws?token=${token}`
 }
 
-export { getApiBase, getToken, initClientConfig, setApiBase }
+export { getApiBase, getClientConfig, getToken, initClientConfig, setApiBase }

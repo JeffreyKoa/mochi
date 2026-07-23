@@ -54,47 +54,10 @@ func (s *Service) Register(in RegisterInput) (string, *models.User, error) {
 		return "", nil, err
 	}
 
-	petName := in.PetName
-	if petName == "" {
-		petName = "Mochi"
-	}
-
 	user := models.User{Email: in.Email, Password: string(hash)}
-	personality := `{"traits":"活泼、粘人、好奇心强","speech_style":"可爱但不幼稚，偶尔用语气词"}`
 
 	err = s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&user).Error; err != nil {
-			return err
-		}
-		pet := models.Pet{
-			UserID:          user.ID,
-			Name:            petName,
-			PersonalityJSON: []byte(personality),
-		}
-		if err := tx.Create(&pet).Error; err != nil {
-			return err
-		}
-		state := models.LifeState{
-			PetID:           pet.ID,
-			Mood:            70,
-			Love:            60,
-			Hungry:          30,
-			Energy:          80,
-			LastInteraction: time.Now(),
-		}
-		if err := tx.Create(&state).Error; err != nil {
-			return err
-		}
-		bondProfile := models.BondProfile{
-			PetID:        pet.ID,
-			RapportLevel: 20,
-			TrustLevel:   15,
-			SharedTopics: []byte("[]"),
-			Nicknames:    []byte("{}"),
-			InsideJokes:  []byte("[]"),
-			UpdatedAt:    time.Now(),
-		}
-		return tx.Create(&bondProfile).Error
+		return tx.Create(&user).Error
 	})
 	if err != nil {
 		return "", nil, err
@@ -153,4 +116,21 @@ func (s *Service) generateToken(userID uint64, email string) (string, error) {
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(s.jwtSecret)
+}
+
+type UserPreferences struct {
+	ProactiveEnabled bool `json:"proactive_enabled"`
+}
+
+func (s *Service) GetPreferences(userID uint64) (*UserPreferences, error) {
+	var user models.User
+	if err := s.db.First(&user, userID).Error; err != nil {
+		return nil, err
+	}
+	return &UserPreferences{ProactiveEnabled: user.ProactiveEnabled}, nil
+}
+
+func (s *Service) UpdatePreferences(userID uint64, prefs UserPreferences) error {
+	return s.db.Model(&models.User{}).Where("id = ?", userID).
+		Update("proactive_enabled", prefs.ProactiveEnabled).Error
 }

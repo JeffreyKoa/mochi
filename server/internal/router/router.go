@@ -10,20 +10,26 @@ import (
 	"github.com/mochi-ai/server/internal/chat"
 	"github.com/mochi-ai/server/internal/pet"
 	"github.com/mochi-ai/server/internal/realtime"
+	"github.com/mochi-ai/server/internal/subscribe"
+	"github.com/mochi-ai/server/internal/tools"
 	"github.com/mochi-ai/server/internal/voice"
 	"github.com/mochi-ai/server/internal/ws"
 )
 
 type Handlers struct {
-	Auth          *auth.Handler
-	Chat          *chat.Handler
-	Pet           *pet.Handler
-	Voice         *voice.Handler
-	Realtime      *realtime.Handler
-	Hub           *ws.Hub
+	Auth            *auth.Handler
+	Chat            *chat.Handler
+	Pet             *pet.Handler
+	Subscribe       *subscribe.Handler
+	Voice           *voice.Handler
+	Realtime        *realtime.Handler
+	Tools           *tools.Handler
+	Hub             *ws.Hub
 	AuthSvc       *auth.Service
-	ClientAPIBase string
-	RealtimeEnabled bool
+	ClientAPIBase     string
+	RealtimeEnabled   bool
+	WriteApproval     bool
+	GrowthEnabled     bool
 }
 
 func Setup(mode string, h Handlers) *gin.Engine {
@@ -43,6 +49,8 @@ func Setup(mode string, h Handlers) *gin.Engine {
 		c.JSON(http.StatusOK, gin.H{
 			"api_base":         h.ClientAPIBase,
 			"realtime_enabled": h.RealtimeEnabled,
+			"write_approval":   h.WriteApproval,
+			"growth_enabled":   h.GrowthEnabled,
 		})
 	})
 
@@ -50,6 +58,8 @@ func Setup(mode string, h Handlers) *gin.Engine {
 	{
 		api.POST("/auth/register", h.Auth.Register)
 		api.POST("/auth/login", h.Auth.Login)
+
+		api.GET("/catalog/skus", h.Subscribe.ListSKUs)
 
 		protected := api.Group("")
 		protected.Use(auth.AuthMiddleware(h.AuthSvc))
@@ -64,6 +74,19 @@ func Setup(mode string, h Handlers) *gin.Engine {
 			protected.GET("/memories", h.Pet.ListMemories)
 			protected.DELETE("/memories/:id", h.Pet.DeleteMemory)
 			protected.GET("/bond", h.Pet.GetBond)
+			protected.GET("/brief", h.Pet.GetBrief)
+			protected.POST("/brief/entries/:id/approve", h.Pet.ApproveBriefEntry)
+			protected.POST("/brief/entries/:id/reject", h.Pet.RejectBriefEntry)
+			protected.GET("/user/preferences", h.Auth.GetPreferences)
+			protected.PUT("/user/preferences", h.Auth.UpdatePreferences)
+			if h.Tools != nil {
+				protected.GET("/reminders", h.Tools.ListReminders)
+				protected.PATCH("/reminders/:id", h.Tools.PatchReminder)
+				protected.GET("/todos", h.Tools.ListTodos)
+				protected.PATCH("/todos/:id", h.Tools.PatchTodo)
+			}
+			protected.POST("/pet/onboarding", h.Pet.Onboarding)
+			protected.POST("/subscribe/adopt", h.Subscribe.Adopt)
 		}
 	}
 
@@ -97,7 +120,7 @@ func Setup(mode string, h Handlers) *gin.Engine {
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "*")
-		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization")
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(http.StatusNoContent)

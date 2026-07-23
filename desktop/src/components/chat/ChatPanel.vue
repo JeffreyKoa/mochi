@@ -4,6 +4,8 @@ import { usePetStore } from '@/stores/petStore'
 import { useRealtimeStore } from '@/stores/realtimeStore'
 import { closeChatPanel, isTauri } from '@/services/chatWindow'
 import { getChatHistory } from '@/services/api'
+import { getClientConfig, initClientConfig } from '@/config'
+import { listenProactive } from '@/services/proactiveSync'
 
 defineProps<{ floating?: boolean; compact?: boolean }>()
 
@@ -11,6 +13,8 @@ const pet = usePetStore()
 const rt = useRealtimeStore()
 const textInput = ref('')
 const scrollEl = ref<HTMLElement | null>(null)
+const realtimeEnabled = ref(true)
+let unlistenProactive: (() => void) | null = null
 
 const showStreamingReply = computed(() => {
   if (!rt.replyText || !rt.processing) return false
@@ -58,6 +62,13 @@ async function sendText() {
 }
 
 onMounted(async () => {
+  await initClientConfig().catch(() => {})
+  realtimeEnabled.value = getClientConfig().realtimeEnabled
+
+  unlistenProactive = await listenProactive((payload) => {
+    rt.appendAssistantMessage(payload.message)
+  })
+
   try {
     const history = await getChatHistory()
     if (Array.isArray(history) && history.length > 0) {
@@ -73,11 +84,13 @@ onMounted(async () => {
   }
 
   rt.connect().catch(() => {
-    rt.statusText = '连接失败'
+    rt.statusText = realtimeEnabled.value ? '连接失败' : '文字模式'
   })
 })
 
 onUnmounted(() => {
+  unlistenProactive?.()
+  unlistenProactive = null
   rt.disconnect()
 })
 </script>
@@ -133,25 +146,30 @@ onUnmounted(() => {
       </div>
 
       <div class="voice-area">
-        <p class="status">{{ rt.statusText }}</p>
-        <div v-if="rt.talking" class="mic-meter">
-          <div class="mic-meter-bar" :style="{ width: Math.round(rt.micLevel * 100) + '%' }" />
-        </div>
-        <button v-if="!rt.talking" class="mic-btn" type="button" @click="rt.startTalk()">
-          开始对话
-        </button>
-        <button v-else-if="rt.resting" class="mic-btn resting" type="button" disabled>
-          休息中 · 说话即可
-        </button>
-        <button v-else-if="rt.processing" class="mic-btn resting" type="button" disabled>
-          处理中...
-        </button>
-        <button v-else class="mic-btn recording" type="button" @click="finishSpeaking">
-          说完了
-        </button>
-        <button v-if="rt.talking" class="end-link" type="button" @click="stopConversation">
-          结束
-        </button>
+        <p v-if="!realtimeEnabled" class="realtime-hint">
+          当前环境未开启实时语音，请使用文字聊天~
+        </p>
+        <template v-else>
+          <p class="status">{{ rt.statusText }}</p>
+          <div v-if="rt.talking" class="mic-meter">
+            <div class="mic-meter-bar" :style="{ width: Math.round(rt.micLevel * 100) + '%' }" />
+          </div>
+          <button v-if="!rt.talking" class="mic-btn" type="button" @click="rt.startTalk()">
+            开始对话
+          </button>
+          <button v-else-if="rt.resting" class="mic-btn resting" type="button" disabled>
+            休息中 · 说话即可
+          </button>
+          <button v-else-if="rt.processing" class="mic-btn resting" type="button" disabled>
+            处理中...
+          </button>
+          <button v-else class="mic-btn recording" type="button" @click="finishSpeaking">
+            说完了
+          </button>
+          <button v-if="rt.talking" class="end-link" type="button" @click="stopConversation">
+            结束
+          </button>
+        </template>
       </div>
     </div>
   </div>
@@ -303,6 +321,15 @@ onUnmounted(() => {
   flex-direction: column;
   align-items: center;
   gap: 8px;
+}
+
+.realtime-hint {
+  font-size: 12px;
+  color: #888;
+  text-align: center;
+  line-height: 1.5;
+  margin: 0;
+  padding: 8px 4px;
 }
 
 .status {

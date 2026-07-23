@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import * as PIXI from 'pixi.js'
 import { usePetStore } from '@/stores/petStore'
 import type { Animation } from '@/stores/petStore'
@@ -19,18 +19,14 @@ let bounceOffset = 0
 let legSwing = 0
 let earFlop = 0
 
-const COLORS: Record<Animation, number> = {
-  idle: 0xffb3c6,
-  happy: 0xff8fab,
-  sad: 0xadb5bd,
-  sleep: 0xcdb4db,
-  eat: 0xffd6a5,
-  walk: 0xffcad4,
-}
+const COLORS = computed(() => pet.animationColors)
+const LEG_COLOR = computed(() => pet.legColor)
+const FOOT_COLOR = computed(() => pet.footColor)
+const EAR_INNER = computed(() => pet.earInnerColor)
 
-const LEG_COLOR = 0xff7aa2
-const FOOT_COLOR = 0xd63384
-const EAR_INNER = 0xff9eb5
+let lastLegColor = 0xff7aa2
+let lastFootColor = 0xd63384
+let lastEarInner = 0xff9eb5
 
 /** Soft mochi bunny ears — round teardrop shape with inner pink. */
 function drawEars(cy: number, color: number, flop = 0) {
@@ -66,13 +62,13 @@ function drawEarInner(cy: number, flop = 0) {
   g.bezierCurveTo(-40 + flopL * 0.5, -28 + cy, -38 + flopL * 0.4, -48 + cy, -28 + flopL * 0.3, -54 + cy)
   g.bezierCurveTo(-20 + flopL * 0.2, -50 + cy, -20, -32 + cy, -24, -18 + cy)
   g.closePath()
-  g.fill({ color: EAR_INNER, alpha: 0.92 })
+  g.fill({ color: lastEarInner, alpha: 0.92 })
 
   g.moveTo(28, -16 + cy)
   g.bezierCurveTo(40 + flopR * 0.5, -28 + cy, 38 + flopR * 0.4, -48 + cy, 28 + flopR * 0.3, -54 + cy)
   g.bezierCurveTo(20 + flopR * 0.2, -50 + cy, 20, -32 + cy, 24, -18 + cy)
   g.closePath()
-  g.fill({ color: EAR_INNER, alpha: 0.92 })
+  g.fill({ color: lastEarInner, alpha: 0.92 })
 }
 
 function drawLegs(legTop: number) {
@@ -83,15 +79,15 @@ function drawLegs(legTop: number) {
 
   // Left leg + foot
   petGraphic.roundRect(-20 + swing, legTop, legW, legH, 5)
-  petGraphic.fill(LEG_COLOR)
+  petGraphic.fill(lastLegColor)
   petGraphic.ellipse(-13 + swing, legTop + legH + 1, 11, 8)
-  petGraphic.fill(FOOT_COLOR)
+  petGraphic.fill(lastFootColor)
 
   // Right leg + foot
   petGraphic.roundRect(6 - swing, legTop, legW, legH, 5)
-  petGraphic.fill(LEG_COLOR)
+  petGraphic.fill(lastLegColor)
   petGraphic.ellipse(13 - swing, legTop + legH + 1, 11, 8)
-  petGraphic.fill(FOOT_COLOR)
+  petGraphic.fill(lastFootColor)
 }
 
 function drawPet(color: number, scale = 1, eyeOpen = true) {
@@ -159,7 +155,10 @@ function startAnimLoop(anim: Animation) {
 
   animTimer = setInterval(() => {
     frame++
-    const color = COLORS[anim]
+    const color = COLORS.value[anim]
+    lastLegColor = LEG_COLOR.value
+    lastFootColor = FOOT_COLOR.value
+    lastEarInner = EAR_INNER.value
 
     switch (anim) {
       case 'idle':
@@ -205,6 +204,10 @@ function startAnimLoop(anim: Animation) {
     drawPet(color, scale, eyeOpen)
   }, 50)
 }
+
+watch(() => pet.animationColors, () => {
+  drawPet(COLORS.value[pet.currentAnimation], 1, pet.currentAnimation !== 'sleep')
+}, { deep: true })
 
 onMounted(async () => {
   if (!canvasRef.value) return

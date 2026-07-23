@@ -34,6 +34,7 @@ func (s *Service) GetOrCreate(ctx context.Context, petID uint64) (models.BondPro
 		SharedTopics: []byte("[]"),
 		Nicknames:    []byte("{}"),
 		InsideJokes:  []byte("[]"),
+		LastMoodAt:   time.Now(),
 		UpdatedAt:    time.Now(),
 	}
 	if err := s.db.WithContext(ctx).Create(&bond).Error; err != nil {
@@ -144,6 +145,53 @@ func (s *Service) AddInsideJoke(ctx context.Context, petID uint64, content strin
 	bond.InsideJokes = data
 	bond.UpdatedAt = time.Now()
 	return s.saveBond(ctx, bond, "inside_jokes", "updated_at")
+}
+
+func (s *Service) BoostTrust(ctx context.Context, petID uint64, delta int) error {
+	bond, err := s.GetOrCreate(ctx, petID)
+	if err != nil {
+		return err
+	}
+	bond.TrustLevel = clampUint8(int(bond.TrustLevel) + delta)
+	bond.UpdatedAt = time.Now()
+	return s.saveBond(ctx, bond, "trust_level", "updated_at")
+}
+
+func (s *Service) AddSharedTopic(ctx context.Context, petID uint64, topic string) error {
+	if topic == "" {
+		return nil
+	}
+	bond, err := s.GetOrCreate(ctx, petID)
+	if err != nil {
+		return err
+	}
+	var topics []string
+	_ = json.Unmarshal(bond.SharedTopics, &topics)
+	for _, t := range topics {
+		if t == topic {
+			return nil
+		}
+	}
+	topics = append(topics, topic)
+	if len(topics) > 20 {
+		topics = topics[len(topics)-20:]
+	}
+	data, _ := json.Marshal(topics)
+	bond.SharedTopics = data
+	bond.UpdatedAt = time.Now()
+	return s.saveBond(ctx, bond, "shared_topics", "updated_at")
+}
+
+func (s *Service) ApplyOnboardingBonus(ctx context.Context, petID uint64) error {
+	bond, err := s.GetOrCreate(ctx, petID)
+	if err != nil {
+		return err
+	}
+	if bond.RapportLevel < 25 {
+		bond.RapportLevel = 25
+	}
+	bond.UpdatedAt = time.Now()
+	return s.saveBond(ctx, bond, "rapport_level", "updated_at")
 }
 
 func (s *Service) saveBond(ctx context.Context, bond models.BondProfile, fields ...string) error {

@@ -62,6 +62,14 @@ func (h *Hub) SendProactive(userID uint64, message, animation string) {
 	})
 }
 
+func (h *Hub) SendLifeStageChanged(userID uint64, data map[string]interface{}) {
+	h.send(userID, Message{
+		Type:      "life_stage_changed",
+		Data:      data,
+		Timestamp: time.Now().Unix(),
+	})
+}
+
 func (h *Hub) send(userID uint64, msg Message) {
 	data, err := json.Marshal(msg)
 	if err != nil {

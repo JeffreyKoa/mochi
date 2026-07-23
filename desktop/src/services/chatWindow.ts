@@ -12,6 +12,10 @@ export const PET_WITH_CHAT_W = PET_W + CHAT_GAP + CHAT_W
 export const PET_WITH_CHAT_H = Math.max(PET_H, CHAT_H)
 export const LOGIN_W = 360
 export const LOGIN_H = 420
+export const SIDE_PANEL_W = 320
+export const SIDE_PANEL_H = 440
+export const PET_WITH_SIDE_W = PET_W + CHAT_GAP + SIDE_PANEL_W
+export const PET_WITH_SIDE_H = Math.max(PET_H, SIDE_PANEL_H)
 
 let tauriCached: boolean | null = null
 

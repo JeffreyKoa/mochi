@@ -51,6 +51,44 @@ func (h *Handler) Login(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"token": token, "user": user})
 }
 
+func (h *Handler) GetPreferences(c *gin.Context) {
+	userID, ok := c.Get("userID")
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	prefs, err := h.svc.GetPreferences(userID.(uint64))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, prefs)
+}
+
+func (h *Handler) UpdatePreferences(c *gin.Context) {
+	userID, ok := c.Get("userID")
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	var req struct {
+		ProactiveEnabled *bool `json:"proactive_enabled"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.ProactiveEnabled == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "proactive_enabled required"})
+		return
+	}
+	if err := h.svc.UpdatePreferences(userID.(uint64), UserPreferences{ProactiveEnabled: *req.ProactiveEnabled}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "proactive_enabled": *req.ProactiveEnabled})
+}
+
 func AuthMiddleware(svc *Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		header := c.GetHeader("Authorization")
