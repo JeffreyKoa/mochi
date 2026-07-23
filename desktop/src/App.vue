@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useAuthStore } from '@/stores/authStore'
 import { usePetStore } from '@/stores/petStore'
 import { useRealtimeStore } from '@/stores/realtimeStore'
-import { getPet, getLifeState, getChatHistory, initClientConfig, AuthError } from '@/services/api'
+import { getPet, getLifeState, getChatHistory, initClientConfig, AuthError, ApiError } from '@/services/api'
+import { healthMonitor } from '@/services/healthMonitor'
 import { wsManager } from '@/services/ws'
 import {
   ensurePetWindowVisible,
@@ -24,15 +25,65 @@ const ready = ref(false)
 const loading = ref(true)
 const loadError = ref('')
 const winLabel = ref('browser')
+const wsInitialized = ref(false)
 
 const isBrowserDev = computed(() => !isTauri())
 const isChatWindow = computed(() => winLabel.value === 'chat')
 const isPetShell = computed(() => isBrowserDev.value || isPetWindowLabel(winLabel.value))
 
+function setupWs() {
+  if (!isPetShell.value || isChatWindow.value) return
+  if (!wsInitialized.value) {
+    wsInitialized.value = true
+    wsManager.on('state_update', (data: unknown) => {
+      const d = data as { state: typeof pet.lifeState; animation: string }
+      pet.updateLifeState(d.state)
+      if (d.animation) pet.setAnimation(d.animation as typeof pet.currentAnimation)
+    })
+    wsManager.on('proactive_message', (data: unknown) => {
+      const d = data as { message: string; animation: string }
+      if (d.animation) pet.setAnimation(d.animation as typeof pet.currentAnimation)
+      pet.showSpeechBubble(d.message)
+    })
+  }
+  wsManager.connect()
+}
+
+function startHealthWatch() {
+  if (healthMonitor.watching) return
+  healthMonitor.start(
+    () => {
+      loadError.value = ''
+      pet.showSpeechBubble('连上了~')
+      void loadUserData()
+    },
+    (_attempt, up) => {
+      if (!up && !loadError.value.includes('重试')) {
+        loadError.value = '无法连接后端，Mochi 在等你…'
+      }
+    },
+  )
+}
+
+function handleLoadFailure(e: unknown) {
+  if (e instanceof AuthError) {
+    healthMonitor.stop()
+    auth.logout()
+    return
+  }
+  loadError.value = e instanceof Error ? e.message : '加载数据失败'
+  if (e instanceof ApiError && (e.kind === 'network' || e.kind === 'server')) {
+    startHealthWatch()
+  }
+}
+
 async function loadUserData() {
   loadError.value = ''
   try {
-    const petData = await getPet()
+    const petData = (await getPet()) as {
+      name: string
+      life_state?: Parameters<typeof pet.updateLifeState>[0]
+    }
     pet.petName = petData.name
     if (petData.life_state) {
       pet.updateLifeState(petData.life_state)
@@ -51,26 +102,12 @@ async function loadUserData() {
       })),
     )
 
-    if (isPetShell.value && !isChatWindow.value) {
-      wsManager.connect()
-      wsManager.on('state_update', (data: unknown) => {
-        const d = data as { state: typeof pet.lifeState; animation: string }
-        pet.updateLifeState(d.state)
-        if (d.animation) pet.setAnimation(d.animation as typeof pet.currentAnimation)
-      })
-      wsManager.on('proactive_message', (data: unknown) => {
-        const d = data as { message: string; animation: string }
-        if (d.animation) pet.setAnimation(d.animation as typeof pet.currentAnimation)
-        pet.showSpeechBubble(d.message)
-      })
-    }
+    setupWs()
+    healthMonitor.stop()
+    loadError.value = ''
   } catch (e) {
     console.error('load user data failed', e)
-    if (e instanceof AuthError) {
-      auth.logout()
-      return
-    }
-    loadError.value = e instanceof Error ? e.message : '加载数据失败'
+    handleLoadFailure(e)
   } finally {
     loading.value = false
   }
@@ -136,6 +173,7 @@ watch(
     } else {
       pet.isChatOpen = false
       loading.value = false
+      healthMonitor.stop()
       await setLoginLayout()
     }
   },
@@ -143,10 +181,15 @@ watch(
 
 async function onLoginSuccess() {
   loadError.value = ''
+  healthMonitor.stop()
   await setPetOnlyLayout()
   loading.value = false
   void loadUserData()
 }
+
+onUnmounted(() => {
+  healthMonitor.stop()
+})
 </script>
 
 <template>

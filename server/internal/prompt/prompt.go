@@ -57,33 +57,33 @@ func BuildChatPrompt(petName string, personality models.Personality, state model
 }
 
 func MemoryExtractPrompt(userMsg, petReply string) string {
+	return promptMemoryExtract(userMsg, petReply)
+}
+
+func promptMemoryExtract(userMsg, petReply string) string {
 	return fmt.Sprintf(`从以下对话中提取值得长期记忆的信息。
 
 用户: %s
 宠物: %s
 
 请返回 JSON 数组，每个元素代表一条记忆:
-[{"type": "long|event|relation", "content": "记忆内容", "importance": 0.0~1.0}]
+[{"type": "long|event|relation|emotion|topic|bond", "content": "记忆内容", "importance": 0.0~1.0}]
 
 提取规则:
 - long: 用户的长期偏好、习惯、性格特征
 - event: 发生过的具体事件
 - relation: 用户提到的人物关系
-- 忽略无意义的信息（如：你好、在吗）
-- importance: 越重要的信息分数越高
+- emotion: 用户的情绪经历
+- topic: 用户常聊的话题或兴趣
+- bond: 关系碎片（昵称、共同梗）
+- 忽略无意义的信息
+- emotion 类 importance 建议 >= 0.7
 
 只返回 JSON 数组，不要其他文字。`, userMsg, petReply)
 }
 
 func formatMemories(memories []models.Memory) string {
-	if len(memories) == 0 {
-		return "（还没有关于主人的记忆）"
-	}
-	var sb strings.Builder
-	for _, m := range memories {
-		sb.WriteString(fmt.Sprintf("- %s\n", m.Content))
-	}
-	return sb.String()
+	return formatCompanionMemories(memories)
 }
 
 func describeMood(mood uint8) string {

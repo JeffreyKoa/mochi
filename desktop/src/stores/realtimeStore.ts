@@ -22,10 +22,12 @@ export interface ChatMessage {
 
 const WAKE_PEAK = 0.022
 const SPEECH_PEAK = 0.025
-const SILENCE_MS = 900
-const BARGE_IN_PEAK = 0.09
+const SILENCE_MS = 500
+const BARGE_IN_PEAK = 0.06
 const BARGE_IN_MS = 800
-const ECHO_GUARD_MS = 3200
+const ECHO_GUARD_MS = 1800
+const ENDPOINT_DEBOUNCE_MS = 300
+const MIN_ENDPOINT_CHARS = 3
 const TTS_WATCHDOG_MS = 45000
 const MAX_UTTERANCE_MS = 25000
 
@@ -66,6 +68,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
   let textSending = false
   let turnStartAt = 0
   let playbackMarked = false
+  let lastEndpointAt = 0
   let lastTurnMetrics: import('@/services/realtimeSession').TurnMetrics | null = null
 
   function resetTurnTiming() {
@@ -197,6 +200,15 @@ export const useRealtimeStore = defineStore('realtime', () => {
     partialText.value = ''
     realtimeSession.sendAudioStart()
     statusText.value = '正在听...'
+  }
+
+  function handleAsrEndpoint(text: string) {
+    if (!heardSpeech || phase !== 'user_speaking') return
+    if ([...text.trim()].length < MIN_ENDPOINT_CHARS) return
+    const now = Date.now()
+    if (now - lastEndpointAt < ENDPOINT_DEBOUNCE_MS) return
+    lastEndpointAt = now
+    void submitUtterance()
   }
 
   function submitUtterance(force = false) {
@@ -410,6 +422,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
         }
 
         if (phase === 'agent_speaking') {
+          speechVad?.feed(pcmToFloat(boosted))
           checkBargeIn(peak)
         }
       })
@@ -461,6 +474,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
         break
       case 'asr_partial':
         partialText.value = ev.text
+        if (ev.sentenceEnd) {
+          handleAsrEndpoint(ev.text)
+        }
         break
       case 'asr_final':
         commitUserMessage(ev.text, 'voice')
@@ -504,6 +520,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
         }
         break
       case 'turn_ack':
+        if (turnStartAt <= 0) turnStartAt = Date.now()
         setPhase('processing')
         startTtsWatchdog()
         statusText.value = 'Mochi 正在想...'

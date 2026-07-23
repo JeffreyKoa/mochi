@@ -9,8 +9,11 @@ type ASRSession interface {
 	Close()
 }
 
+// ASRPartialHandler receives partial transcripts; sentenceEnd marks utterance boundaries.
+type ASRPartialHandler func(text string, sentenceEnd bool)
+
 // ASRRecognizer transcribes PCM audio to text.
 type ASRRecognizer interface {
-	Recognize(ctx context.Context, pcm []byte, onPartial func(text string)) (string, error)
-	StartSession(ctx context.Context, onPartial func(text string)) (ASRSession, error)
+	Recognize(ctx context.Context, pcm []byte, onPartial ASRPartialHandler) (string, error)
+	StartSession(ctx context.Context, onPartial ASRPartialHandler) (ASRSession, error)
 }

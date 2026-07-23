@@ -48,11 +48,14 @@ func NewASRClient(apiKey, model string, sampleRate int, ep ...EndpointConfig) *A
 	}
 }
 
+// ASRPartialHandler is called for each partial transcript; sentenceEnd is true at utterance boundaries.
+type ASRPartialHandler func(text string, sentenceEnd bool)
+
 // ASRSession holds an active recognition task for streaming input.
 type ASRSession struct {
 	conn       *websocket.Conn
 	taskID     string
-	onPartial  func(string)
+	onPartial  ASRPartialHandler
 	started    chan struct{}
 	finished   chan struct{}
 	errCh      chan error
@@ -63,7 +66,7 @@ type ASRSession struct {
 }
 
 // StartSession opens an ASR task for incremental audio input.
-func (c *ASRClient) StartSession(ctx context.Context, onPartial func(text string)) (*ASRSession, error) {
+func (c *ASRClient) StartSession(ctx context.Context, onPartial ASRPartialHandler) (*ASRSession, error) {
 	if c.apiKey == "" {
 		return nil, fmt.Errorf("dashscope api key not configured")
 	}
@@ -196,7 +199,7 @@ func (s *ASRSession) Close() {
 }
 
 // Recognize streams PCM int16 LE mono audio and returns the final transcript.
-func (c *ASRClient) Recognize(ctx context.Context, pcm []byte, onPartial func(text string)) (string, error) {
+func (c *ASRClient) Recognize(ctx context.Context, pcm []byte, onPartial ASRPartialHandler) (string, error) {
 	if len(pcm) == 0 {
 		return "", fmt.Errorf("empty audio")
 	}
@@ -253,7 +256,7 @@ func (c *ASRClient) sendAudioPaced(ctx context.Context, conn *websocket.Conn, pc
 
 func (c *ASRClient) readLoop(
 	conn *websocket.Conn,
-	onPartial func(string),
+	onPartial ASRPartialHandler,
 	started chan struct{},
 	finished chan struct{},
 	errCh chan error,
@@ -322,7 +325,7 @@ func (c *ASRClient) readLoop(
 			*finalText = text
 			mu.Unlock()
 			if onPartial != nil {
-				onPartial(text)
+				onPartial(text, msg.Payload.Output.Sentence.SentenceEnd)
 			}
 			if msg.Payload.Output.Sentence.SentenceEnd {
 				select {

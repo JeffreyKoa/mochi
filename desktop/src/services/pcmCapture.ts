@@ -28,6 +28,17 @@ export class PCMCapture {
       },
     })
 
+    const track = this.stream.getAudioTracks()[0]
+    if (track) {
+      const settings = track.getSettings()
+      if (settings.echoCancellation === false) {
+        console.warn('[pcmCapture] echoCancellation unavailable — barge-in may be less reliable')
+      }
+      if (settings.noiseSuppression === false) {
+        console.warn('[pcmCapture] noiseSuppression unavailable')
+      }
+    }
+
     this.context = new AudioContext()
     if (this.context.state === 'suspended') {
       await this.context.resume()

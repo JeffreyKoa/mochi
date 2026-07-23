@@ -53,7 +53,8 @@ type VADEvent struct {
 }
 
 type ASRText struct {
-	Text string `json:"text"`
+	Text        string `json:"text"`
+	SentenceEnd bool   `json:"sentence_end,omitempty"`
 }
 
 type LLMToken struct {
@@ -94,6 +95,7 @@ type TurnMetrics struct {
 	LLMFirstSentenceMS  int64 `json:"llm_first_sentence_ms"`
 	TTSFirstByteMS      int64 `json:"tts_first_byte_ms"`
 	PlaybackStartMS     int64 `json:"playback_start_ms"`
+	FillerPlayedMS      int64 `json:"filler_played_ms"`
 }
 
 type PlaybackMark struct {
