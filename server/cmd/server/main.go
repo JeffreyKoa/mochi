@@ -4,9 +4,12 @@ import (
 	"log"
 
 	"github.com/mochi-ai/server/internal/auth"
+	"github.com/mochi-ai/server/internal/bond"
 	"github.com/mochi-ai/server/internal/chat"
+	"github.com/mochi-ai/server/internal/companion"
 	"github.com/mochi-ai/server/internal/config"
 	"github.com/mochi-ai/server/internal/database"
+	"github.com/mochi-ai/server/internal/emotion"
 	"github.com/mochi-ai/server/internal/life"
 	"github.com/mochi-ai/server/internal/memory"
 	"github.com/mochi-ai/server/internal/pet"
@@ -23,7 +26,7 @@ func main() {
 		log.Fatal("load config:", err)
 	}
 
-	db, err := database.NewMySQL(cfg.MySQLDSN(), cfg.Database.AutoMigrate)
+	db, err := database.NewMySQL(cfg.MySQLDSN(), cfg.Database)
 	if err != nil {
 		log.Fatal("connect mysql:", err)
 	}
@@ -38,17 +41,22 @@ func main() {
 		log.Println("[WARN] ai.api_key not set in config.yaml")
 	}
 
+	memSvc := memory.NewService(db, rdb, aiProvider)
+	bondSvc := bond.NewService(db)
+	emotionSvc := emotion.NewService(rdb, aiProvider)
 	hub := ws.NewHub()
 
-	authSvc := auth.NewService(db, cfg.JWT.Secret)
-	authHandler := auth.NewHandler(authSvc)
-
-	memSvc := memory.NewService(db, rdb, aiProvider)
 	lifeSvc := life.NewService(db, hub)
 	lifeSvc.StartTicker()
 
-	chatSvc := chat.NewService(db, aiProvider, memSvc, lifeSvc)
+	chatSvc := chat.NewService(db, aiProvider, memSvc, lifeSvc, bondSvc, emotionSvc)
 	chatHandler := chat.NewHandler(chatSvc)
+
+	companionScheduler := companion.NewScheduler(db, rdb, aiProvider, bondSvc, cfg.Companion, hub)
+	companionScheduler.Start()
+
+	authSvc := auth.NewService(db, cfg.JWT.Secret)
+	authHandler := auth.NewHandler(authSvc)
 
 	voiceSvc := voice.NewService(cfg)
 	voiceHandler := voice.NewHandler(voiceSvc, chatSvc)

@@ -63,6 +63,7 @@ func Setup(mode string, h Handlers) *gin.Engine {
 			protected.POST("/life/interact", h.Pet.Interact)
 			protected.GET("/memories", h.Pet.ListMemories)
 			protected.DELETE("/memories/:id", h.Pet.DeleteMemory)
+			protected.GET("/bond", h.Pet.GetBond)
 		}
 	}
 

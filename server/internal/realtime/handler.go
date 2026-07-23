@@ -105,6 +105,14 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 	streamingASR := h.pipeline != nil
 	var processing bool
 	var processingMu sync.Mutex
+	var textTurnActive bool
+	var textTurnMu sync.Mutex
+
+	isTextTurn := func() bool {
+		textTurnMu.Lock()
+		defer textTurnMu.Unlock()
+		return textTurnActive
+	}
 
 	log.Printf("[realtime] connected user=%d session=%s", userID, sessionID)
 
@@ -177,6 +185,10 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 			return
 		}
 
+		textTurnMu.Lock()
+		textTurnActive = true
+		textTurnMu.Unlock()
+
 		sess.BeginTurn(time.Now())
 
 		processingMu.Lock()
@@ -202,8 +214,13 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 		sender.SendAnimation(StateThinking)
 		_ = sender.Send(MsgTurnAck, map[string]any{})
 
+		log.Printf("[realtime] text input session=%s chars=%d", sessionID, len([]rune(text)))
+
 		go func() {
 			defer func() {
+				textTurnMu.Lock()
+				textTurnActive = false
+				textTurnMu.Unlock()
 				processingMu.Lock()
 				processing = false
 				processingMu.Unlock()
@@ -213,6 +230,10 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 	}
 
 	processSpeechEnd := func(buf []byte) {
+		if isTextTurn() {
+			log.Printf("[realtime] ignore speech end during text turn session=%s", sessionID)
+			return
+		}
 		if len(buf) == 0 {
 			return
 		}
@@ -347,6 +368,10 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 			if err != nil || len(pcm) == 0 {
 				continue
 			}
+			if isTextTurn() {
+				_ = sender.Send(MsgAck, AckData{Seq: in.Seq})
+				continue
+			}
 
 			st := sess.State()
 			ev := vad.Feed(pcm)
@@ -398,6 +423,13 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 			processTextInput(in.Text)
 
 		case MsgAudioEnd:
+			if isTextTurn() {
+				audioMu.Lock()
+				audioBuf = audioBuf[:0]
+				audioMu.Unlock()
+				vad.Reset()
+				break
+			}
 			audioMu.Lock()
 			buf := append([]byte(nil), audioBuf...)
 			audioBuf = audioBuf[:0]

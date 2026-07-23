@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/mochi-ai/server/internal/models"
+	"github.com/mochi-ai/server/internal/emotion"
 	"github.com/mochi-ai/server/pkg/ai"
 )
 
@@ -67,14 +68,30 @@ func (s *Service) AddShortTerm(ctx context.Context, petID uint64, role, content 
 	return err
 }
 
-func (s *Service) RetrieveRelevant(ctx context.Context, petID uint64, query string, limit int) ([]models.Memory, error) {
+func (s *Service) RetrieveRelevant(ctx context.Context, petID uint64, query string, limit int, userMood string) ([]models.Memory, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+
 	var memories []models.Memory
 
+	if emotion.IsNegativeMood(userMood) {
+		s.db.Where("pet_id = ? AND type IN ?", petID, []string{"emotion", "event"}).
+			Order("importance DESC, created_at DESC").
+			Limit(limit).
+			Find(&memories)
+		if len(memories) >= limit {
+			return capBondMemories(memories, limit), nil
+		}
+	}
+
 	// Recent memories
+	var recent []models.Memory
 	s.db.Where("pet_id = ?", petID).
 		Order("created_at DESC").
 		Limit(5).
-		Find(&memories)
+		Find(&recent)
+	memories = mergeMemories(memories, recent)
 
 	// Keyword match
 	if query != "" {
@@ -95,9 +112,14 @@ func (s *Service) RetrieveRelevant(ctx context.Context, petID uint64, query stri
 	}
 
 	if len(memories) > limit {
-		memories = memories[:limit]
+		memories = capBondMemories(memories, limit)
 	}
 	return memories, nil
+}
+
+// RetrieveRelevantLegacy wraps RetrieveRelevant with neutral mood.
+func (s *Service) RetrieveRelevantLegacy(ctx context.Context, petID uint64, query string, limit int) ([]models.Memory, error) {
+	return s.RetrieveRelevant(ctx, petID, query, limit, "neutral")
 }
 
 func (s *Service) ExtractAndStore(ctx context.Context, petID uint64, userMsg, petReply string, extractPrompt string) error {
@@ -132,6 +154,16 @@ func (s *Service) ExtractAndStore(ctx context.Context, petID uint64, userMsg, pe
 		if memType == "" {
 			memType = "long"
 		}
+		if memType == "emotion" {
+			if m.Importance < 0.7 {
+				m.Importance = 0.7
+			}
+			s.mergeRecentEmotion(ctx, petID, m.Content, m.Importance)
+			continue
+		}
+		if memType == "bond" {
+			s.applyBondMemory(ctx, petID, m.Content)
+		}
 		s.db.Create(&models.Memory{
 			PetID:      petID,
 			Type:       memType,
@@ -140,6 +172,34 @@ func (s *Service) ExtractAndStore(ctx context.Context, petID uint64, userMsg, pe
 		})
 	}
 	return nil
+}
+
+func (s *Service) mergeRecentEmotion(ctx context.Context, petID uint64, content string, importance float32) {
+	since := time.Now().AddDate(0, 0, -7)
+	var existing models.Memory
+	err := s.db.WithContext(ctx).
+		Where("pet_id = ? AND type = ? AND created_at >= ?", petID, "emotion", since).
+		Order("created_at DESC").
+		First(&existing).Error
+	if err == nil {
+		existing.Content = content
+		existing.Importance = importance
+		s.db.WithContext(ctx).Save(&existing)
+		return
+	}
+	s.db.WithContext(ctx).Create(&models.Memory{
+		PetID:      petID,
+		Type:       "emotion",
+		Content:    content,
+		Importance: importance,
+	})
+}
+
+func (s *Service) applyBondMemory(ctx context.Context, petID uint64, content string) {
+	// bond memories stored via memory table; nickname/joke extraction handled in postProcess bond updates
+	_ = ctx
+	_ = petID
+	_ = content
 }
 
 func (s *Service) List(ctx context.Context, petID uint64) ([]models.Memory, error) {
@@ -169,6 +229,27 @@ func extractKeywords(text string) []string {
 		words = words[:5]
 	}
 	return words
+}
+
+func capBondMemories(memories []models.Memory, limit int) []models.Memory {
+	if len(memories) <= limit {
+		return memories
+	}
+	bondCount := 0
+	var result []models.Memory
+	for _, m := range memories {
+		if m.Type == "bond" {
+			if bondCount >= 1 {
+				continue
+			}
+			bondCount++
+		}
+		result = append(result, m)
+		if len(result) >= limit {
+			break
+		}
+	}
+	return result
 }
 
 func mergeMemories(a, b []models.Memory) []models.Memory {

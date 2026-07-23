@@ -121,12 +121,7 @@ func (s *Service) tick(state *models.LifeState) {
 		state.Love = clampInt(int(state.Love) - 1)
 		state.Mood = clampInt(int(state.Mood) - 2)
 	}
-	if hoursSince > 24 && s.hub != nil {
-		var pet models.Pet
-		if s.db.First(&pet, state.PetID).Error == nil {
-			s.hub.SendProactive(pet.UserID, "主人...是不是把我忘了...", "sad")
-		}
-	}
+	// Proactive messages handled by companion scheduler
 
 	state.UpdatedAt = time.Now()
 	s.db.Save(state)

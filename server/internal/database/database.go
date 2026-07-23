@@ -10,10 +10,11 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
+	"github.com/mochi-ai/server/internal/config"
 	"github.com/mochi-ai/server/internal/models"
 )
 
-func NewMySQL(dsn string, autoMigrate bool) (*gorm.DB, error) {
+func NewMySQL(dsn string, cfg config.DatabaseConfig) (*gorm.DB, error) {
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Warn),
 	})
@@ -25,17 +26,36 @@ func NewMySQL(dsn string, autoMigrate bool) (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	sqlDB.SetMaxOpenConns(25)
-	sqlDB.SetMaxIdleConns(10)
-	sqlDB.SetConnMaxLifetime(time.Hour)
 
-	if autoMigrate {
+	maxOpen := cfg.MaxOpenConns
+	if maxOpen <= 0 {
+		maxOpen = 25
+	}
+	maxIdle := cfg.MaxIdleConns
+	if maxIdle <= 0 {
+		maxIdle = 10
+	}
+	connLifetime := config.ParseDuration(cfg.ConnMaxLifetime, 5*time.Minute)
+
+	sqlDB.SetMaxOpenConns(maxOpen)
+	sqlDB.SetMaxIdleConns(maxIdle)
+	sqlDB.SetConnMaxLifetime(connLifetime)
+	sqlDB.SetConnMaxIdleTime(3 * time.Minute)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := sqlDB.PingContext(ctx); err != nil {
+		return nil, fmt.Errorf("ping mysql: %w", err)
+	}
+
+	if cfg.AutoMigrate {
 		if err := db.AutoMigrate(
 			&models.User{},
 			&models.Pet{},
 			&models.ChatMessage{},
 			&models.Memory{},
 			&models.LifeState{},
+			&models.BondProfile{},
 		); err != nil {
 			return nil, fmt.Errorf("auto migrate: %w", err)
 		}

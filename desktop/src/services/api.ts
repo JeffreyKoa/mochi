@@ -33,11 +33,16 @@ function authHeaders(): HeadersInit {
   }
 }
 
+const REQUEST_TIMEOUT_MS = 20000
+
 async function request<T = Record<string, unknown>>(url: string, init?: RequestInit): Promise<{ res: Response; data: T }> {
   let res: Response
   try {
-    res = await fetch(url, init)
-  } catch {
+    res = await fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'TimeoutError') {
+      throw new ApiError('network', '连接后端超时，Mochi 在等你…')
+    }
     throw new ApiError('network', '无法连接后端，Mochi 在等你…')
   }
 
@@ -58,8 +63,11 @@ async function request<T = Record<string, unknown>>(url: string, init?: RequestI
   if (res.status === 401) {
     throw new AuthError(errMsg || '登录已过期，请重新登录')
   }
+  if (res.status === 503) {
+    throw new ApiError('server', errMsg || '后端繁忙，请稍后再试', res.status)
+  }
   if (res.status >= 500) {
-    throw new ApiError('server', `后端异常 (${res.status})，正在重试…`, res.status)
+    throw new ApiError('server', errMsg || '后端暂时不可用，请稍后再试', res.status)
   }
   if (!res.ok) {
     throw new ApiError('client', errMsg || `请求失败 (${res.status})`, res.status)
