@@ -12,28 +12,39 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const defaultWSURL = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
-
 // ASRClient calls Paraformer realtime over WebSocket.
 type ASRClient struct {
-	apiKey     string
-	model      string
-	sampleRate int
-	wsURL      string
+	apiKey      string
+	model       string
+	sampleRate  int
+	wsURL       string
+	workspaceID string
 }
 
-func NewASRClient(apiKey, model string, sampleRate int) *ASRClient {
+// EndpointConfig configures DashScope WebSocket routing (cn-beijing workspace URL, etc.).
+type EndpointConfig struct {
+	WSURL       string
+	WorkspaceID string
+	Region      string
+}
+
+func NewASRClient(apiKey, model string, sampleRate int, ep ...EndpointConfig) *ASRClient {
 	if model == "" {
 		model = "paraformer-realtime-v2"
 	}
 	if sampleRate == 0 {
 		sampleRate = 16000
 	}
+	var cfg EndpointConfig
+	if len(ep) > 0 {
+		cfg = ep[0]
+	}
 	return &ASRClient{
-		apiKey:     apiKey,
-		model:      model,
-		sampleRate: sampleRate,
-		wsURL:      defaultWSURL,
+		apiKey:      apiKey,
+		model:       model,
+		sampleRate:  sampleRate,
+		wsURL:       ResolveWSURL(cfg.WSURL, cfg.WorkspaceID, cfg.Region),
+		workspaceID: cfg.WorkspaceID,
 	}
 }
 
@@ -60,6 +71,9 @@ func (c *ASRClient) StartSession(ctx context.Context, onPartial func(text string
 	taskID := uuid.NewString()
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+c.apiKey)
+	if c.workspaceID != "" {
+		header.Set("X-DashScope-WorkSpace", c.workspaceID)
+	}
 
 	dialer := websocket.Dialer{HandshakeTimeout: 15 * time.Second}
 	conn, _, err := dialer.DialContext(ctx, c.wsURL, header)
