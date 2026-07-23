@@ -63,13 +63,14 @@ type ClientConfig struct {
 }
 
 type RealtimeConfig struct {
-	Enabled        bool             `yaml:"enabled"`
-	PrewarmEnabled bool             `yaml:"prewarm_enabled"`
-	Dashscope      RealtimeDashscope `yaml:"dashscope"`
-	VAD            RealtimeVAD      `yaml:"vad"`
-	ASR            RealtimeASR      `yaml:"asr"`
-	TTS            RealtimeTTS      `yaml:"tts"`
-	Pipeline       RealtimePipeline `yaml:"pipeline"`
+	Enabled        bool                   `yaml:"enabled"`
+	PrewarmEnabled bool                   `yaml:"prewarm_enabled"`
+	Dashscope      RealtimeDashscope      `yaml:"dashscope"`
+	VAD            RealtimeVAD            `yaml:"vad"`
+	ASR            RealtimeASR            `yaml:"asr"`
+	TTS            RealtimeTTS            `yaml:"tts"`
+	Pipeline       RealtimePipeline       `yaml:"pipeline"`
+	ThinkingFiller RealtimeThinkingFiller `yaml:"thinking_filler"`
 }
 
 type RealtimeDashscope struct {
@@ -80,9 +81,10 @@ type RealtimeDashscope struct {
 }
 
 type RealtimeVAD struct {
-	Model        string `yaml:"model"`
-	SilenceMS    int    `yaml:"silence_ms"`
-	MinSpeechMS  int    `yaml:"min_speech_ms"`
+	Model              string `yaml:"model"`
+	SilenceMS          int    `yaml:"silence_ms"`
+	MinSpeechMS        int    `yaml:"min_speech_ms"`
+	EndpointingEnabled bool   `yaml:"endpointing_enabled"`
 }
 
 type RealtimeASR struct {
@@ -101,6 +103,12 @@ type RealtimeTTS struct {
 type RealtimePipeline struct {
 	TTSMinChars     int    `yaml:"tts_min_chars"`
 	TTSPunctuation  string `yaml:"tts_punctuation"`
+}
+
+type RealtimeThinkingFiller struct {
+	Enabled     bool     `yaml:"enabled"`
+	ThresholdMS int      `yaml:"threshold_ms"`
+	Phrases     []string `yaml:"phrases"`
 }
 
 func (c *Config) MySQLDSN() string {
@@ -186,6 +194,12 @@ func (r *RealtimeConfig) applyDefaults() {
 	}
 	if r.VAD.Model == "" {
 		r.VAD.Model = "energy"
+	}
+	if r.ThinkingFiller.ThresholdMS == 0 {
+		r.ThinkingFiller.ThresholdMS = 800
+	}
+	if len(r.ThinkingFiller.Phrases) == 0 {
+		r.ThinkingFiller.Phrases = []string{"嗯，让我想想~", "稍等一下哦~"}
 	}
 	if r.Dashscope.Region == "" {
 		r.Dashscope.Region = "cn-beijing"

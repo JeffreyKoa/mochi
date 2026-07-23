@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand"
 	"strings"
 	"sync"
 	"time"
@@ -47,7 +48,7 @@ func NewPipeline(chatSvc *chat.Service, cfg config.RealtimeConfig, appCfg *confi
 	return p
 }
 
-func (p *Pipeline) StartASRSession(ctx context.Context, onPartial func(text string)) (ASRSession, error) {
+func (p *Pipeline) StartASRSession(ctx context.Context, onPartial ASRPartialHandler) (ASRSession, error) {
 	if p.asr == nil {
 		return nil, fmt.Errorf("asr not configured")
 	}
@@ -85,7 +86,7 @@ func (p *Pipeline) OnSpeechEnd(ctx context.Context, sess *Session, audio []byte,
 	defer sess.EndPipeline()
 
 	var lastPartial string
-	text, err := p.asr.Recognize(pipeCtx, audio, func(partial string) {
+	text, err := p.asr.Recognize(pipeCtx, audio, func(partial string, _ bool) {
 		if partial == lastPartial {
 			return
 		}
@@ -249,8 +250,10 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 	var ttsErr error
 	var ttsErrMu sync.Mutex
 	lat := sess.TurnLatency()
+	var llmTokenMu sync.Mutex
 	llmTokenSeen := false
 	sentenceFlushed := false
+	fillerPlayed := false
 
 	onAudio := func(audio []byte) {
 		if len(audio) == 0 {
@@ -298,12 +301,12 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		}()
 	}
 
-	enqueueSeg := func(text string) {
+	enqueueSeg := func(text string, markSentence bool) {
 		text = strings.TrimSpace(text)
 		if text == "" || segCh == nil {
 			return
 		}
-		if lat != nil && !sentenceFlushed {
+		if markSentence && lat != nil && !sentenceFlushed {
 			sentenceFlushed = true
 			lat.MarkLLMFirstSentence()
 		}
@@ -319,15 +322,50 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 			if seg == "" {
 				break
 			}
-			enqueueSeg(seg)
+			enqueueSeg(seg, true)
 		}
 	}
 
+	// Thinking filler: play a short phrase if LLM is slow to respond.
+	if withVoice && p.tts != nil && p.cfg.ThinkingFiller.Enabled {
+		go func() {
+			threshold := time.Duration(p.cfg.ThinkingFiller.ThresholdMS) * time.Millisecond
+			timer := time.NewTimer(threshold)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				llmTokenMu.Lock()
+				seen := llmTokenSeen
+				llmTokenMu.Unlock()
+				if seen || fillerPlayed {
+					return
+				}
+				phrases := p.cfg.ThinkingFiller.Phrases
+				if len(phrases) == 0 {
+					return
+				}
+				phrase := phrases[rand.Intn(len(phrases))]
+				fillerPlayed = true
+				if lat != nil {
+					lat.MarkFillerPlayed()
+				}
+				log.Printf("[realtime] thinking filler session=%s phrase=%q", sess.ID, phrase)
+				enqueueSeg(phrase, false)
+			}
+		}()
+	}
+
 	reply, err := p.chat.StreamMessage(ctx, sess.UserID, userText, func(token string) {
-		if lat != nil && !llmTokenSeen {
+		llmTokenMu.Lock()
+		if !llmTokenSeen {
 			llmTokenSeen = true
-			lat.MarkLLMFirstToken()
+			if lat != nil {
+				lat.MarkLLMFirstToken()
+			}
 		}
+		llmTokenMu.Unlock()
 		_ = send.Send(MsgLLMToken, LLMToken{Token: token})
 		tokenBuf.WriteString(token)
 		if withVoice && p.tts != nil {
@@ -372,7 +410,7 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 
 	if withVoice && p.tts != nil && segCh != nil {
 		if remainder := strings.TrimSpace(tokenBuf.String()); remainder != "" {
-			enqueueSeg(remainder)
+			enqueueSeg(remainder, true)
 		}
 		close(segCh)
 		<-ttsDone

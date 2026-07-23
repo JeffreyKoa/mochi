@@ -1,9 +1,23 @@
 import { getApiBase, initClientConfig, setApiBase } from '@/config'
 
+export type ApiErrorKind = 'network' | 'server' | 'client'
+
 export class AuthError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'AuthError'
+  }
+}
+
+export class ApiError extends Error {
+  kind: ApiErrorKind
+  status?: number
+
+  constructor(kind: ApiErrorKind, message: string, status?: number) {
+    super(message)
+    this.name = 'ApiError'
+    this.kind = kind
+    this.status = status
   }
 }
 
@@ -19,98 +33,98 @@ function authHeaders(): HeadersInit {
   }
 }
 
-async function parseResponse<T = Record<string, unknown>>(res: Response): Promise<T> {
-  const text = await res.text()
-  if (!text) {
-    if (res.status === 401) throw new AuthError('登录已过期，请重新登录')
-    if (!res.ok) throw new Error(`服务器无响应 (${res.status})，请确认后端已启动`)
-    throw new Error('服务器返回空响应，请稍后重试')
-  }
-  try {
-    return JSON.parse(text) as T
-  } catch {
-    throw new Error('服务器响应格式错误')
-  }
-}
-
 async function request<T = Record<string, unknown>>(url: string, init?: RequestInit): Promise<{ res: Response; data: T }> {
-  const res = await fetch(url, init)
-  const data = await parseResponse<T>(res)
+  let res: Response
+  try {
+    res = await fetch(url, init)
+  } catch {
+    throw new ApiError('network', '无法连接后端，Mochi 在等你…')
+  }
+
+  const text = await res.text()
+  let data: T
+  if (text) {
+    try {
+      data = JSON.parse(text) as T
+    } catch {
+      throw new ApiError('client', '服务器响应格式错误', res.status)
+    }
+  } else {
+    data = {} as T
+  }
+
+  const errMsg = (data as { error?: string }).error
+
+  if (res.status === 401) {
+    throw new AuthError(errMsg || '登录已过期，请重新登录')
+  }
+  if (res.status >= 500) {
+    throw new ApiError('server', `后端异常 (${res.status})，正在重试…`, res.status)
+  }
+  if (!res.ok) {
+    throw new ApiError('client', errMsg || `请求失败 (${res.status})`, res.status)
+  }
+
   return { res, data }
 }
 
 export async function register(email: string, password: string, petName?: string) {
-  const { res, data } = await request(`${getApiBase()}/api/v1/auth/register`, {
+  const { data } = await request(`${getApiBase()}/api/v1/auth/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password, pet_name: petName }),
   })
-  if (!res.ok) throw new Error((data as { error?: string }).error || 'register failed')
   return data
 }
 
 export async function login(email: string, password: string) {
-  const { res, data } = await request(`${getApiBase()}/api/v1/auth/login`, {
+  const { data } = await request(`${getApiBase()}/api/v1/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
   })
-  if (!res.ok) throw new Error((data as { error?: string }).error || 'login failed')
   return data
 }
 
 export async function getPet() {
-  const { res, data } = await request(`${getApiBase()}/api/v1/pet`, { headers: authHeaders() })
-  if (res.status === 401) throw new AuthError((data as { error?: string }).error || '登录已过期')
-  if (!res.ok) throw new Error((data as { error?: string }).error || 'get pet failed')
+  const { data } = await request(`${getApiBase()}/api/v1/pet`, { headers: authHeaders() })
   return data
 }
 
 export async function getLifeState() {
-  const { res, data } = await request(`${getApiBase()}/api/v1/life/state`, { headers: authHeaders() })
-  if (res.status === 401) throw new AuthError((data as { error?: string }).error || '登录已过期')
-  if (!res.ok) throw new Error((data as { error?: string }).error || 'get state failed')
+  const { data } = await request(`${getApiBase()}/api/v1/life/state`, { headers: authHeaders() })
   return data
 }
 
 export async function interact(type: 'touch' | 'feed' | 'play') {
-  const { res, data } = await request(`${getApiBase()}/api/v1/life/interact`, {
+  const { data } = await request(`${getApiBase()}/api/v1/life/interact`, {
     method: 'POST',
     headers: authHeaders(),
     body: JSON.stringify({ type }),
   })
-  if (res.status === 401) throw new AuthError((data as { error?: string }).error || '登录已过期')
-  if (!res.ok) throw new Error((data as { error?: string }).error || 'interact failed')
   return data
 }
 
 export async function getChatHistory(limit = 50) {
-  const { res, data } = await request<{ messages?: unknown[]; error?: string }>(
+  const { data } = await request<{ messages?: unknown[] }>(
     `${getApiBase()}/api/v1/chat/history?limit=${limit}`,
     { headers: authHeaders() },
   )
-  if (res.status === 401) throw new AuthError(data.error || '登录已过期')
-  if (!res.ok) throw new Error(data.error || 'get history failed')
   return data.messages
 }
 
 export async function getMemories() {
-  const { res, data } = await request<{ memories?: unknown[]; error?: string }>(
-    `${getApiBase()}/api/v1/memories`,
-    { headers: authHeaders() },
-  )
-  if (res.status === 401) throw new AuthError(data.error || '登录已过期')
-  if (!res.ok) throw new Error(data.error || 'get memories failed')
+  const { data } = await request<{ memories?: unknown[] }>(`${getApiBase()}/api/v1/memories`, {
+    headers: authHeaders(),
+  })
   return data.memories
 }
 
 export async function deleteMemory(id: number) {
-  const { res, data } = await request(`${getApiBase()}/api/v1/memories/${id}`, {
+  await request(`${getApiBase()}/api/v1/memories/${id}`, {
     method: 'DELETE',
     headers: authHeaders(),
   })
-  if (res.status === 401) throw new AuthError((data as { error?: string }).error || '登录已过期')
-  if (!res.ok) throw new Error((data as { error?: string }).error || 'delete failed')
 }
 
 export function getWSUrl(): string {

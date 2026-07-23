@@ -18,6 +18,7 @@ type TurnLatency struct {
 	llmFirstSentence time.Time
 	ttsFirstByte     time.Time
 	playbackStart    time.Time
+	fillerPlayed     time.Time
 }
 
 func NewTurnLatency(origin time.Time) *TurnLatency {
@@ -51,6 +52,10 @@ func (t *TurnLatency) MarkLLMFirstSentence() {
 
 func (t *TurnLatency) MarkTTSFirstByte() {
 	t.mark(&t.ttsFirstByte)
+}
+
+func (t *TurnLatency) MarkFillerPlayed() {
+	t.mark(&t.fillerPlayed)
 }
 
 func (t *TurnLatency) MarkPlaybackStart() {
@@ -94,13 +99,14 @@ func (t *TurnLatency) ToMetrics() TurnMetrics {
 		LLMFirstSentenceMS: t.sinceOrigin(t.llmFirstSentence),
 		TTSFirstByteMS:     t.sinceOrigin(t.ttsFirstByte),
 		PlaybackStartMS:    t.sinceOrigin(t.playbackStart),
+		FillerPlayedMS:     t.sinceOrigin(t.fillerPlayed),
 	}
 }
 
 func (t *TurnLatency) LogSummary(sessionID string) {
 	m := t.ToMetrics()
 	log.Printf(
-		"[realtime] latency session=%s audio_end=%dms asr=%dms llm_ttft=%dms llm_sentence=%dms tts_ttfb=%dms playback=%dms",
+		"[realtime] latency session=%s audio_end=%dms asr=%dms llm_ttft=%dms llm_sentence=%dms tts_ttfb=%dms playback=%dms filler=%dms",
 		sessionID,
 		m.AudioEndMS,
 		m.ASRFinalMS,
@@ -108,5 +114,6 @@ func (t *TurnLatency) LogSummary(sessionID string) {
 		m.LLMFirstSentenceMS,
 		m.TTSFirstByteMS,
 		m.PlaybackStartMS,
+		m.FillerPlayedMS,
 	)
 }

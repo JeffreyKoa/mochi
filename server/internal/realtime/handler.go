@@ -134,12 +134,15 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 		if asrSess != nil {
 			return
 		}
-		s, err := h.pipeline.StartASRSession(ctx, func(partial string) {
+		s, err := h.pipeline.StartASRSession(ctx, func(partial string, sentenceEnd bool) {
 			if partial == "" || partial == lastPartial {
 				return
 			}
 			lastPartial = partial
-			_ = sender.Send(MsgASRPartial, ASRText{Text: partial})
+			if sess.State() != StateListening {
+				return
+			}
+			_ = sender.Send(MsgASRPartial, ASRText{Text: partial, SentenceEnd: sentenceEnd})
 		})
 		if err != nil {
 			log.Printf("[realtime] asr session start error session=%s: %v", sessionID, err)

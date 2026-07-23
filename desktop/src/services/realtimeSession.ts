@@ -3,7 +3,7 @@ import { getApiBase, getToken } from './api'
 export type RealtimeEvent =
   | { type: 'session_start'; sessionId: string }
   | { type: 'vad'; event: 'speech_start' | 'speech_end' }
-  | { type: 'asr_partial'; text: string }
+  | { type: 'asr_partial'; text: string; sentenceEnd?: boolean }
   | { type: 'asr_final'; text: string }
   | { type: 'llm_token'; token: string }
   | { type: 'llm_done'; text: string }
@@ -26,6 +26,7 @@ export interface TurnMetrics {
   llmFirstSentenceMs: number
   ttsFirstByteMs: number
   playbackStartMs: number
+  fillerPlayedMs: number
 }
 
 export class RealtimeSession {
@@ -139,7 +140,11 @@ export class RealtimeSession {
         this.emit({ type: 'vad', event: data.event as 'speech_start' | 'speech_end' })
         break
       case 'asr_partial':
-        this.emit({ type: 'asr_partial', text: String(data.text) })
+        this.emit({
+          type: 'asr_partial',
+          text: String(data.text),
+          sentenceEnd: Boolean(data.sentence_end),
+        })
         break
       case 'asr_final':
         this.emit({ type: 'asr_final', text: String(data.text) })
@@ -177,6 +182,7 @@ export class RealtimeSession {
             llmFirstSentenceMs: Number(data.llm_first_sentence_ms ?? -1),
             ttsFirstByteMs: Number(data.tts_first_byte_ms ?? -1),
             playbackStartMs: Number(data.playback_start_ms ?? -1),
+            fillerPlayedMs: Number(data.filler_played_ms ?? -1),
           },
         })
         break
