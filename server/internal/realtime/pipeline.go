@@ -13,7 +13,6 @@ import (
 	"github.com/mochi-ai/server/internal/chat"
 	"github.com/mochi-ai/server/internal/config"
 	"github.com/mochi-ai/server/pkg/dashscope"
-	"github.com/mochi-ai/server/pkg/tencent"
 )
 
 // Pipeline orchestrates ASR → LLM → TTS (turn-based, half-duplex).
@@ -28,30 +27,23 @@ type Pipeline struct {
 func NewPipeline(chatSvc *chat.Service, cfg config.RealtimeConfig, appCfg *config.Config) *Pipeline {
 	p := &Pipeline{chat: chatSvc, cfg: cfg, ttsFormat: "mp3"}
 	apiKey := appCfg.AI.APIKey
+	ep := dashscope.EndpointConfig{
+		WSURL:       cfg.Dashscope.WSURL,
+		WorkspaceID: cfg.Dashscope.WorkspaceID,
+		Region:      cfg.Dashscope.Region,
+	}
+	asrEp := dashscope.EndpointConfig{WSURL: cfg.Dashscope.ASRWSURL}
 	if cfg.ASR.Provider == "dashscope" && apiKey != "" {
-		p.asr = newDashscopeASR(dashscope.NewASRClient(apiKey, cfg.ASR.Model, cfg.ASR.SampleRate))
+		p.asr = newDashscopeASR(dashscope.NewASRClient(apiKey, cfg.ASR.Model, cfg.ASR.SampleRate, asrEp))
 	}
 
 	var primary TTSSynthesizer
-	var backup TTSSynthesizer
 	if cfg.TTS.Provider == "dashscope" && apiKey != "" {
-		client := dashscope.NewTTSClient(apiKey, cfg.TTS.Model, cfg.TTS.Voice, cfg.TTS.SampleRate)
+		client := dashscope.NewTTSClient(apiKey, cfg.TTS.Model, cfg.TTS.Voice, cfg.TTS.SampleRate, ep)
 		primary = newDashscopeTTSSynth(client)
 		p.ttsFormat = client.AudioFormat()
 	}
-	ttsCfg := appCfg.TTSConfig()
-	if ttsCfg.SecretID != "" && ttsCfg.SecretKey != "" {
-		tc := tencent.NewClient(ttsCfg.SecretID, ttsCfg.SecretKey, appCfg.ASRRegion())
-		backup = newTencentTTSSynth(tencent.NewTTS(tc, ttsCfg.VoiceType))
-	}
-	switch {
-	case primary != nil && backup != nil:
-		p.tts = &fallbackTTSSynth{primary: primary, backup: backup, name: "dashscope"}
-	case primary != nil:
-		p.tts = primary
-	case backup != nil:
-		p.tts = backup
-	}
+	p.tts = primary
 	return p
 }
 
@@ -70,7 +62,7 @@ func (p *Pipeline) PrewarmTTS(ctx context.Context) {
 	go func() {
 		warmCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		if err := p.tts.Synthesize(warmCtx, "。", func([]byte) {}); err != nil {
+		if err := p.tts.Synthesize(warmCtx, "嗯", func([]byte) {}); err != nil {
 			log.Printf("[realtime] tts prewarm: %v", err)
 			return
 		}

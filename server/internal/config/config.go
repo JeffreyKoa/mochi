@@ -15,8 +15,6 @@ type Config struct {
 	Redis    RedisConfig    `yaml:"redis"`
 	JWT      JWTConfig      `yaml:"jwt"`
 	AI       AIConfig       `yaml:"ai"`
-	ASR      TencentConfig  `yaml:"asr"`
-	TTS      TencentConfig  `yaml:"tts"`
 	Client   ClientConfig   `yaml:"client"`
 	Realtime RealtimeConfig `yaml:"realtime"`
 }
@@ -60,14 +58,6 @@ type AIConfig struct {
 	ModelCode string `yaml:"model_code"`
 }
 
-type TencentConfig struct {
-	AppID     string `yaml:"app_id"`
-	SecretID  string `yaml:"secret_id"`
-	SecretKey string `yaml:"secret_key"`
-	Region    string `yaml:"region"`
-	VoiceType int64  `yaml:"voice_type"`
-}
-
 type ClientConfig struct {
 	APIBase string `yaml:"api_base"`
 }
@@ -75,10 +65,18 @@ type ClientConfig struct {
 type RealtimeConfig struct {
 	Enabled        bool             `yaml:"enabled"`
 	PrewarmEnabled bool             `yaml:"prewarm_enabled"`
+	Dashscope      RealtimeDashscope `yaml:"dashscope"`
 	VAD            RealtimeVAD      `yaml:"vad"`
 	ASR            RealtimeASR      `yaml:"asr"`
 	TTS            RealtimeTTS      `yaml:"tts"`
 	Pipeline       RealtimePipeline `yaml:"pipeline"`
+}
+
+type RealtimeDashscope struct {
+	WorkspaceID string `yaml:"workspace_id"`
+	Region      string `yaml:"region"`
+	WSURL       string `yaml:"ws_url"`       // TTS 等业务空间端点
+	ASRWSURL    string `yaml:"asr_ws_url"`   // 留空则用默认 dashscope 全球端点
 }
 
 type RealtimeVAD struct {
@@ -126,27 +124,6 @@ func (c *Config) ServerMode() string {
 		return "debug"
 	}
 	return c.Server.Mode
-}
-
-func (c *Config) TTSConfig() TencentConfig {
-	if c.TTS.SecretID != "" {
-		return c.TTS
-	}
-	cfg := c.ASR
-	if cfg.Region == "" {
-		cfg.Region = "ap-guangzhou"
-	}
-	if cfg.VoiceType == 0 {
-		cfg.VoiceType = 101001
-	}
-	return cfg
-}
-
-func (c *Config) ASRRegion() string {
-	if c.ASR.Region != "" {
-		return c.ASR.Region
-	}
-	return "ap-guangzhou"
 }
 
 func Load() (*Config, error) {
@@ -210,6 +187,9 @@ func (r *RealtimeConfig) applyDefaults() {
 	if r.VAD.Model == "" {
 		r.VAD.Model = "energy"
 	}
+	if r.Dashscope.Region == "" {
+		r.Dashscope.Region = "cn-beijing"
+	}
 	if r.ASR.Provider == "" {
 		r.ASR.Provider = "dashscope"
 	}
@@ -223,10 +203,10 @@ func (r *RealtimeConfig) applyDefaults() {
 		r.TTS.Provider = "dashscope"
 	}
 	if r.TTS.Model == "" {
-		r.TTS.Model = "cosyvoice-v2"
+		r.TTS.Model = "qwen-audio-3.0-tts-plus"
 	}
 	if r.TTS.Voice == "" {
-		r.TTS.Voice = "longxiaochun_v2"
+		r.TTS.Voice = "longanhuan_v3.6"
 	}
 	if r.TTS.SampleRate == 0 {
 		r.TTS.SampleRate = 22050

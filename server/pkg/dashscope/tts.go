@@ -12,32 +12,38 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// TTSClient streams CosyVoice synthesis over WebSocket.
+// TTSClient streams Qwen-Audio-TTS / CosyVoice synthesis over WebSocket.
 type TTSClient struct {
 	apiKey      string
 	model       string
 	voice       string
 	sampleRate  int
 	wsURL       string
+	workspaceID string
 	audioFormat string
 }
 
-func NewTTSClient(apiKey, model, voice string, sampleRate int) *TTSClient {
+func NewTTSClient(apiKey, model, voice string, sampleRate int, ep ...EndpointConfig) *TTSClient {
 	if model == "" {
-		model = "cosyvoice-v2"
+		model = "qwen-audio-3.0-tts-plus"
 	}
 	if voice == "" {
-		voice = "longxiaochun_v2"
+		voice = "longanhuan_v3.6"
 	}
 	if sampleRate == 0 {
 		sampleRate = 22050
+	}
+	var cfg EndpointConfig
+	if len(ep) > 0 {
+		cfg = ep[0]
 	}
 	return &TTSClient{
 		apiKey:      apiKey,
 		model:       model,
 		voice:       voice,
 		sampleRate:  sampleRate,
-		wsURL:       defaultWSURL,
+		wsURL:       ResolveWSURL(cfg.WSURL, cfg.WorkspaceID, cfg.Region),
+		workspaceID: cfg.WorkspaceID,
 		audioFormat: "mp3",
 	}
 }
@@ -72,6 +78,9 @@ func (c *TTSClient) StartSession(ctx context.Context, onAudio func([]byte)) (*TT
 
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+c.apiKey)
+	if c.workspaceID != "" {
+		header.Set("X-DashScope-WorkSpace", c.workspaceID)
+	}
 
 	dialer := websocket.Dialer{HandshakeTimeout: 30 * time.Second}
 	conn, _, err := dialer.DialContext(dialCtx, c.wsURL, header)
@@ -92,15 +101,14 @@ func (c *TTSClient) StartSession(ctx context.Context, onAudio func([]byte)) (*TT
 
 	format := c.AudioFormat()
 	params := map[string]any{
-		"text_type": "PlainText",
-		"voice":     c.voice,
-		"format":    format,
-		"volume":    50,
-		"rate":      1.0,
-		"pitch":     1.0,
-	}
-	if format == "pcm" {
-		params["sample_rate"] = c.sampleRate
+		"text_type":   "PlainText",
+		"voice":       c.voice,
+		"format":      format,
+		"sample_rate": c.sampleRate,
+		"volume":      50,
+		"rate":        1.0,
+		"pitch":       1.0,
+		"enable_ssml": false,
 	}
 
 	runTask := map[string]any{
