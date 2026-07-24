@@ -7,10 +7,16 @@ import type { Animation } from '@/stores/petStore'
 const pet = usePetStore()
 const canvasRef = ref<HTMLCanvasElement>()
 
-const CANVAS_W = 200
-const CANVAS_H = 210
+const CANVAS_W = 280
+const CANVAS_H = 280
 const BODY_R = 48
 const BODY_CY = -18
+/** Base scale during happy spin — further reduced dynamically when tail nears edges. */
+const DANCE_FIT_SCALE = 0.7
+const DANCE_EDGE_MARGIN = 18
+/** Max distance from body pivot to tail tip (incl. puff radius). */
+const TAIL_EXTENT = 138
+const LEG_EXTENT = 84
 
 let app: PIXI.Application | null = null
 let petGraphic: PIXI.Graphics | null = null
@@ -18,6 +24,11 @@ let animTimer: ReturnType<typeof setInterval> | null = null
 let bounceOffset = 0
 let legSwing = 0
 let earFlop = 0
+let tailSwing = 0
+let tailWave = 0
+let danceRotation = 0
+let danceSkewX = 0
+let danceSkewY = 0
 
 const COLORS = computed(() => pet.animationColors)
 const LEG_COLOR = computed(() => pet.legColor)
@@ -71,6 +82,68 @@ function drawEarInner(cy: number, flop = 0) {
   g.fill({ color: lastEarInner, alpha: 0.92 })
 }
 
+/** Build tail puff positions — thin at root, slightly thicker toward the tip. */
+function buildTailSegments(cy: number, swing: number, wave: number) {
+  const s = swing
+  const w = wave
+  const curl = 1 + Math.max(s, -14) * 0.012
+  const radii = [7, 7.5, 8.5, 9.5, 10, 10.5, 11, 11.5, 12.5]
+
+  return [
+    { x: 34 + s * 0.15, y: cy + 16, r: radii[0] },
+    { x: 37 + s * 0.35, y: cy + 2, r: radii[1] },
+    { x: 40 + s * 0.65 + w * 0.25, y: cy - 14 * curl, r: radii[2] },
+    { x: 42 + s * 1.0 + w * 0.45, y: cy - 28 * curl, r: radii[3] },
+    { x: 43 + s * 1.3 + w * 0.6, y: cy - 40 * curl, r: radii[4] },
+    { x: 42 + s * 1.6 + w * 0.75, y: cy - 52 * curl, r: radii[5] },
+    { x: 40 + s * 1.85 + w * 0.88, y: cy - 62 * curl, r: radii[6] },
+    { x: 38 + s * 2.05 + w * 1.0, y: cy - 70 * curl, r: radii[7] },
+    { x: 36 + s * 2.25 + w * 1.1, y: cy - 76 * curl + w * 0.15, r: radii[8] },
+  ]
+}
+
+function drawTailSegments(
+  segments: ReturnType<typeof buildTailSegments>,
+  color: number,
+  from: number,
+  to: number,
+  withHighlights: boolean,
+) {
+  if (!petGraphic) return
+  const g = petGraphic
+
+  for (let i = from; i <= to; i++) {
+    const seg = segments[i]
+    g.circle(seg.x, seg.y, seg.r)
+    g.fill(color)
+  }
+
+  if (!withHighlights) return
+
+  for (let i = Math.max(from, 1); i <= to; i++) {
+    if (i >= segments.length - 1) continue
+    const seg = segments[i]
+    g.circle(seg.x - 4, seg.y + 3, seg.r * 0.52)
+    g.fill({ color: lastEarInner, alpha: 0.38 })
+  }
+
+  if (to >= segments.length - 1) {
+    const tip = segments[segments.length - 1]
+    g.circle(tip.x - 3, tip.y + 2, tip.r * 0.45)
+    g.fill({ color: lastEarInner, alpha: 0.5 })
+  }
+}
+
+function drawTailBase(cy: number, color: number, swing: number, wave: number) {
+  const segments = buildTailSegments(cy, swing, wave)
+  drawTailSegments(segments, color, 0, 2, false)
+}
+
+function drawTailUpper(cy: number, color: number, swing: number, wave: number) {
+  const segments = buildTailSegments(cy, swing, wave)
+  drawTailSegments(segments, color, 3, segments.length - 1, true)
+}
+
 function drawLegs(legTop: number) {
   if (!petGraphic) return
   const swing = legSwing
@@ -90,6 +163,40 @@ function drawLegs(legTop: number) {
   petGraphic.fill(lastFootColor)
 }
 
+function danceFitScale(rotation: number): number {
+  // Tail sits back-right-up in local space; track where the tip points as we spin.
+  const tipAngle = rotation * 1.15 + 0.62
+  const proj = Math.max(
+    Math.abs(Math.cos(tipAngle)) * TAIL_EXTENT,
+    Math.abs(Math.sin(tipAngle)) * TAIL_EXTENT,
+    LEG_EXTENT,
+  )
+  const maxHalf = Math.min(CANVAS_W, CANVAS_H) / 2 - DANCE_EDGE_MARGIN
+  return Math.min(DANCE_FIT_SCALE, maxHalf / (proj + DANCE_EDGE_MARGIN))
+}
+
+function applyDanceTransform(anim: Animation) {
+  if (!petGraphic) return
+
+  if (anim === 'happy') {
+    const phase = danceRotation
+    const fit = danceFitScale(phase)
+    const tumbleX = 0.78 + Math.abs(Math.sin(phase * 0.95)) * 0.18
+    const tumbleY = 0.78 + Math.abs(Math.cos(phase * 0.78)) * 0.18
+    petGraphic.rotation = phase * 1.15
+    petGraphic.skew.set(
+      Math.sin(phase * 1.35) * 0.07 + danceSkewX,
+      Math.cos(phase * 1.05) * 0.05 + danceSkewY,
+    )
+    petGraphic.scale.set(fit * tumbleX, fit * tumbleY)
+    return
+  }
+
+  petGraphic.rotation = 0
+  petGraphic.skew.set(0, 0)
+  petGraphic.scale.set(pet.facing === 'left' ? -1 : 1, 1)
+}
+
 function drawPet(color: number, scale = 1, eyeOpen = true) {
   if (!petGraphic) return
   petGraphic.clear()
@@ -99,18 +206,19 @@ function drawPet(color: number, scale = 1, eyeOpen = true) {
   const r = BODY_R * scale
   const legTop = cy + r - 6
 
-  // Legs under the body (drawn first, then body covers the top of legs)
+  // Tail root hidden under body, then legs / ears / body, then visible upper tail
+  drawTailBase(cy, color, tailSwing, tailWave)
   drawLegs(legTop)
-
-  // Ears behind head
   drawEars(cy, color, earFlop)
 
-  // Body
   petGraphic.circle(0, cy, r)
   petGraphic.fill(color)
 
   // Inner ear detail (on top of head)
   drawEarInner(cy, earFlop)
+
+  // Upper tail after ears so the curl peak is not covered
+  drawTailUpper(cy, color, tailSwing, tailWave)
 
   // Eyes
   if (eyeOpen) {
@@ -165,31 +273,46 @@ function startAnimLoop(anim: Animation) {
         bounceOffset = Math.sin(frame * 0.15) * 2
         legSwing = Math.sin(frame * 0.14) * 4
         earFlop = Math.sin(frame * 0.12) * 2
+        tailSwing = Math.sin(frame * 0.1) * 6
+        tailWave = Math.sin(frame * 0.16 + 1.2) * 3.5
         break
       case 'happy':
-        bounceOffset = Math.abs(Math.sin(frame * 0.4)) * -6
-        legSwing = Math.sin(frame * 0.4) * 7
-        earFlop = Math.sin(frame * 0.35) * 5
+        danceRotation = frame * 0.11
+        danceSkewX = Math.sin(frame * 0.17) * 0.04
+        danceSkewY = Math.cos(frame * 0.13) * 0.03
+        bounceOffset = Math.abs(Math.sin(frame * 0.55)) * -9
+        legSwing = Math.sin(frame * 0.9) * 12
+        earFlop = Math.sin(frame * 0.7) * 8
+        tailSwing = Math.sin(frame * 0.65) * 16
+        tailWave = Math.sin(frame * 0.85 + 0.8) * 8
         break
       case 'sad':
         bounceOffset = 3
         legSwing = 0
         earFlop = -4
+        tailSwing = Math.sin(frame * 0.06) * 3 - 14
+        tailWave = Math.sin(frame * 0.08) * 2
         break
       case 'sleep':
         bounceOffset = Math.sin(frame * 0.08) * 1.5
         legSwing = 0
         earFlop = 3
+        tailSwing = Math.sin(frame * 0.05) * 2 - 10
+        tailWave = 0
         break
       case 'eat':
         bounceOffset = Math.sin(frame * 0.5) * 2
         legSwing = Math.sin(frame * 0.5) * 5
         earFlop = Math.sin(frame * 0.45) * 3
+        tailSwing = Math.sin(frame * 0.4) * 10
+        tailWave = Math.sin(frame * 0.52) * 4.5
         break
       case 'walk':
         legSwing = Math.sin(frame * 0.55) * 18
         bounceOffset = Math.abs(Math.sin(frame * 0.55)) * 5
         earFlop = Math.sin(frame * 0.55) * 6
+        tailSwing = Math.sin(frame * 0.55) * 16
+        tailWave = Math.sin(frame * 0.72 + 0.5) * 6.5
         break
     }
 
@@ -202,11 +325,13 @@ function startAnimLoop(anim: Animation) {
       : 1
 
     drawPet(color, scale, eyeOpen)
+    applyDanceTransform(anim)
   }, 50)
 }
 
 watch(() => pet.animationColors, () => {
   drawPet(COLORS.value[pet.currentAnimation], 1, pet.currentAnimation !== 'sleep')
+  applyDanceTransform(pet.currentAnimation)
 }, { deep: true })
 
 onMounted(async () => {
@@ -224,8 +349,9 @@ onMounted(async () => {
   })
 
   petGraphic = new PIXI.Graphics()
+  petGraphic.pivot.set(0, BODY_CY)
   petGraphic.x = CANVAS_W / 2
-  petGraphic.y = 92
+  petGraphic.y = CANVAS_H / 2 + BODY_CY
   petGraphic.scale.x = pet.facing === 'left' ? -1 : 1
   app.stage.addChild(petGraphic)
 
@@ -237,9 +363,7 @@ watch(() => pet.currentAnimation, (anim) => {
 })
 
 watch(() => pet.facing, () => {
-  if (petGraphic) {
-    petGraphic.scale.x = pet.facing === 'left' ? -1 : 1
-  }
+  applyDanceTransform(pet.currentAnimation)
 })
 
 onUnmounted(() => {
@@ -254,8 +378,8 @@ onUnmounted(() => {
 
 <style scoped>
 .pet-canvas {
-  width: 200px;
-  height: 210px;
+  width: 280px;
+  height: 280px;
   display: block;
   pointer-events: none;
 }

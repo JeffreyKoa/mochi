@@ -3,8 +3,8 @@ import { emit } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 
-export const PET_W = 200
-export const PET_H = 220
+export const PET_W = 280
+export const PET_H = 280
 export const CHAT_W = 320
 export const CHAT_H = 440
 export const CHAT_GAP = 8

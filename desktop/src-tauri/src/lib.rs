@@ -4,8 +4,8 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 
-const PET_W: f64 = 200.0;
-const PET_H: f64 = 220.0;
+const PET_W: f64 = 280.0;
+const PET_H: f64 = 280.0;
 const CHAT_W: f64 = 320.0;
 const CHAT_H: f64 = 440.0;
 const CHAT_GAP: f64 = 8.0;

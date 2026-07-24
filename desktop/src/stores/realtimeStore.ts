@@ -505,7 +505,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
       if (reply) {
         commitAssistantMessage(reply)
       } else {
-        commitAssistantMessage('嗯... 让我想想~')
+        statusText.value = '没太听清，再说一次好不好~'
       }
       finishTextTurn()
     } catch (e) {

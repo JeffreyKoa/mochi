@@ -458,7 +458,12 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		reply = strings.TrimSpace(tokenBuf.String())
 	}
 	if reply == "" {
-		reply = "嗯... 让我想想~"
+		if segCh != nil {
+			close(segCh)
+			<-ttsDone
+		}
+		p.failTurn(ctx, sess, send, "LLM_EMPTY", "没太听清，再说一次好不好~")
+		return false
 	}
 	_ = send.Send(MsgLLMDone, LLMDone{Text: reply})
 

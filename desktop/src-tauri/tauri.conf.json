@@ -14,8 +14,8 @@
       {
         "label": "pet",
         "title": "Mochi",
-        "width": 200,
-        "height": 220,
+        "width": 280,
+        "height": 280,
         "transparent": true,
         "decorations": false,
         "alwaysOnTop": true,

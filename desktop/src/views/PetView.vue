@@ -172,7 +172,7 @@ function startRoamer() {
         pet.isChatOpen,
         isDragging.value,
         sidePanelOpen || growth.showSettings,
-        rt.connected && (rt.talking || rt.processing),
+        rt.talking || rt.processing,
       ),
     onWalkStart: (facing) => {
       pet.setFacing(facing)
@@ -250,7 +250,8 @@ watch(
         pet.syncAnimationFromState()
       }
     } else {
-      roamer?.resume()
+      if (!roamer) startRoamer()
+      else roamer.resume()
     }
   },
 )
@@ -343,7 +344,6 @@ async function onPetClick() {
   if (clickTimer) clearTimeout(clickTimer)
   clickTimer = setTimeout(async () => {
     clickTimer = null
-    roamer?.pause()
 
     if (rt.talking) {
       if (rt.resting) {
@@ -352,30 +352,41 @@ async function onPetClick() {
       return
     }
 
-    await initClientConfig().catch(() => {})
-    if (!getClientConfig().realtimeEnabled) {
-      pet.showSpeechBubble('请双击打开聊天，用打字跟我聊~')
-      roamer?.resume()
-      return
-    }
-
     pet.setAnimation('happy')
-    pet.showSpeechBubble(pet.getWakeGreeting())
+    pet.showSpeechBubble(pet.getWakeGreeting(), 3000)
+    setTimeout(() => {
+      pet.syncAnimationFromState()
+    }, 2000)
+  }, 200)
+}
 
-    try {
-      await rt.connect()
-      await rt.startTalk()
-      if (!rt.talking && rt.statusText) {
-        pet.showSpeechBubble(rt.statusText, 6000)
-        pet.syncAnimationFromState()
-        roamer?.resume()
-      }
-    } catch {
-      pet.showSpeechBubble('无法启动麦克风，请检查权限')
+async function startVoiceFromMenu() {
+  closeMenu()
+  roamer?.pause()
+
+  await initClientConfig().catch(() => {})
+  if (!getClientConfig().realtimeEnabled) {
+    pet.showSpeechBubble('语音对话未开启，请用聊天打字~')
+    roamer?.resume()
+    return
+  }
+
+  pet.setAnimation('happy')
+  pet.showSpeechBubble('我在听，主人说~', 2500)
+
+  try {
+    await rt.connect()
+    await rt.startTalk()
+    if (!rt.talking && rt.statusText) {
+      pet.showSpeechBubble(rt.statusText, 6000)
       pet.syncAnimationFromState()
       roamer?.resume()
     }
-  }, 200)
+  } catch {
+    pet.showSpeechBubble('无法启动麦克风，请检查权限')
+    pet.syncAnimationFromState()
+    roamer?.resume()
+  }
 }
 
 async function endVoiceFromMenu() {
@@ -446,8 +457,8 @@ function clampMenuPos(clientX: number, clientY: number, menuW: number, menuH: nu
   if (y < MENU_PAD) y = MENU_PAD
 
   // 避免挡住头顶 speech bubble
-  if (pet.showBubble && y < 80) {
-    y = 80
+  if (pet.showBubble && y < 72) {
+    y = 72
     if (y + menuH + MENU_PAD > vh) {
       y = Math.max(MENU_PAD, vh - menuH - MENU_PAD)
     }
@@ -460,7 +471,7 @@ async function onContextMenu(e: MouseEvent) {
   e.preventDefault()
   menuPosReady.value = false
   // 先用估算尺寸预定位，避免贴边时被窗口裁切
-  menuPos.value = clampMenuPos(e.clientX, e.clientY, 108, rt.talking ? 168 : 136)
+  menuPos.value = clampMenuPos(e.clientX, e.clientY, 108, rt.talking ? 168 : 168)
   menuVisible.value = true
 
   await nextTick()
@@ -513,14 +524,14 @@ function onDblClick() {
       @contextmenu="onContextMenu"
     >
       <PetCanvas />
+    </div>
 
-      <div
-        v-if="pet.showBubble"
-        class="speech-bubble"
-        :class="pet.facing === 'left' ? 'speech-bubble--tr' : 'speech-bubble--tl'"
-      >
-        {{ pet.bubbleText }}
-      </div>
+    <div
+      v-if="pet.showBubble"
+      class="speech-bubble"
+      :class="pet.facing === 'left' ? 'speech-bubble--tr' : 'speech-bubble--tl'"
+    >
+      {{ pet.bubbleText }}
     </div>
 
     <ChatPanel v-if="chatInline" class="chat-side" @pointerdown.stop />
@@ -537,6 +548,7 @@ function onDblClick() {
       <button type="button" @click.stop="onFeed">🍙 喂食</button>
       <button type="button" @click.stop="onPlay">🎾 玩耍</button>
       <button type="button" @pointerdown.stop @click.stop="openChatFromMenu">💬 聊天</button>
+      <button v-if="!rt.talking" type="button" @click.stop="startVoiceFromMenu">🎤 语音对话</button>
       <button v-if="rt.talking" type="button" @click.stop="endVoiceFromMenu">🔇 结束对话</button>
       <button type="button" @click.stop="openSettingsFromMenu">⚙️ 设置</button>
     </div>
@@ -546,8 +558,8 @@ function onDblClick() {
 <style scoped>
 .pet-shell {
   position: relative;
-  width: 200px;
-  height: 220px;
+  width: 280px;
+  height: 280px;
   background: transparent;
   overflow: hidden;
   cursor: grab;
@@ -560,7 +572,7 @@ function onDblClick() {
 }
 
 .pet-shell.side-panel-open {
-  width: 200px;
+  width: 280px;
   height: 100%;
   min-height: 440px;
   cursor: default;
@@ -581,8 +593,8 @@ function onDblClick() {
 }
 
 .pet-area {
-  width: 200px;
-  height: 220px;
+  width: 280px;
+  height: 280px;
   flex-shrink: 0;
   position: relative;
 }
@@ -595,52 +607,43 @@ function onDblClick() {
 
 .speech-bubble {
   position: absolute;
-  top: 0;
+  top: 4px;
+  left: 50%;
+  transform: translateX(-50%);
   background: rgba(255, 255, 255, 0.95);
-  padding: 6px 10px;
+  padding: 6px 12px;
   border-radius: 14px;
   font-size: 12px;
   color: #333;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
-  max-width: 118px;
+  max-width: calc(100% - 24px);
+  width: max-content;
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   line-height: 1.35;
-  text-align: left;
-  z-index: 10;
+  text-align: center;
+  z-index: 20;
   pointer-events: none;
 }
 
-/* 朝右时气泡在头部左上，不挡脸 */
-.speech-bubble--tl {
-  left: 4px;
-  right: auto;
-}
-
-.speech-bubble--tl::after {
+.speech-bubble::after {
   content: '';
   position: absolute;
   bottom: -6px;
-  right: 20px;
-  left: auto;
-  transform: none;
+  left: 50%;
+  transform: translateX(-50%);
   border: 6px solid transparent;
   border-top-color: rgba(255, 255, 255, 0.95);
 }
 
-/* 朝左时气泡在头部右上 */
-.speech-bubble--tr {
-  right: 4px;
-  left: auto;
+/* 朝右时指针略偏右，朝左时略偏左 */
+.speech-bubble--tl::after {
+  left: 58%;
 }
 
 .speech-bubble--tr::after {
-  content: '';
-  position: absolute;
-  bottom: -6px;
-  left: 20px;
-  right: auto;
-  transform: none;
-  border: 6px solid transparent;
-  border-top-color: rgba(255, 255, 255, 0.95);
+  left: 42%;
 }
 
 .context-menu {

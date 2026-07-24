@@ -322,11 +322,10 @@ func (r *RealtimeConfig) applyDefaults() {
 	if r.BargeIn.BargeInMS == 0 {
 		r.BargeIn.BargeInMS = 800
 	}
-	if r.ThinkingFiller.ThresholdMS == 0 {
-		r.ThinkingFiller.ThresholdMS = 800
-	}
-	if len(r.ThinkingFiller.Phrases) == 0 {
-		r.ThinkingFiller.Phrases = []string{"嗯，让我想想~", "稍等一下哦~"}
+	if r.ThinkingFiller.Enabled {
+		if r.ThinkingFiller.ThresholdMS == 0 {
+			r.ThinkingFiller.ThresholdMS = 800
+		}
 	}
 	if r.Dashscope.Region == "" {
 		r.Dashscope.Region = "cn-beijing"
