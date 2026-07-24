@@ -31,6 +31,7 @@ type chatBuildResult struct {
 	messages    []ai.Message
 	temperature float64
 	emotionHint emotion.Hint
+	bond        models.BondProfile
 }
 
 type Service struct {
@@ -44,10 +45,11 @@ type Service struct {
 	brief      *brief.Service
 	reflection *reflection.Service
 	growth     config.GrowthConfig
-	tools      *tools.Orchestrator
+	toolsExec  *tools.Executor
+	toolsCfg   config.ToolsConfig
 }
 
-func NewService(db *gorm.DB, aiProvider *ai.Provider, memSvc *memory.Service, lifeSvc *life.Service, lifecycleSvc *lifecycle.Service, bondSvc *bond.Service, emotionSvc *emotion.Service, briefSvc *brief.Service, reflectionSvc *reflection.Service, growthCfg config.GrowthConfig, toolsOrch *tools.Orchestrator) *Service {
+func NewService(db *gorm.DB, aiProvider *ai.Provider, memSvc *memory.Service, lifeSvc *life.Service, lifecycleSvc *lifecycle.Service, bondSvc *bond.Service, emotionSvc *emotion.Service, briefSvc *brief.Service, reflectionSvc *reflection.Service, growthCfg config.GrowthConfig, toolsExec *tools.Executor, toolsCfg config.ToolsConfig) *Service {
 	return &Service{
 		db:         db,
 		ai:         aiProvider,
@@ -59,7 +61,8 @@ func NewService(db *gorm.DB, aiProvider *ai.Provider, memSvc *memory.Service, li
 		brief:      briefSvc,
 		reflection: reflectionSvc,
 		growth:     growthCfg,
-		tools:      toolsOrch,
+		toolsExec:  toolsExec,
+		toolsCfg:   toolsCfg,
 	}
 }
 
@@ -132,14 +135,6 @@ func (s *Service) buildChatMessages(ctx context.Context, userID uint64, message 
 	memories, _ := s.memory.RetrieveRelevant(dbCtx, pet.ID, message, 5, hint.UserMood)
 	bondProfile, _ := s.bond.GetOrCreate(dbCtx, pet.ID)
 
-	var toolNote string
-	if s.tools != nil {
-		hr := s.tools.Handle(dbCtx, pet, userID, message, hint, bondProfile)
-		if hr.Ran {
-			toolNote = hr.ToolNote
-		}
-	}
-
 	userBrief, _ := s.brief.GetCompiled(dbCtx, pet.ID)
 
 	var personality models.Personality
@@ -170,7 +165,6 @@ func (s *Service) buildChatMessages(ctx context.Context, userID uint64, message 
 		AgeDays:            ageInfo.AgeDays,
 		RemainingDays:      ageInfo.RemainingDays,
 		Species:            pet.Species,
-		ToolNote:           toolNote,
 	})
 	messages = append(messages, ai.Message{Role: "user", Content: message})
 
@@ -179,7 +173,19 @@ func (s *Service) buildChatMessages(ctx context.Context, userID uint64, message 
 		messages:    messages,
 		temperature: hint.Temperature,
 		emotionHint: hint,
+		bond:        bondProfile,
 	}, nil
+}
+
+func (s *Service) messagesForReply(ctx context.Context, built *chatBuildResult, userID uint64, userMsg string) ([]ai.Message, string, error) {
+	turn, err := s.applyToolTurn(ctx, built.messages, userMsg, built.pet, userID, built.bond, built.emotionHint)
+	if err != nil {
+		return built.messages, "", nil
+	}
+	if turn.directReply != "" {
+		return built.messages, turn.directReply, nil
+	}
+	return turn.messages, "", nil
 }
 
 func (s *Service) StreamMessage(ctx context.Context, userID uint64, message string, onToken func(token string)) (string, error) {
@@ -188,8 +194,15 @@ func (s *Service) StreamMessage(ctx context.Context, userID uint64, message stri
 		return "", err
 	}
 
+	streamMsgs, directReply, _ := s.messagesForReply(ctx, built, userID, message)
+	if directReply != "" {
+		streamText(ctx, directReply, onToken)
+		go s.postProcess(context.Background(), built.pet.ID, message, directReply, built.emotionHint)
+		return directReply, nil
+	}
+
 	chunkChan, err := s.ai.ChatStream(ctx, ai.ChatRequest{
-		Messages:    built.messages,
+		Messages:    streamMsgs,
 		Temperature: built.temperature,
 	})
 	if err != nil {
@@ -235,8 +248,18 @@ func (s *Service) SendMessageStream(c *gin.Context, userID uint64, message strin
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 
+	streamMsgs, directReply, _ := s.messagesForReply(ctx, built, userID, message)
+	if directReply != "" {
+		for _, ch := range directReply {
+			fmt.Fprintf(c.Writer, "data: %s\n\n", mustJSON(map[string]interface{}{"content": string(ch), "done": false}))
+		}
+		go s.postProcess(context.Background(), built.pet.ID, message, directReply, built.emotionHint)
+		fmt.Fprintf(c.Writer, "data: %s\n\n", mustJSON(map[string]interface{}{"content": "", "done": true}))
+		return
+	}
+
 	chunkChan, err := s.ai.ChatStream(ctx, ai.ChatRequest{
-		Messages:    built.messages,
+		Messages:    streamMsgs,
 		Temperature: built.temperature,
 	})
 	if err != nil {
@@ -315,8 +338,14 @@ func (s *Service) CompleteMessage(ctx context.Context, userID uint64, message st
 		return "", err
 	}
 
+	streamMsgs, directReply, _ := s.messagesForReply(ctx, built, userID, message)
+	if directReply != "" {
+		go s.postProcess(context.Background(), built.pet.ID, message, directReply, built.emotionHint)
+		return directReply, nil
+	}
+
 	resp, err := s.ai.Chat(ctx, ai.ChatRequest{
-		Messages:    built.messages,
+		Messages:    streamMsgs,
 		Temperature: built.temperature,
 	})
 	if err != nil {

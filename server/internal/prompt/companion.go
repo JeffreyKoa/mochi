@@ -24,7 +24,6 @@ type CompanionContext struct {
 	AgeDays            int
 	RemainingDays      int
 	Species            string
-	ToolNote           string
 }
 
 func BuildCompanionPrompt(ctx CompanionContext) []ai.Message {
@@ -102,7 +101,7 @@ func intentStrategy(intent string, rapport uint8, needsEmpathy bool) string {
 	case "ask":
 		return "主人有问题：直接简短回答。"
 	case "plan":
-		return "主人在说安排：若系统已帮你办了提醒/待办，按【办事结果】口语确认；若时间不清则温柔追问，不要假装已创建。"
+		return "主人在说安排：可调用 reminder/todo 工具；确认要短、像伙伴答应，不是助手播报。"
 	default:
 		return "自然闲聊，可以抛一个轻松话题。"
 	}

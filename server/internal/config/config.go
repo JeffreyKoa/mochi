@@ -135,12 +135,13 @@ type GrowthConfig struct {
 }
 
 type ToolsConfig struct {
-	Enabled              bool `yaml:"enabled"`
-	MinRapportForSuggest int  `yaml:"min_rapport_for_suggest"`
-	MinTrustForAutoCreate int `yaml:"min_trust_for_auto_create"`
-	ReminderTickSeconds  int  `yaml:"reminder_tick_seconds"`
-	MaxPendingReminders  int  `yaml:"max_pending_reminders"`
-	RouterLLMEnabled     bool `yaml:"router_llm_enabled"`
+	Enabled               bool   `yaml:"enabled"`
+	Mode                  string `yaml:"mode"`
+	MinRapportForSuggest  int    `yaml:"min_rapport_for_suggest"`
+	MinTrustForAutoCreate int    `yaml:"min_trust_for_auto_create"`
+	ReminderTickSeconds   int    `yaml:"reminder_tick_seconds"`
+	MaxPendingReminders   int    `yaml:"max_pending_reminders"`
+	ToolTurnMaxTokens     int    `yaml:"tool_turn_max_tokens"`
 }
 
 func (c *Config) MySQLDSN() string {
@@ -245,6 +246,9 @@ func (c *GrowthConfig) applyDefaults() {
 }
 
 func (c *ToolsConfig) applyDefaults() {
+	if c.Mode == "" {
+		c.Mode = "tool_calling"
+	}
 	if c.MinRapportForSuggest == 0 {
 		c.MinRapportForSuggest = 60
 	}
@@ -256,6 +260,9 @@ func (c *ToolsConfig) applyDefaults() {
 	}
 	if c.MaxPendingReminders == 0 {
 		c.MaxPendingReminders = 50
+	}
+	if c.ToolTurnMaxTokens == 0 {
+		c.ToolTurnMaxTokens = 256
 	}
 }
 

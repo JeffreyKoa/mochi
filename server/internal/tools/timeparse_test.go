@@ -3,8 +3,6 @@ package tools
 import (
 	"testing"
 	"time"
-
-	"github.com/mochi-ai/server/internal/emotion"
 )
 
 func TestParseFireAtTomorrow(t *testing.T) {
@@ -50,25 +48,13 @@ func TestParseFireAtChineseNumerals(t *testing.T) {
 	}
 }
 
-func TestLooksLikeTimedReminder(t *testing.T) {
-	msg := "明天早上九点钟开会，帮我记一下。"
-	if !looksLikeTimedReminder(msg, "plan") {
-		t.Fatal("expected timed reminder")
+func TestParseTimeISO(t *testing.T) {
+	tm, err := parseTimeISO("2026-07-24T09:00:00+08:00", "")
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestRouteUserMessages(t *testing.T) {
-	o := &Orchestrator{}
-	msg := "明天早上九点钟开会，帮我记一下。"
-	tool, title, fireAt, _ := o.route(msg, emotion.Hint{Intent: "plan"})
-	if tool != "reminder_create" {
-		t.Fatalf("tool=%s", tool)
-	}
-	if title != "开会" {
-		t.Fatalf("title=%q", title)
-	}
-	if fireAt.IsZero() {
-		t.Fatal("empty fireAt")
+	if tm.Hour() != 9 {
+		t.Fatalf("hour=%d", tm.Hour())
 	}
 }
 
@@ -79,9 +65,8 @@ func TestExtractTodoTitle(t *testing.T) {
 	}
 }
 
-func TestExtractReminderTitleMeeting(t *testing.T) {
-	title := ExtractReminderTitle("明天早上九点钟开会，帮我记一下。")
-	if title != "开会" {
-		t.Fatalf("expected 开会, got %q", title)
+func TestRegistryCount(t *testing.T) {
+	if len(Registry()) != 6 {
+		t.Fatalf("expected 6 tools, got %d", len(Registry()))
 	}
 }

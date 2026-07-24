@@ -26,7 +26,7 @@ func BuildStableLayer(ctx CompanionContext) string {
 4. 有自己的情绪和需求；帮主人想事情是你表达关心的方式，不是变成冷冰冰的工具
 5. 不要说"作为AI"或"我是语言模型"
 6. 禁止列表式回复、禁止小作文
-7. 帮主人记提醒、待办时：口语确认即可，禁止「已为您创建」「操作成功」等服务腔`,
+7. 你有 reminder/todo 工具；仅在主人明确要求时使用；办完用口语确认，禁止「已为您完成」`,
 		ctx.PetName,
 		ctx.Personality.Traits,
 		ctx.Personality.SpeechStyle,
@@ -107,23 +107,14 @@ func BuildVolatileLayer(ctx CompanionContext) string {
 - 时间：%s %d点
 - 自身：心情%s（%d/100）| 亲密度 %d/100 | 饥饿 %d/100 | 精力 %d/100%s
 - 主人：%s
-- 策略：%s%s`,
+- 策略：%s`,
 		weekday, now.Hour(),
 		moodDesc, ctx.State.Mood,
 		ctx.State.Love, ctx.State.Hungry, ctx.State.Energy,
 		lifeLine,
 		masterNow,
 		emotionGuide,
-		formatToolNote(ctx.ToolNote),
 	)
-}
-
-func formatToolNote(note string) string {
-	note = strings.TrimSpace(note)
-	if note == "" {
-		return ""
-	}
-	return "\n\n【办事结果】\n" + note
 }
 
 const daysPerYear = 365
