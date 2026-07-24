@@ -62,9 +62,9 @@ func main() {
 
 	reflectionSvc := reflection.NewService(db, aiProvider, briefSvc, bondSvc, cfg.Growth)
 	toolsSvc := tools.NewService(db, cfg.Tools)
-	toolsOrch := tools.NewOrchestrator(toolsSvc, aiProvider, cfg.Tools)
+	toolsExec := tools.NewExecutor(toolsSvc, cfg.Tools)
 	toolsHandler := tools.NewHandler(db, toolsSvc)
-	chatSvc := chat.NewService(db, aiProvider, memSvc, lifeSvc, lifecycleSvc, bondSvc, emotionSvc, briefSvc, reflectionSvc, cfg.Growth, toolsOrch)
+	chatSvc := chat.NewService(db, aiProvider, memSvc, lifeSvc, lifecycleSvc, bondSvc, emotionSvc, briefSvc, reflectionSvc, cfg.Growth, toolsExec, cfg.Tools)
 	chatHandler := chat.NewHandler(chatSvc)
 
 	companionScheduler := companion.NewScheduler(db, rdb, aiProvider, bondSvc, cfg.Companion, hub, toolsSvc, cfg.Tools)

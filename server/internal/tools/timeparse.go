@@ -207,20 +207,3 @@ func trimTimePhrases(s string) string {
 func FormatFireAt(t time.Time) string {
 	return t.In(loc).Format("1月2日 15:04")
 }
-
-func looksLikeTimedReminder(msg string, hintIntent string) bool {
-	fireAt, ok := ParseFireAt(msg, time.Now())
-	if !ok || fireAt.IsZero() {
-		return false
-	}
-	keys := []string{
-		"提醒", "记得", "别忘了", "闹钟", "记一下", "帮我记", "记下来", "记下",
-		"开会", "叫我", "要上", "要去", "出发", "飞机", "会议", "日程", "安排",
-	}
-	for _, k := range keys {
-		if strings.Contains(msg, k) {
-			return true
-		}
-	}
-	return hintIntent == "plan"
-}
