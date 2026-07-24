@@ -1,7 +1,9 @@
 package ws
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"sync"
@@ -9,12 +11,15 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/mochi-ai/server/internal/models"
 )
 
+const pendingProactivePrefix = "mochi:proactive:pending:"
+
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin:     func(r *http.Request) bool { return true },
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 }
@@ -25,19 +30,36 @@ type Message struct {
 	Timestamp int64       `json:"timestamp"`
 }
 
+type pendingItem struct {
+	ReminderID uint64 `json:"reminder_id,omitempty"`
+	Message    string `json:"message"`
+	Animation  string `json:"animation"`
+}
+
 type Connection struct {
 	UserID uint64
 	Conn   *websocket.Conn
-	Send   chan []byte
+	Send   chan outboundMsg
+}
+
+type outboundMsg struct {
+	payload []byte
+	onSent  func()
 }
 
 type Hub struct {
 	mu          sync.RWMutex
 	connections map[uint64]*Connection
+	rdb         *redis.Client
+	onDelivered func(reminderID uint64)
 }
 
-func NewHub() *Hub {
-	return &Hub{connections: make(map[uint64]*Connection)}
+func NewHub(rdb *redis.Client) *Hub {
+	return &Hub{connections: make(map[uint64]*Connection), rdb: rdb}
+}
+
+func (h *Hub) SetReminderDeliveredHook(fn func(reminderID uint64)) {
+	h.onDelivered = fn
 }
 
 func (h *Hub) BroadcastState(userID uint64, state models.LifeState, animation string) {
@@ -51,15 +73,37 @@ func (h *Hub) BroadcastState(userID uint64, state models.LifeState, animation st
 	})
 }
 
-func (h *Hub) SendProactive(userID uint64, message, animation string) {
-	h.send(userID, Message{
+func (h *Hub) SendProactive(userID uint64, message, animation string) bool {
+	return h.sendProactive(userID, pendingItem{Message: message, Animation: animation})
+}
+
+func (h *Hub) SendProactiveReminder(userID uint64, reminderID uint64, message, animation string) bool {
+	return h.sendProactive(userID, pendingItem{
+		ReminderID: reminderID,
+		Message:    message,
+		Animation:  animation,
+	})
+}
+
+func (h *Hub) sendProactive(userID uint64, item pendingItem) bool {
+	msg := Message{
 		Type: "proactive_message",
 		Data: map[string]string{
-			"message":   message,
-			"animation": animation,
+			"message":   item.Message,
+			"animation": item.Animation,
 		},
 		Timestamp: time.Now().Unix(),
-	})
+	}
+	var onSent func()
+	if item.ReminderID > 0 && h.onDelivered != nil {
+		id := item.ReminderID
+		onSent = func() { h.onDelivered(id) }
+	}
+	if h.trySend(userID, msg, onSent) {
+		return true
+	}
+	h.enqueuePending(userID, item)
+	return false
 }
 
 func (h *Hub) SendLifeStageChanged(userID uint64, data map[string]interface{}) {
@@ -71,9 +115,13 @@ func (h *Hub) SendLifeStageChanged(userID uint64, data map[string]interface{}) {
 }
 
 func (h *Hub) send(userID uint64, msg Message) {
+	_ = h.trySend(userID, msg, nil)
+}
+
+func (h *Hub) trySend(userID uint64, msg Message, onSent func()) bool {
 	data, err := json.Marshal(msg)
 	if err != nil {
-		return
+		return false
 	}
 
 	h.mu.RLock()
@@ -81,13 +129,57 @@ func (h *Hub) send(userID uint64, msg Message) {
 	h.mu.RUnlock()
 
 	if !ok {
-		return
+		return false
 	}
 
 	select {
-	case conn.Send <- data:
+	case conn.Send <- outboundMsg{payload: data, onSent: onSent}:
+		return true
 	default:
 		log.Printf("[WS] send buffer full for user %d", userID)
+		return false
+	}
+}
+
+func (h *Hub) enqueuePending(userID uint64, item pendingItem) {
+	if h.rdb == nil {
+		log.Printf("[WS] proactive queued but redis unavailable user=%d", userID)
+		return
+	}
+	ctx := context.Background()
+	key := fmt.Sprintf("%s%d", pendingProactivePrefix, userID)
+	payload, _ := json.Marshal(item)
+	if err := h.rdb.RPush(ctx, key, payload).Err(); err != nil {
+		log.Printf("[WS] enqueue pending failed user=%d: %v", userID, err)
+		return
+	}
+	_ = h.rdb.Expire(ctx, key, 7*24*time.Hour)
+	log.Printf("[WS] proactive queued user=%d reminder=%d", userID, item.ReminderID)
+}
+
+func (h *Hub) flushPending(userID uint64) {
+	if h.rdb == nil {
+		return
+	}
+	ctx := context.Background()
+	key := fmt.Sprintf("%s%d", pendingProactivePrefix, userID)
+	for {
+		raw, err := h.rdb.LPop(ctx, key).Result()
+		if err == redis.Nil {
+			return
+		}
+		if err != nil {
+			log.Printf("[WS] flush pending pop failed user=%d: %v", userID, err)
+			return
+		}
+		var item pendingItem
+		if json.Unmarshal([]byte(raw), &item) != nil || item.Message == "" {
+			continue
+		}
+		if !h.sendProactive(userID, item) {
+			_ = h.rdb.LPush(ctx, key, raw).Err()
+			return
+		}
 	}
 }
 
@@ -100,7 +192,7 @@ func (h *Hub) HandleWS(c *gin.Context, userID uint64) {
 	connection := &Connection{
 		UserID: userID,
 		Conn:   conn,
-		Send:   make(chan []byte, 64),
+		Send:   make(chan outboundMsg, 64),
 	}
 
 	h.mu.Lock()
@@ -111,6 +203,7 @@ func (h *Hub) HandleWS(c *gin.Context, userID uint64) {
 	h.connections[userID] = connection
 	h.mu.Unlock()
 
+	go h.flushPending(userID)
 	go h.writePump(connection)
 	h.readPump(connection)
 }
@@ -154,14 +247,17 @@ func (h *Hub) writePump(c *Connection) {
 
 	for {
 		select {
-		case message, ok := <-c.Send:
+		case item, ok := <-c.Send:
 			c.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if !ok {
 				c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
-			if err := c.Conn.WriteMessage(websocket.TextMessage, message); err != nil {
+			if err := c.Conn.WriteMessage(websocket.TextMessage, item.payload); err != nil {
 				return
+			}
+			if item.onSent != nil {
+				item.onSent()
 			}
 		case <-ticker.C:
 			c.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))

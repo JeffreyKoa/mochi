@@ -34,8 +34,10 @@ watch(
 )
 
 async function close() {
-  rt.disconnect()
   pet.isChatOpen = false
+  if (!rt.talking) {
+    rt.disconnect()
+  }
   if (isTauri()) {
     await closeChatPanel()
     try {
@@ -91,7 +93,6 @@ onMounted(async () => {
 onUnmounted(() => {
   unlistenProactive?.()
   unlistenProactive = null
-  rt.disconnect()
 })
 </script>
 

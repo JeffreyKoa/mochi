@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useAuthStore } from '@/stores/authStore'
 import { useGrowthStore } from '@/stores/growthStore'
 import { usePetStore } from '@/stores/petStore'
@@ -11,6 +11,7 @@ import {
   parseSharedTopics,
 } from '@/types/growth'
 import { formatMemoryTime } from '@/utils/date'
+import { listenTasksRefresh } from '@/services/proactiveSync'
 
 type TabId = 'bond' | 'memory' | 'pet' | 'tasks' | 'account'
 
@@ -170,6 +171,19 @@ function logout() {
   growth.closeSettings()
   auth.logout()
 }
+
+let unlistenTasksRefresh: (() => void) | null = null
+
+onMounted(async () => {
+  unlistenTasksRefresh = await listenTasksRefresh(() => {
+    if (tab.value === 'tasks') void loadTasks()
+  })
+})
+
+onUnmounted(() => {
+  unlistenTasksRefresh?.()
+  unlistenTasksRefresh = null
+})
 </script>
 
 <template>

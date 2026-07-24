@@ -12,7 +12,7 @@ import (
 
 type StateBroadcaster interface {
 	BroadcastState(userID uint64, state models.LifeState, animation string)
-	SendProactive(userID uint64, message, animation string)
+	SendProactive(userID uint64, message, animation string) bool
 }
 
 type Service struct {

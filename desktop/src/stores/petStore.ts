@@ -135,6 +135,13 @@ export const usePetStore = defineStore('pet', () => {
     }
   }
 
+  function getWakeGreeting(): string {
+    const anim = currentAnimation.value
+    if (anim === 'sleep') return '嗯… 我醒了，主人有啥吩咐~'
+    if (anim === 'sad') return '我在呢… 主人说~'
+    return '我在这里，主人有啥吩咐~'
+  }
+
   function setFacing(dir: 'left' | 'right') {
     facing.value = dir
   }
@@ -176,5 +183,6 @@ export const usePetStore = defineStore('pet', () => {
     retryBoot,
     setBootFailed,
     syncAnimationFromState,
+    getWakeGreeting,
   }
 })

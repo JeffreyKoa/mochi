@@ -67,11 +67,14 @@ type ClientConfig struct {
 
 type RealtimeConfig struct {
 	Enabled        bool                   `yaml:"enabled"`
+	STTMode        string                 `yaml:"stt_mode"` // cloud | local | auto
 	PrewarmEnabled bool                   `yaml:"prewarm_enabled"`
 	Dashscope      RealtimeDashscope      `yaml:"dashscope"`
 	VAD            RealtimeVAD            `yaml:"vad"`
+	BargeIn        RealtimeBargeIn        `yaml:"barge_in"`
 	ASR            RealtimeASR            `yaml:"asr"`
 	TTS            RealtimeTTS            `yaml:"tts"`
+	EdgeTTS        RealtimeEdgeTTS        `yaml:"edge_tts"`
 	Pipeline       RealtimePipeline       `yaml:"pipeline"`
 	ThinkingFiller RealtimeThinkingFiller `yaml:"thinking_filler"`
 }
@@ -90,6 +93,28 @@ type RealtimeVAD struct {
 	EndpointingEnabled bool   `yaml:"endpointing_enabled"`
 }
 
+type RealtimeBargeIn struct {
+	EchoGuardMS   int     `yaml:"echo_guard_ms"`
+	PeakThreshold float64 `yaml:"peak_threshold"`
+	BargeInMS     int     `yaml:"barge_in_ms"`
+}
+
+// RealtimePublicConfig is exposed via GET /api/v1/public/config (no secrets).
+type RealtimePublicConfig struct {
+	STTMode       string `json:"stt_mode"`
+	SpeechLocale  string `json:"speech_locale"`
+	VAD           struct {
+		SilenceMS          int  `json:"silence_ms"`
+		MinSpeechMS        int  `json:"min_speech_ms"`
+		EndpointingEnabled bool `json:"endpointing_enabled"`
+	} `json:"vad"`
+	BargeIn struct {
+		EchoGuardMS   int     `json:"echo_guard_ms"`
+		PeakThreshold float64 `json:"peak_threshold"`
+		BargeInMS     int     `json:"barge_in_ms"`
+	} `json:"barge_in"`
+}
+
 type RealtimeASR struct {
 	Provider   string `yaml:"provider"`
 	Model      string `yaml:"model"`
@@ -98,9 +123,18 @@ type RealtimeASR struct {
 
 type RealtimeTTS struct {
 	Provider   string `yaml:"provider"`
+	Fallback   string `yaml:"fallback"` // edge | (empty)
 	Model      string `yaml:"model"`
 	Voice      string `yaml:"voice"`
 	SampleRate int    `yaml:"sample_rate"`
+}
+
+type RealtimeEdgeTTS struct {
+	Voice  string `yaml:"voice"`
+	Rate   string `yaml:"rate"`
+	Volume string `yaml:"volume"`
+	Pitch  string `yaml:"pitch"`
+	Proxy  string `yaml:"proxy"`
 }
 
 type RealtimePipeline struct {
@@ -267,14 +301,26 @@ func (c *ToolsConfig) applyDefaults() {
 }
 
 func (r *RealtimeConfig) applyDefaults() {
+	if r.STTMode == "" {
+		r.STTMode = "auto"
+	}
 	if r.VAD.SilenceMS == 0 {
-		r.VAD.SilenceMS = 800
+		r.VAD.SilenceMS = 700
 	}
 	if r.VAD.MinSpeechMS == 0 {
 		r.VAD.MinSpeechMS = 300
 	}
 	if r.VAD.Model == "" {
 		r.VAD.Model = "energy"
+	}
+	if r.BargeIn.EchoGuardMS == 0 {
+		r.BargeIn.EchoGuardMS = 1800
+	}
+	if r.BargeIn.PeakThreshold == 0 {
+		r.BargeIn.PeakThreshold = 0.06
+	}
+	if r.BargeIn.BargeInMS == 0 {
+		r.BargeIn.BargeInMS = 800
 	}
 	if r.ThinkingFiller.ThresholdMS == 0 {
 		r.ThinkingFiller.ThresholdMS = 800
@@ -306,12 +352,39 @@ func (r *RealtimeConfig) applyDefaults() {
 	if r.TTS.SampleRate == 0 {
 		r.TTS.SampleRate = 22050
 	}
+	if r.EdgeTTS.Voice == "" {
+		r.EdgeTTS.Voice = "zh-CN-XiaoyiNeural"
+	}
+	if r.EdgeTTS.Rate == "" {
+		r.EdgeTTS.Rate = "+0%"
+	}
+	if r.EdgeTTS.Volume == "" {
+		r.EdgeTTS.Volume = "+0%"
+	}
+	if r.EdgeTTS.Pitch == "" {
+		r.EdgeTTS.Pitch = "+0Hz"
+	}
 	if r.Pipeline.TTSMinChars == 0 {
 		r.Pipeline.TTSMinChars = 5
 	}
 	if r.Pipeline.TTSPunctuation == "" {
 		r.Pipeline.TTSPunctuation = "。！？，、~.!?,;"
 	}
+}
+
+// PublicClient returns client-safe realtime tuning knobs.
+func (r RealtimeConfig) PublicClient() RealtimePublicConfig {
+	out := RealtimePublicConfig{
+		STTMode:      r.STTMode,
+		SpeechLocale: "zh-CN",
+	}
+	out.VAD.SilenceMS = r.VAD.SilenceMS
+	out.VAD.MinSpeechMS = r.VAD.MinSpeechMS
+	out.VAD.EndpointingEnabled = r.VAD.EndpointingEnabled
+	out.BargeIn.EchoGuardMS = r.BargeIn.EchoGuardMS
+	out.BargeIn.PeakThreshold = r.BargeIn.PeakThreshold
+	out.BargeIn.BargeInMS = r.BargeIn.BargeInMS
+	return out
 }
 
 func findConfigPath() (string, error) {

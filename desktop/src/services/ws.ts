@@ -9,11 +9,16 @@ export class WSManager {
   private maxReconnect = 10
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
 
-  connect() {
+  connect(force = false) {
     const url = getWSUrl()
     if (!url.includes('token=') || url.endsWith('token=')) return
-    if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) {
+    if (!force && (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING)) {
       return
+    }
+    if (force) {
+      this.reconnectAttempts = 0
+      this.ws?.close()
+      this.ws = null
     }
 
     this.ws = new WebSocket(url)

@@ -136,6 +136,73 @@ export async function getChatHistory(limit = 50) {
   return data.messages
 }
 
+/** Text-only chat via HTTP SSE — reliable fallback when WebSocket is down. */
+export async function streamChatMessage(
+  message: string,
+  onToken: (token: string) => void,
+): Promise<string> {
+  let res: Response
+  try {
+    res = await fetch(`${getApiBase()}/api/v1/chat`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ message }),
+      signal: AbortSignal.timeout(120000),
+    })
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'TimeoutError') {
+      throw new ApiError('network', '回复超时，请稍后再试')
+    }
+    throw new ApiError('network', '无法连接后端，请稍后再试')
+  }
+
+  if (!res.ok) {
+    const text = await res.text()
+    let err = '发送失败'
+    try {
+      err = (JSON.parse(text) as { error?: string }).error || err
+    } catch {
+      // ignore
+    }
+    throw new ApiError(res.status >= 500 ? 'server' : 'client', err, res.status)
+  }
+
+  if (!res.body) {
+    throw new ApiError('server', '无响应体')
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let full = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      let chunk: { content?: string; done?: boolean }
+      try {
+        chunk = JSON.parse(line.slice(6)) as { content?: string; done?: boolean }
+      } catch {
+        continue
+      }
+      if (chunk.content) {
+        full += chunk.content
+        onToken(chunk.content)
+      }
+      if (chunk.done) {
+        return full.trim()
+      }
+    }
+  }
+
+  return full.trim()
+}
+
 export async function getMemories() {
   const { data } = await request<{ memories?: unknown[] }>(`${getApiBase()}/api/v1/memories`, {
     headers: authHeaders(),
