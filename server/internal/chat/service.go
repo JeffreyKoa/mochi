@@ -22,9 +22,14 @@ import (
 	"github.com/mochi-ai/server/internal/models"
 	"github.com/mochi-ai/server/internal/prompt"
 	"github.com/mochi-ai/server/internal/reflection"
+	"github.com/mochi-ai/server/internal/text"
 	"github.com/mochi-ai/server/internal/tools"
 	"github.com/mochi-ai/server/pkg/ai"
 )
+
+func finalizeReply(reply string) string {
+	return text.StripActionParentheticals(strings.TrimSpace(reply))
+}
 
 type chatBuildResult struct {
 	pet         *models.Pet
@@ -196,6 +201,7 @@ func (s *Service) StreamMessage(ctx context.Context, userID uint64, message stri
 
 	streamMsgs, directReply, _ := s.messagesForReply(ctx, built, userID, message)
 	if directReply != "" {
+		directReply = finalizeReply(directReply)
 		streamText(ctx, directReply, onToken)
 		go s.postProcess(context.Background(), built.pet.ID, message, directReply, built.emotionHint)
 		return directReply, nil
@@ -210,25 +216,32 @@ func (s *Service) StreamMessage(ctx context.Context, userID uint64, message stri
 	}
 
 	var fullResponse strings.Builder
+	var sanitizer text.StreamSanitizer
 	for {
 		select {
 		case <-ctx.Done():
-			return strings.TrimSpace(fullResponse.String()), ctx.Err()
+			reply := finalizeReply(fullResponse.String() + sanitizer.Flush())
+			return reply, ctx.Err()
 		case chunk, ok := <-chunkChan:
 			if !ok {
-				return strings.TrimSpace(fullResponse.String()), nil
+				reply := finalizeReply(fullResponse.String() + sanitizer.Flush())
+				return reply, nil
 			}
 			if chunk.Done {
-				reply := strings.TrimSpace(fullResponse.String())
+				reply := finalizeReply(fullResponse.String() + sanitizer.Flush())
 				go s.postProcess(context.Background(), built.pet.ID, message, reply, built.emotionHint)
 				return reply, nil
 			}
 			if chunk.Content == "" {
 				continue
 			}
-			fullResponse.WriteString(chunk.Content)
+			cleaned := sanitizer.Feed(chunk.Content)
+			if cleaned == "" {
+				continue
+			}
+			fullResponse.WriteString(cleaned)
 			if onToken != nil {
-				onToken(chunk.Content)
+				onToken(cleaned)
 			}
 		}
 	}
@@ -250,6 +263,7 @@ func (s *Service) SendMessageStream(c *gin.Context, userID uint64, message strin
 
 	streamMsgs, directReply, _ := s.messagesForReply(ctx, built, userID, message)
 	if directReply != "" {
+		directReply = finalizeReply(directReply)
 		for _, ch := range directReply {
 			fmt.Fprintf(c.Writer, "data: %s\n\n", mustJSON(map[string]interface{}{"content": string(ch), "done": false}))
 		}
@@ -267,7 +281,8 @@ func (s *Service) SendMessageStream(c *gin.Context, userID uint64, message strin
 		return
 	}
 
-	var fullResponse string
+	var fullResponse strings.Builder
+	var sanitizer text.StreamSanitizer
 	c.Stream(func(w io.Writer) bool {
 		select {
 		case chunk, ok := <-chunkChan:
@@ -275,12 +290,17 @@ func (s *Service) SendMessageStream(c *gin.Context, userID uint64, message strin
 				return false
 			}
 			if chunk.Done {
-				go s.postProcess(context.Background(), built.pet.ID, message, fullResponse, built.emotionHint)
+				reply := finalizeReply(fullResponse.String() + sanitizer.Flush())
+				go s.postProcess(context.Background(), built.pet.ID, message, reply, built.emotionHint)
 				fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]interface{}{"content": "", "done": true}))
 				return false
 			}
-			fullResponse += chunk.Content
-			fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]interface{}{"content": chunk.Content, "done": false}))
+			cleaned := sanitizer.Feed(chunk.Content)
+			if cleaned == "" {
+				return true
+			}
+			fullResponse.WriteString(cleaned)
+			fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]interface{}{"content": cleaned, "done": false}))
 			return true
 		case <-ctx.Done():
 			return false
@@ -340,6 +360,7 @@ func (s *Service) CompleteMessage(ctx context.Context, userID uint64, message st
 
 	streamMsgs, directReply, _ := s.messagesForReply(ctx, built, userID, message)
 	if directReply != "" {
+		directReply = finalizeReply(directReply)
 		go s.postProcess(context.Background(), built.pet.ID, message, directReply, built.emotionHint)
 		return directReply, nil
 	}
@@ -352,7 +373,7 @@ func (s *Service) CompleteMessage(ctx context.Context, userID uint64, message st
 		return "", err
 	}
 
-	reply := strings.TrimSpace(resp.Content)
+	reply := finalizeReply(resp.Content)
 	go s.postProcess(context.Background(), built.pet.ID, message, reply, built.emotionHint)
 	return reply, nil
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { PhysicalPosition } from '@tauri-apps/api/dpi'
 import { useAuthStore } from '@/stores/authStore'
@@ -24,6 +24,7 @@ import {
   PET_WITH_CHAT_W,
   PET_WITH_CHAT_H,
 } from '@/services/chatWindow'
+import { getClientConfig, initClientConfig } from '@/config'
 import PetCanvas from '@/components/pet/PetCanvas.vue'
 import ChatPanel from '@/components/chat/ChatPanel.vue'
 
@@ -35,11 +36,15 @@ const growth = useGrowthStore()
 const rt = useRealtimeStore()
 const menuVisible = ref(false)
 const menuPos = ref({ x: 0, y: 0 })
+const menuEl = ref<HTMLElement | null>(null)
+const menuPosReady = ref(true)
+const MENU_PAD = 6
 const isDragging = ref(false)
 const dragMoved = ref(false)
 const didDragWindow = ref(false)
 const chatExternal = ref(false)
 const chatInline = ref(false)
+const lastHeadlessBubbleIndex = ref(0)
 
 const DRAG_THRESHOLD = 5
 
@@ -134,7 +139,7 @@ async function onWindowPointerUp(e: PointerEvent) {
   setTimeout(() => {
     dragMoved.value = false
     didDragWindow.value = false
-    if (!pet.isChatOpen) roamer?.resume()
+    if (!pet.isChatOpen && !rt.talking && !rt.processing) roamer?.resume()
   }, 50)
 }
 
@@ -209,13 +214,18 @@ onMounted(async () => {
     startRoamer()
   }
 
+  if (auth.isLoggedIn) {
+    await initClientConfig().catch(() => {})
+    rt.connect().catch(() => {})
+  }
+
   try {
     const { listen } = await import('@tauri-apps/api/event')
     await listen('chat-closed', () => {
       pet.isChatOpen = false
       chatExternal.value = false
       chatInline.value = false
-      roamer?.resume()
+      if (!rt.talking && !rt.processing) roamer?.resume()
     })
   } catch {
     // optional
@@ -256,7 +266,29 @@ watch(
     chatExternal.value = false
     chatInline.value = false
     await closeChatPanel().catch(() => {})
-    roamer?.resume()
+    if (!rt.talking && !rt.processing) roamer?.resume()
+  },
+)
+
+watch(
+  () => rt.messages.length,
+  (len) => {
+    if (pet.isChatOpen || len === 0) return
+    const last = rt.messages[len - 1]
+    if (last?.role === 'assistant' && len > lastHeadlessBubbleIndex.value) {
+      lastHeadlessBubbleIndex.value = len
+      pet.showSpeechBubble(last.content, 8000)
+    }
+  },
+)
+
+watch(
+  () => rt.userSpeaking,
+  (speaking) => {
+    if (pet.isChatOpen || !rt.talking) return
+    if (speaking) {
+      pet.showSpeechBubble(rt.partialText.trim() || '正在听…', 3000)
+    }
   },
 )
 
@@ -312,23 +344,48 @@ async function onPetClick() {
   clickTimer = setTimeout(async () => {
     clickTimer = null
     roamer?.pause()
+
+    if (rt.talking) {
+      if (rt.resting) {
+        pet.showSpeechBubble('我在听，主人说~', 2500)
+      }
+      return
+    }
+
+    await initClientConfig().catch(() => {})
+    if (!getClientConfig().realtimeEnabled) {
+      pet.showSpeechBubble('请双击打开聊天，用打字跟我聊~')
+      roamer?.resume()
+      return
+    }
+
     pet.setAnimation('happy')
+    pet.showSpeechBubble(pet.getWakeGreeting())
+
     try {
-      const result = await interactWithRetry('touch')
-      pet.updateLifeState(result.state)
-      pet.setAnimation(result.animation)
-      pet.showSpeechBubble('嘿嘿~')
-      setTimeout(() => {
+      await rt.connect()
+      await rt.startTalk()
+      if (!rt.talking && rt.statusText) {
+        pet.showSpeechBubble(rt.statusText, 6000)
         pet.syncAnimationFromState()
         roamer?.resume()
-      }, 2000)
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : '连接失败'
-      pet.showSpeechBubble(msg.includes('登录') ? msg : '连接失败，请检查后端')
-      pet.setAnimation('idle')
-      setTimeout(() => roamer?.resume(), 2000)
+      }
+    } catch {
+      pet.showSpeechBubble('无法启动麦克风，请检查权限')
+      pet.syncAnimationFromState()
+      roamer?.resume()
     }
   }, 200)
+}
+
+async function endVoiceFromMenu() {
+  closeMenu()
+  await rt.endConversation()
+  if (!rt.talking && !pet.isChatOpen) {
+    pet.syncAnimationFromState()
+    roamer?.resume()
+  }
+  pet.showSpeechBubble('好的，我先休息啦~', 2500)
 }
 
 async function onFeed() {
@@ -372,18 +429,54 @@ function openSettingsFromMenu() {
   growth.openSettings()
 }
 
-function onContextMenu(e: MouseEvent) {
-  e.preventDefault()
-  let x = e.clientX + 2
-  let y = e.clientY + 2
+function clampMenuPos(clientX: number, clientY: number, menuW: number, menuH: number) {
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  let x = clientX + 2
+  let y = clientY + 2
+
+  if (x + menuW + MENU_PAD > vw) {
+    x = clientX - menuW - 2
+  }
+  if (x < MENU_PAD) x = MENU_PAD
+
+  if (y + menuH + MENU_PAD > vh) {
+    y = clientY - menuH - 2
+  }
+  if (y < MENU_PAD) y = MENU_PAD
+
   // 避免挡住头顶 speech bubble
-  if (pet.showBubble && y < 80) y = 80
-  menuPos.value = { x, y }
+  if (pet.showBubble && y < 80) {
+    y = 80
+    if (y + menuH + MENU_PAD > vh) {
+      y = Math.max(MENU_PAD, vh - menuH - MENU_PAD)
+    }
+  }
+
+  return { x, y }
+}
+
+async function onContextMenu(e: MouseEvent) {
+  e.preventDefault()
+  menuPosReady.value = false
+  // 先用估算尺寸预定位，避免贴边时被窗口裁切
+  menuPos.value = clampMenuPos(e.clientX, e.clientY, 108, rt.talking ? 168 : 136)
   menuVisible.value = true
+
+  await nextTick()
+  const el = menuEl.value
+  if (!el) {
+    menuPosReady.value = true
+    return
+  }
+  const { width, height } = el.getBoundingClientRect()
+  menuPos.value = clampMenuPos(e.clientX, e.clientY, width, height)
+  menuPosReady.value = true
 }
 
 function closeMenu() {
   menuVisible.value = false
+  menuPosReady.value = true
 }
 
 function onDblClick() {
@@ -421,7 +514,11 @@ function onDblClick() {
     >
       <PetCanvas />
 
-      <div v-if="pet.showBubble" class="speech-bubble">
+      <div
+        v-if="pet.showBubble"
+        class="speech-bubble"
+        :class="pet.facing === 'left' ? 'speech-bubble--tr' : 'speech-bubble--tl'"
+      >
         {{ pet.bubbleText }}
       </div>
     </div>
@@ -430,7 +527,9 @@ function onDblClick() {
 
     <div
       v-if="menuVisible"
+      ref="menuEl"
       class="context-menu"
+      :class="{ 'context-menu--pending': !menuPosReady }"
       :style="{ left: menuPos.x + 'px', top: menuPos.y + 'px' }"
       @click.stop
       @pointerdown.stop
@@ -438,6 +537,7 @@ function onDblClick() {
       <button type="button" @click.stop="onFeed">🍙 喂食</button>
       <button type="button" @click.stop="onPlay">🎾 玩耍</button>
       <button type="button" @pointerdown.stop @click.stop="openChatFromMenu">💬 聊天</button>
+      <button v-if="rt.talking" type="button" @click.stop="endVoiceFromMenu">🔇 结束对话</button>
       <button type="button" @click.stop="openSettingsFromMenu">⚙️ 设置</button>
     </div>
   </div>
@@ -495,29 +595,52 @@ function onDblClick() {
 
 .speech-bubble {
   position: absolute;
-  top: 4px;
-  left: 50%;
-  transform: translateX(-50%);
+  top: 0;
   background: rgba(255, 255, 255, 0.95);
-  padding: 6px 12px;
+  padding: 6px 10px;
   border-radius: 14px;
   font-size: 12px;
   color: #333;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
-  max-width: 180px;
-  text-align: center;
+  max-width: 118px;
+  line-height: 1.35;
+  text-align: left;
   z-index: 10;
   pointer-events: none;
 }
 
-.speech-bubble::after {
+/* 朝右时气泡在头部左上，不挡脸 */
+.speech-bubble--tl {
+  left: 4px;
+  right: auto;
+}
+
+.speech-bubble--tl::after {
   content: '';
   position: absolute;
   bottom: -6px;
-  left: 50%;
-  transform: translateX(-50%);
+  right: 20px;
+  left: auto;
+  transform: none;
   border: 6px solid transparent;
-  border-top-color: white;
+  border-top-color: rgba(255, 255, 255, 0.95);
+}
+
+/* 朝左时气泡在头部右上 */
+.speech-bubble--tr {
+  right: 4px;
+  left: auto;
+}
+
+.speech-bubble--tr::after {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  left: 20px;
+  right: auto;
+  transform: none;
+  border: 6px solid transparent;
+  border-top-color: rgba(255, 255, 255, 0.95);
 }
 
 .context-menu {
@@ -529,6 +652,11 @@ function onDblClick() {
   z-index: 1000;
   width: max-content;
   pointer-events: auto;
+}
+
+.context-menu--pending {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .context-menu button {

@@ -14,6 +14,7 @@ import (
 	"github.com/mochi-ai/server/internal/chat"
 	"github.com/mochi-ai/server/internal/config"
 	"github.com/mochi-ai/server/pkg/dashscope"
+	"github.com/mochi-ai/server/pkg/edgetts"
 )
 
 // Pipeline orchestrates ASR → LLM → TTS (turn-based, half-duplex).
@@ -38,14 +39,59 @@ func NewPipeline(chatSvc *chat.Service, cfg config.RealtimeConfig, appCfg *confi
 		p.asr = newDashscopeASR(dashscope.NewASRClient(apiKey, cfg.ASR.Model, cfg.ASR.SampleRate, asrEp))
 	}
 
-	var primary TTSSynthesizer
-	if cfg.TTS.Provider == "dashscope" && apiKey != "" {
-		client := dashscope.NewTTSClient(apiKey, cfg.TTS.Model, cfg.TTS.Voice, cfg.TTS.SampleRate, ep)
-		primary = newDashscopeTTSSynth(client)
-		p.ttsFormat = client.AudioFormat()
-	}
-	p.tts = primary
+	p.tts, p.ttsFormat = buildTTSSynth(cfg, apiKey, ep)
 	return p
+}
+
+func edgeConfigFrom(cfg config.RealtimeConfig) edgetts.Config {
+	return edgetts.Config{
+		Voice:  cfg.EdgeTTS.Voice,
+		Rate:   cfg.EdgeTTS.Rate,
+		Volume: cfg.EdgeTTS.Volume,
+		Pitch:  cfg.EdgeTTS.Pitch,
+		Proxy:  cfg.EdgeTTS.Proxy,
+	}
+}
+
+func buildTTSSynth(cfg config.RealtimeConfig, apiKey string, ep dashscope.EndpointConfig) (TTSSynthesizer, string) {
+	provider := strings.ToLower(strings.TrimSpace(cfg.TTS.Provider))
+	fallback := strings.ToLower(strings.TrimSpace(cfg.TTS.Fallback))
+	format := "mp3"
+
+	var primary TTSSynthesizer
+	primaryName := provider
+
+	switch provider {
+	case "edge":
+		primary = newEdgeTTSSynth(edgetts.NewClient(edgeConfigFrom(cfg)))
+	case "dashscope":
+		if apiKey != "" {
+			client := dashscope.NewTTSClient(apiKey, cfg.TTS.Model, cfg.TTS.Voice, cfg.TTS.SampleRate, ep)
+			primary = newDashscopeTTSSynth(client)
+			format = client.AudioFormat()
+		} else {
+			primary = nil
+		}
+	default:
+		if apiKey != "" {
+			client := dashscope.NewTTSClient(apiKey, cfg.TTS.Model, cfg.TTS.Voice, cfg.TTS.SampleRate, ep)
+			primary = newDashscopeTTSSynth(client)
+			format = client.AudioFormat()
+			primaryName = "dashscope"
+		}
+	}
+
+	if fallback == "edge" && provider != "edge" {
+		edgeSynth := newEdgeTTSSynth(edgetts.NewClient(edgeConfigFrom(cfg)))
+		if primary != nil {
+			log.Printf("[realtime] tts fallback enabled: primary=%s fallback=edge voice=%s", primaryName, cfg.EdgeTTS.Voice)
+			return newFallbackSynth(primary, edgeSynth, primaryName, "edge"), format
+		}
+		log.Printf("[realtime] tts using edge (no primary) voice=%s", cfg.EdgeTTS.Voice)
+		return edgeSynth, format
+	}
+
+	return primary, format
 }
 
 func (p *Pipeline) StartASRSession(ctx context.Context, onPartial ASRPartialHandler) (ASRSession, error) {
@@ -120,13 +166,13 @@ func (p *Pipeline) OnTranscript(ctx context.Context, sess *Session, text string,
 	p.onTranscriptWithMode(pipeCtx, sess, text, send, true)
 }
 
-func (p *Pipeline) OnTextInput(ctx context.Context, sess *Session, text string, send Sender) {
+func (p *Pipeline) OnTextInput(ctx context.Context, sess *Session, text string, send Sender, withVoice bool) {
 	pipeCtx := sess.BeginPipeline(ctx)
 	defer sess.EndPipeline()
 	if lat := sess.TurnLatency(); lat != nil {
 		lat.MarkASRFinal()
 	}
-	p.onTranscriptWithMode(pipeCtx, sess, text, send, false)
+	p.onTranscriptWithMode(pipeCtx, sess, text, send, withVoice)
 }
 
 // onTranscriptWithMode: LLM streams tokens; voice turns pipe sentences to TTS as they complete.

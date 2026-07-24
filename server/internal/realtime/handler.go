@@ -31,6 +31,7 @@ type Handler struct {
 	authSvc  *auth.Service
 	pipeline *Pipeline
 	cfg      config.RealtimeConfig
+	sessions *Registry
 }
 
 func NewHandler(authSvc *auth.Service, chatSvc *chat.Service, appCfg *config.Config) *Handler {
@@ -38,7 +39,20 @@ func NewHandler(authSvc *auth.Service, chatSvc *chat.Service, appCfg *config.Con
 		authSvc:  authSvc,
 		pipeline: NewPipeline(chatSvc, appCfg.Realtime, appCfg),
 		cfg:      appCfg.Realtime,
+		sessions: NewRegistry(),
 	}
+}
+
+func (h *Handler) SendProactiveReminder(userID, reminderID uint64, message, animation string) bool {
+	if h.sessions == nil {
+		return false
+	}
+	n := h.sessions.SendToUser(userID, MsgProactiveMessage, ProactiveMessage{
+		Message:    message,
+		Animation:  animation,
+		ReminderID: reminderID,
+	})
+	return n > 0
 }
 
 func (h *Handler) HandleWS(c *gin.Context) {
@@ -82,6 +96,11 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 				return context.Canceled
 			}
 		},
+	}
+
+	if h.sessions != nil {
+		h.sessions.Register(userID, sessionID, sender.send)
+		defer h.sessions.Unregister(userID, sessionID)
 	}
 
 	sess := NewSession(sessionID, userID, func(st SessionState) {
@@ -179,7 +198,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 		processingMu.Unlock()
 	}
 
-	processTextInput := func(text string) {
+	processTextInput := func(text string, withVoice bool) {
 		text = strings.TrimSpace(text)
 		if text == "" {
 			return
@@ -214,7 +233,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 		sender.SendAnimation(StateThinking)
 		_ = sender.Send(MsgTurnAck, map[string]any{})
 
-		log.Printf("[realtime] text input session=%s chars=%d", sessionID, len([]rune(text)))
+		log.Printf("[realtime] text input session=%s chars=%d voice=%v", sessionID, len([]rune(text)), withVoice)
 
 		go func() {
 			defer func() {
@@ -225,7 +244,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 				processing = false
 				processingMu.Unlock()
 			}()
-			h.pipeline.OnTextInput(ctx, sess, text, sender)
+			h.pipeline.OnTextInput(ctx, sess, text, sender, withVoice)
 		}()
 	}
 
@@ -420,7 +439,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 			if err := json.Unmarshal(data, &in); err != nil {
 				continue
 			}
-			processTextInput(in.Text)
+			processTextInput(in.Text, in.VoiceReply)
 
 		case MsgAudioEnd:
 			if isTextTurn() {

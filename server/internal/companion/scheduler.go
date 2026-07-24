@@ -31,10 +31,15 @@ type Scheduler struct {
 	toolsSvc    *tools.Service
 	toolsCfg    config.ToolsConfig
 	broadcaster life.StateBroadcaster
+	rtReminders realtimeReminderDeliverer
 	done        chan struct{}
 }
 
-func NewScheduler(db *gorm.DB, rdb *redis.Client, aiProvider *ai.Provider, bondSvc *bond.Service, cfg config.CompanionConfig, hub life.StateBroadcaster, toolsSvc *tools.Service, toolsCfg config.ToolsConfig) *Scheduler {
+type realtimeReminderDeliverer interface {
+	SendProactiveReminder(userID, reminderID uint64, message, animation string) bool
+}
+
+func NewScheduler(db *gorm.DB, rdb *redis.Client, aiProvider *ai.Provider, bondSvc *bond.Service, cfg config.CompanionConfig, hub life.StateBroadcaster, toolsSvc *tools.Service, toolsCfg config.ToolsConfig, rt realtimeReminderDeliverer) *Scheduler {
 	return &Scheduler{
 		db:          db,
 		rdb:         rdb,
@@ -44,6 +49,7 @@ func NewScheduler(db *gorm.DB, rdb *redis.Client, aiProvider *ai.Provider, bondS
 		toolsSvc:    toolsSvc,
 		toolsCfg:    toolsCfg,
 		broadcaster: hub,
+		rtReminders: rt,
 		done:        make(chan struct{}),
 	}
 }
@@ -60,6 +66,7 @@ func (s *Scheduler) Start() {
 				select {
 				case <-reminderTicker.C:
 					s.scanDueReminders()
+					s.scanDueTodos()
 				case <-s.done:
 					reminderTicker.Stop()
 					return
@@ -211,7 +218,7 @@ func (s *Scheduler) generateMessage(ctx context.Context, pet models.Pet, bondPro
 相关记忆：%s
 自身状态：心情%d 饥饿%d 精力%d
 
-要求：自然、像伙伴关心主人，不要像通知推送。只输出消息正文。`,
+要求：自然、像伙伴关心主人，不要像通知推送；禁止用括号描述动作，只输出对话。只输出消息正文。`,
 		pet.Name, personality.Traits, personality.SpeechStyle,
 		bondProfile.RapportLevel, trigger, orDefault(snippet, "无"),
 		state.Mood, state.Hungry, state.Energy,
@@ -284,8 +291,12 @@ func orDefault(s, def string) string {
 	return s
 }
 
+type reminderBroadcaster interface {
+	SendProactiveReminder(userID, reminderID uint64, message, animation string) bool
+}
+
 func (s *Scheduler) scanDueReminders() {
-	if s.toolsSvc == nil || !s.toolsSvc.Enabled() || s.inQuietHours() {
+	if s.toolsSvc == nil || !s.toolsSvc.Enabled() {
 		return
 	}
 	ctx := context.Background()
@@ -293,6 +304,7 @@ func (s *Scheduler) scanDueReminders() {
 	if err != nil || len(due) == 0 {
 		return
 	}
+	rb, _ := s.broadcaster.(reminderBroadcaster)
 	for _, r := range due {
 		var pet models.Pet
 		if s.db.First(&pet, r.PetID).Error != nil {
@@ -308,11 +320,30 @@ func (s *Scheduler) scanDueReminders() {
 		}
 
 		msg := s.reminderMessage(ctx, pet, r)
-		if s.broadcaster != nil && msg != "" {
-			s.broadcaster.SendProactive(user.ID, msg, "happy")
+		if msg == "" || s.broadcaster == nil {
+			continue
 		}
-		_ = s.toolsSvc.MarkReminderFired(ctx, r.ID)
-		log.Printf("[Companion] reminder fired id=%d pet=%d", r.ID, r.PetID)
+
+		delivered := false
+		if rb != nil {
+			delivered = rb.SendProactiveReminder(user.ID, r.ID, msg, "happy")
+		} else if s.broadcaster != nil {
+			delivered = s.broadcaster.SendProactive(user.ID, msg, "happy")
+			if delivered {
+				_ = s.toolsSvc.MarkReminderFired(ctx, r.ID)
+			}
+		}
+		if s.rtReminders != nil {
+			if s.rtReminders.SendProactiveReminder(user.ID, r.ID, msg, "happy") {
+				delivered = true
+				_ = s.toolsSvc.MarkReminderFired(ctx, r.ID)
+			}
+		}
+		if delivered {
+			log.Printf("[Companion] reminder delivered id=%d pet=%d", r.ID, r.PetID)
+		} else {
+			log.Printf("[Companion] reminder pending delivery id=%d pet=%d", r.ID, r.PetID)
+		}
 	}
 }
 
@@ -320,7 +351,7 @@ func (s *Scheduler) reminderMessage(ctx context.Context, pet models.Pet, r model
 	if s.ai != nil {
 		prompt := fmt.Sprintf(`你是桌宠 %s，提醒主人一件事（50字以内，口语，第一人称，适合语音朗读）。
 提醒内容：%s
-要求：自然亲切，像伙伴轻轻叫你，不要像系统通知。只输出正文。`, pet.Name, r.Title)
+要求：自然亲切，像伙伴轻轻叫你，不要像系统通知；禁止用括号描述动作，只输出对话。只输出正文。`, pet.Name, r.Title)
 		resp, err := s.ai.Chat(ctx, ai.ChatRequest{
 			Messages:    []ai.Message{{Role: "user", Content: prompt}},
 			Temperature: 0.85,
@@ -331,4 +362,37 @@ func (s *Scheduler) reminderMessage(ctx context.Context, pet models.Pet, r model
 		}
 	}
 	return fmt.Sprintf("到啦~ 记得%s哦", r.Title)
+}
+
+const todoNotifiedPrefix = "mochi:todo:notified:"
+
+func (s *Scheduler) scanDueTodos() {
+	if s.toolsSvc == nil || !s.toolsSvc.Enabled() || s.broadcaster == nil {
+		return
+	}
+	ctx := context.Background()
+	due, err := s.toolsSvc.DueTodos(ctx, time.Now())
+	if err != nil || len(due) == 0 {
+		return
+	}
+	for _, t := range due {
+		if s.rdb != nil {
+			key := fmt.Sprintf("%s%d", todoNotifiedPrefix, t.ID)
+			if s.rdb.Exists(ctx, key).Val() > 0 {
+				continue
+			}
+		}
+		var pet models.Pet
+		if s.db.First(&pet, t.PetID).Error != nil {
+			continue
+		}
+		msg := fmt.Sprintf("到啦~ 记得%s哦", t.Title)
+		if s.broadcaster.SendProactive(t.UserID, msg, "happy") {
+			if s.rdb != nil {
+				key := fmt.Sprintf("%s%d", todoNotifiedPrefix, t.ID)
+				s.rdb.Set(ctx, key, "1", 7*24*time.Hour)
+			}
+			log.Printf("[Companion] todo due notified id=%d pet=%d", t.ID, t.PetID)
+		}
+	}
 }

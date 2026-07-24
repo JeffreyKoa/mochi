@@ -150,9 +150,19 @@ export class PetRoamer {
   private async simpleStroll() {
     if (!this.win || !this.hooks) return
     const pos = await this.win.outerPosition()
+    const bounds = await getRoamingBounds(this.win)
     const goRight = Math.random() > 0.5
-    const delta = goRight ? ROAM_FALLBACK_PX : -ROAM_FALLBACK_PX
-    const facing: 'left' | 'right' = goRight ? 'right' : 'left'
+    let delta = goRight ? ROAM_FALLBACK_PX : -ROAM_FALLBACK_PX
+    let targetX = pos.x + delta
+    if (bounds) {
+      targetX = clamp(targetX, bounds.minX, bounds.maxX)
+      delta = targetX - pos.x
+      if (Math.abs(delta) < ROAM_MIN_DISTANCE) {
+        this.scheduleIdle()
+        return
+      }
+    }
+    const facing: 'left' | 'right' = delta >= 0 ? 'right' : 'left'
 
     this.moving = true
     this.hooks.onWalkStart(facing)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/mochi-ai/server/internal/auth"
 	"github.com/mochi-ai/server/internal/chat"
+	"github.com/mochi-ai/server/internal/config"
 	"github.com/mochi-ai/server/internal/pet"
 	"github.com/mochi-ai/server/internal/realtime"
 	"github.com/mochi-ai/server/internal/subscribe"
@@ -26,10 +27,11 @@ type Handlers struct {
 	Tools           *tools.Handler
 	Hub             *ws.Hub
 	AuthSvc       *auth.Service
-	ClientAPIBase     string
-	RealtimeEnabled   bool
-	WriteApproval     bool
-	GrowthEnabled     bool
+	ClientAPIBase      string
+	RealtimeEnabled    bool
+	RealtimePublic     config.RealtimePublicConfig
+	WriteApproval      bool
+	GrowthEnabled      bool
 }
 
 func Setup(mode string, h Handlers) *gin.Engine {
@@ -49,6 +51,7 @@ func Setup(mode string, h Handlers) *gin.Engine {
 		c.JSON(http.StatusOK, gin.H{
 			"api_base":         h.ClientAPIBase,
 			"realtime_enabled": h.RealtimeEnabled,
+			"realtime":         h.RealtimePublic,
 			"write_approval":   h.WriteApproval,
 			"growth_enabled":   h.GrowthEnabled,
 		})

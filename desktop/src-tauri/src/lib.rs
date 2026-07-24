@@ -150,8 +150,9 @@ pub fn run() {
             }
 
             let show = MenuItem::with_id(app, "show", "显示 Mochi", true, None::<&str>)?;
+            let recenter = MenuItem::with_id(app, "recenter", "找回 Mochi（居中）", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &recenter, &quit])?;
 
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
@@ -160,6 +161,7 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => show_pet_window(app),
+                    "recenter" => show_pet_window(app),
                     "quit" => {
                         app.exit(0);
                     }

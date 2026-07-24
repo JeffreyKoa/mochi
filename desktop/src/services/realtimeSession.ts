@@ -13,6 +13,7 @@ export type RealtimeEvent =
   | { type: 'turn_ack' }
   | { type: 'turn_metrics'; metrics: TurnMetrics }
   | { type: 'animation'; state: string }
+  | { type: 'proactive_message'; message: string; animation?: string; reminderId?: number }
   | { type: 'error'; code: string; message: string }
   | { type: 'connected' }
   | { type: 'disconnected' }
@@ -47,6 +48,15 @@ export class RealtimeSession {
       const url = base
         ? `${base.replace(/^http/, 'ws')}/ws/voice?token=${encodeURIComponent(token)}`
         : `${proto}//${window.location.host}/ws/voice?token=${encodeURIComponent(token)}`
+
+      if (this.ws) {
+        this.ws.onopen = null
+        this.ws.onmessage = null
+        this.ws.onerror = null
+        this.ws.onclose = null
+        this.ws.close()
+        this.ws = null
+      }
 
       this.ws = new WebSocket(url)
 
@@ -98,8 +108,12 @@ export class RealtimeSession {
     return this.send('interrupt', {})
   }
 
-  sendTextInput(text: string): boolean {
-    return this.send('text_input', { text })
+  sendTextInput(text: string, options?: { voiceReply?: boolean }): boolean {
+    const data: { text: string; voice_reply?: boolean } = { text }
+    if (options?.voiceReply) {
+      data.voice_reply = true
+    }
+    return this.send('text_input', data)
   }
 
   sendPrewarm(): boolean {
@@ -188,6 +202,14 @@ export class RealtimeSession {
         break
       case 'animation':
         this.emit({ type: 'animation', state: String(data.state) })
+        break
+      case 'proactive_message':
+        this.emit({
+          type: 'proactive_message',
+          message: String(data.message ?? ''),
+          animation: typeof data.animation === 'string' ? data.animation : undefined,
+          reminderId: typeof data.reminder_id === 'number' ? data.reminder_id : undefined,
+        })
         break
       case 'error':
         this.emit({ type: 'error', code: String(data.code), message: String(data.message) })

@@ -8,8 +8,8 @@ import { useGrowthStore } from '@/stores/growthStore'
 import { getPet, getLifeState, getChatHistory, initClientConfig, AuthError, ApiError } from '@/services/api'
 import { healthMonitor } from '@/services/healthMonitor'
 import { wsManager } from '@/services/ws'
-import { mapServerAnimation } from '@/utils/animation'
-import { broadcastProactive, listenProactive } from '@/services/proactiveSync'
+import { handleProactiveMessage } from '@/services/proactiveHandler'
+import { listenProactive } from '@/services/proactiveSync'
 import {
   ensurePetWindowVisible,
   initPetWindowChrome,
@@ -63,10 +63,8 @@ function setupWs() {
     })
     wsManager.on('proactive_message', (data: unknown) => {
       const d = data as { message: string; animation: string }
-      pet.setAnimation(mapServerAnimation(d.animation))
-      pet.showSpeechBubble(d.message, 8000)
+      handleProactiveMessage({ message: d.message, animation: d.animation })
       rt.appendAssistantMessage(d.message)
-      void broadcastProactive({ message: d.message, animation: d.animation })
     })
     wsManager.on('life_stage_changed', (data: unknown) => {
       const d = data as Partial<PetLifecycle> & { life_stage_label?: string }
@@ -84,7 +82,7 @@ function setupWs() {
       }
     })
   }
-  wsManager.connect()
+  wsManager.connect(true)
 }
 
 function startHealthWatch() {
@@ -202,6 +200,7 @@ async function loadUserData() {
     }
 
     setupWs()
+    void rt.ensurePushConnected()
     healthMonitor.stop()
     loadError.value = ''
     pet.setBootFailed(false)

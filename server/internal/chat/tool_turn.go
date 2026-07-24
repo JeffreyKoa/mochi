@@ -84,7 +84,7 @@ func (s *Service) applyToolTurn(
 
 	out = append(out, ai.Message{
 		Role:    "user",
-		Content: "请用1-2句口语向主人确认刚才的办事结果，不要说「已为您完成」等服务腔。",
+		Content: "请用1-2句口语向主人确认刚才的办事结果，不要说「已为您完成」等服务腔；禁止用括号描述动作，只输出对话。",
 	})
 
 	return toolTurnResult{messages: out}, nil

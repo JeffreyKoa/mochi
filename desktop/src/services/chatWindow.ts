@@ -295,31 +295,45 @@ export async function ensurePetWindowVisible() {
   if (!isPetWindowLabel(win.label)) return
 
   try {
+    const visible = await win.isVisible()
+    if (!visible) {
+      await win.show()
+      await win.setAlwaysOnTop(true)
+    }
+
     const pos = await win.outerPosition()
     const size = await win.outerSize()
-    const { currentMonitor, primaryMonitor } = await import('@tauri-apps/api/window')
-    let mon = await currentMonitor()
-    if (!mon) mon = await primaryMonitor()
-    if (!mon) {
+    const { availableMonitors, primaryMonitor } = await import('@tauri-apps/api/window')
+    const monitors = await availableMonitors()
+    const primary = (await primaryMonitor()) ?? monitors[0]
+    if (!primary) {
       await win.center()
       return
     }
 
+    const intersectsAny = monitors.some((mon) => {
+      const minX = mon.position.x
+      const minY = mon.position.y
+      const maxX = mon.position.x + mon.size.width
+      const maxY = mon.position.y + mon.size.height
+      return (
+        pos.x + size.width > minX + 8 &&
+        pos.y + size.height > minY + 8 &&
+        pos.x < maxX - 8 &&
+        pos.y < maxY - 8
+      )
+    })
+
+    if (!intersectsAny) {
+      await win.center()
+      return
+    }
+
+    const mon = (await win.currentMonitor()) ?? primary
     const minX = mon.position.x
     const minY = mon.position.y
     const maxX = mon.position.x + mon.size.width - size.width
     const maxY = mon.position.y + mon.size.height - size.height
-
-    const offScreen =
-      pos.x > maxX + 50 ||
-      pos.y > maxY + 50 ||
-      pos.x + size.width < minX - 50 ||
-      pos.y + size.height < minY - 50
-
-    if (offScreen) {
-      await win.center()
-      return
-    }
 
     const x = Math.max(minX, Math.min(pos.x, maxX))
     const y = Math.max(minY, Math.min(pos.y, maxY))
@@ -328,6 +342,7 @@ export async function ensurePetWindowVisible() {
     }
   } catch {
     try {
+      await win.show()
       await win.center()
     } catch {
       // ignore

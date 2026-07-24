@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"context"
 
 	"github.com/mochi-ai/server/internal/auth"
 	"github.com/mochi-ai/server/internal/bond"
@@ -52,7 +53,7 @@ func main() {
 	briefSvc := brief.NewService(db, cfg.Growth)
 	memSvc := memory.NewService(db, rdb, aiProvider, briefSvc)
 	emotionSvc := emotion.NewService(rdb, aiProvider)
-	hub := ws.NewHub()
+	hub := ws.NewHub(rdb)
 
 	lifeSvc := life.NewService(db, hub)
 	lifeSvc.StartTicker()
@@ -62,15 +63,20 @@ func main() {
 
 	reflectionSvc := reflection.NewService(db, aiProvider, briefSvc, bondSvc, cfg.Growth)
 	toolsSvc := tools.NewService(db, cfg.Tools)
+	hub.SetReminderDeliveredHook(func(reminderID uint64) {
+		_ = toolsSvc.MarkReminderFired(context.Background(), reminderID)
+	})
 	toolsExec := tools.NewExecutor(toolsSvc, cfg.Tools)
 	toolsHandler := tools.NewHandler(db, toolsSvc)
 	chatSvc := chat.NewService(db, aiProvider, memSvc, lifeSvc, lifecycleSvc, bondSvc, emotionSvc, briefSvc, reflectionSvc, cfg.Growth, toolsExec, cfg.Tools)
 	chatHandler := chat.NewHandler(chatSvc)
 
-	companionScheduler := companion.NewScheduler(db, rdb, aiProvider, bondSvc, cfg.Companion, hub, toolsSvc, cfg.Tools)
+	authSvc := auth.NewService(db, cfg.JWT.Secret)
+	realtimeHandler := realtime.NewHandler(authSvc, chatSvc, cfg)
+
+	companionScheduler := companion.NewScheduler(db, rdb, aiProvider, bondSvc, cfg.Companion, hub, toolsSvc, cfg.Tools, realtimeHandler)
 	companionScheduler.Start()
 
-	authSvc := auth.NewService(db, cfg.JWT.Secret)
 	authHandler := auth.NewHandler(authSvc)
 
 	voiceSvc := voice.NewService(cfg)
@@ -83,8 +89,6 @@ func main() {
 	subscribeSvc := subscribe.NewService(db, catalogSvc)
 	subscribeHandler := subscribe.NewHandler(catalogSvc, subscribeSvc)
 
-	realtimeHandler := realtime.NewHandler(authSvc, chatSvc, cfg)
-
 	r := router.Setup(cfg.ServerMode(), router.Handlers{
 		Auth:            authHandler,
 		Chat:            chatHandler,
@@ -95,9 +99,10 @@ func main() {
 		Tools:           toolsHandler,
 		Hub:             hub,
 		AuthSvc:         authSvc,
-		ClientAPIBase:   cfg.Client.APIBase,
-		RealtimeEnabled: cfg.Realtime.Enabled,
-		WriteApproval:   cfg.Growth.WriteApproval,
+		ClientAPIBase:    cfg.Client.APIBase,
+		RealtimeEnabled:  cfg.Realtime.Enabled,
+		RealtimePublic:   cfg.Realtime.PublicClient(),
+		WriteApproval:    cfg.Growth.WriteApproval,
 		GrowthEnabled:   cfg.Growth.Enabled,
 	})
 

@@ -154,6 +154,16 @@ func (s *Service) MarkReminderFired(ctx context.Context, id uint64) error {
 		Updates(map[string]interface{}{"status": "fired", "fired_at": now, "updated_at": now}).Error
 }
 
+// DueTodos returns unfinished todos whose due_at has passed.
+func (s *Service) DueTodos(ctx context.Context, now time.Time) ([]models.Todo, error) {
+	var list []models.Todo
+	err := s.db.WithContext(ctx).
+		Where("done = ? AND due_at IS NOT NULL AND due_at <= ?", false, now).
+		Order("due_at ASC").Limit(50).
+		Find(&list).Error
+	return list, err
+}
+
 func trimRunes(s string, max int) string {
 	runes := []rune(strings.TrimSpace(s))
 	if len(runes) <= max {

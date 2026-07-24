@@ -5,6 +5,10 @@ import { realtimeSession, type RealtimeEvent } from '@/services/realtimeSession'
 import { usePetStore } from '@/stores/petStore'
 import { TTSAudioQueue } from '@/services/ttsAudioPlayer'
 import { HybridSpeechVad, pcmToFloat, type VADEvent } from '@/services/sileroSpeechVad'
+import { LocalSTT, isLocalSttSupported } from '@/services/localStt'
+import { getRealtimeConfig, initClientConfig, resolveSttMode } from '@/config'
+import { handleProactiveMessage } from '@/services/proactiveHandler'
+import { streamChatMessage } from '@/services/api'
 
 /**
  * Turn phases — like talking to a person:
@@ -22,14 +26,32 @@ export interface ChatMessage {
 
 const WAKE_PEAK = 0.022
 const SPEECH_PEAK = 0.025
-const SILENCE_MS = 500
-const BARGE_IN_PEAK = 0.06
-const BARGE_IN_MS = 800
-const ECHO_GUARD_MS = 1800
-const ENDPOINT_DEBOUNCE_MS = 300
-const MIN_ENDPOINT_CHARS = 3
 const TTS_WATCHDOG_MS = 45000
+const TEXT_TURN_ACK_MS = 6000
 const MAX_UTTERANCE_MS = 25000
+
+interface RuntimeParams {
+  silenceMs: number
+  bargeInPeak: number
+  bargeInMs: number
+  echoGuardMs: number
+  endpointDebounceMs: number
+  minEndpointChars: number
+  endpointingEnabled: boolean
+}
+
+function defaultRuntimeParams(): RuntimeParams {
+  const rt = getRealtimeConfig()
+  return {
+    silenceMs: rt.vad.silenceMs,
+    bargeInPeak: rt.bargeIn.peakThreshold,
+    bargeInMs: rt.bargeIn.bargeInMs,
+    echoGuardMs: rt.bargeIn.echoGuardMs,
+    endpointDebounceMs: 300,
+    minEndpointChars: 3,
+    endpointingEnabled: rt.vad.endpointingEnabled,
+  }
+}
 
 export const useRealtimeStore = defineStore('realtime', () => {
   const connected = ref(false)
@@ -50,6 +72,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
 
   const capture = new PCMCapture()
   const ttsPlayer = new TTSAudioQueue()
+  let localStt: LocalSTT | null = null
+  let effectiveSttMode: 'cloud' | 'local' = 'cloud'
+  let params = defaultRuntimeParams()
   let recording = false
   let phase: TurnPhase = 'idle'
   let uploadSeq = 0
@@ -66,6 +91,10 @@ export const useRealtimeStore = defineStore('realtime', () => {
   let ttsStartedAt = 0
   let bargeAccumMs = 0
   let textSending = false
+  let pendingTextTurn: string | null = null
+  let textViaRest = false
+  let turnAckWaiter: { resolve: (ok: boolean) => void; timer: ReturnType<typeof setTimeout> } | null =
+    null
   let turnStartAt = 0
   let playbackMarked = false
   let lastEndpointAt = 0
@@ -106,11 +135,38 @@ export const useRealtimeStore = defineStore('realtime', () => {
     }))
   }
 
+  function clearTurnAckWait() {
+    if (!turnAckWaiter) return
+    clearTimeout(turnAckWaiter.timer)
+    turnAckWaiter = null
+  }
+
+  function beginTurnAckWait(ms: number): Promise<boolean> {
+    clearTurnAckWait()
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        turnAckWaiter = null
+        resolve(false)
+      }, ms)
+      turnAckWaiter = { resolve, timer }
+    })
+  }
+
+  function signalTurnAck() {
+    if (!turnAckWaiter) return
+    clearTimeout(turnAckWaiter.timer)
+    turnAckWaiter.resolve(true)
+    turnAckWaiter = null
+  }
+
   function finishTextTurn() {
     clearTtsWatchdog()
+    clearTurnAckWait()
     replyText.value = ''
     partialText.value = ''
     textSending = false
+    pendingTextTurn = null
+    textViaRest = false
     if (recording) {
       ttsPlayer.markDone(() => {
         enterResting()
@@ -144,11 +200,91 @@ export const useRealtimeStore = defineStore('realtime', () => {
     speechVad?.setPlaybackMode(next === 'agent_speaking')
   }
 
+  function refreshRuntimeParams() {
+    params = defaultRuntimeParams()
+  }
+
+  function stopLocalListening() {
+    localStt?.stop()
+  }
+
+  function startLocalListening() {
+    if (effectiveSttMode !== 'local' || !recording) return
+    if (!localStt) localStt = new LocalSTT()
+    const rt = getRealtimeConfig()
+    localStt.start(
+      {
+        onPartial: (text) => {
+          if (phase === 'processing' || phase === 'agent_speaking') return
+          partialText.value = text
+          heardSpeech = true
+          lastSpeechAt = Date.now()
+          if (phase === 'resting') {
+            setPhase('user_speaking')
+            statusText.value = '正在听...'
+          }
+        },
+        onFinal: (text) => {
+          handleLocalFinal(text)
+        },
+        onError: (msg) => {
+          if (import.meta.env.DEV) console.warn('[localStt]', msg)
+        },
+      },
+      rt.speechLocale,
+    )
+  }
+
+  function handleLocalFinal(text: string) {
+    if (!recording || phase === 'processing' || phase === 'agent_speaking') return
+    if ([...text.trim()].length < params.minEndpointChars) return
+    const now = Date.now()
+    if (now - lastEndpointAt < params.endpointDebounceMs) return
+    lastEndpointAt = now
+    void submitLocalTranscript(text)
+  }
+
+  function submitLocalTranscript(text: string) {
+    const trimmed = text.trim()
+    if (!trimmed || submitLock) return
+    if (!realtimeSession.isOpen()) {
+      statusText.value = '连接断开，请关闭面板重新打开'
+      return
+    }
+
+    stopLocalListening()
+    clearSilenceWatch()
+    submitLock = true
+    setPhase('processing')
+    heardSpeech = false
+    partialText.value = ''
+    statusText.value = '处理中...'
+    turnStartAt = Date.now()
+    playbackMarked = false
+
+    commitUserMessage(trimmed, 'voice')
+    replyText.value = ''
+    startTtsWatchdog()
+
+    const sent = realtimeSession.sendTextInput(trimmed, { voiceReply: true })
+    if (!sent) {
+      submitLock = false
+      messages.value.pop()
+      enterResting()
+      statusText.value = '发送失败，请重试'
+      return
+    }
+
+    setTimeout(() => {
+      submitLock = false
+    }, 800)
+  }
+
   function startSilenceWatch() {
     clearSilenceWatch()
     silenceTimer = setInterval(() => {
       if (!recording || phase !== 'user_speaking' || !heardSpeech || lastSpeechAt <= 0) return
-      if (Date.now() - lastSpeechAt >= SILENCE_MS) {
+      if (Date.now() - lastSpeechAt >= params.silenceMs) {
         void submitUtterance()
       }
       if (utteranceStartedAt > 0 && Date.now() - utteranceStartedAt >= MAX_UTTERANCE_MS) {
@@ -180,7 +316,11 @@ export const useRealtimeStore = defineStore('realtime', () => {
     if (recording) {
       statusText.value = 'Mochi 在休息... 说话我就听'
       usePetStore().setAnimation('idle')
-      startSilenceWatch()
+      if (effectiveSttMode === 'local') {
+        startLocalListening()
+      } else {
+        startSilenceWatch()
+      }
     } else {
       statusText.value = connected.value ? '点击开始对话' : ''
     }
@@ -203,10 +343,11 @@ export const useRealtimeStore = defineStore('realtime', () => {
   }
 
   function handleAsrEndpoint(text: string) {
+    if (!params.endpointingEnabled) return
     if (!heardSpeech || phase !== 'user_speaking') return
-    if ([...text.trim()].length < MIN_ENDPOINT_CHARS) return
+    if ([...text.trim()].length < params.minEndpointChars) return
     const now = Date.now()
-    if (now - lastEndpointAt < ENDPOINT_DEBOUNCE_MS) return
+    if (now - lastEndpointAt < params.endpointDebounceMs) return
     lastEndpointAt = now
     void submitUtterance()
   }
@@ -297,11 +438,11 @@ export const useRealtimeStore = defineStore('realtime', () => {
       bargeAccumMs = 0
       return
     }
-    if (Date.now() - ttsStartedAt < ECHO_GUARD_MS) return
+    if (Date.now() - ttsStartedAt < params.echoGuardMs) return
 
-    if (peak >= BARGE_IN_PEAK) {
+    if (peak >= params.bargeInPeak) {
       bargeAccumMs += 20
-      if (bargeAccumMs >= BARGE_IN_MS) {
+      if (bargeAccumMs >= params.bargeInMs) {
         bargeIn()
       }
     } else {
@@ -312,11 +453,16 @@ export const useRealtimeStore = defineStore('realtime', () => {
   function startTtsWatchdog() {
     clearTtsWatchdog()
     ttsWatchdog = setTimeout(() => {
-      if (phase === 'agent_speaking' || phase === 'processing') {
-        ttsPlayer.stop()
+      if (phase !== 'agent_speaking' && phase !== 'processing') return
+      ttsPlayer.stop()
+      if (recording) {
         enterResting()
         statusText.value = '语音超时，请继续说话'
+        return
       }
+      textSending = false
+      setPhase('idle')
+      statusText.value = '回复超时，请再发一次'
     }, TTS_WATCHDOG_MS)
   }
 
@@ -338,28 +484,60 @@ export const useRealtimeStore = defineStore('realtime', () => {
     partialText.value = ''
     speechVad?.destroy()
     speechVad = null
+    stopLocalListening()
+    localStt = null
     recording = false
     talking.value = false
     await capture.stop()
     setPhase('idle')
   }
 
+  async function sendTextViaRest(trimmed: string) {
+    if (textViaRest) return
+    textViaRest = true
+    clearTurnAckWait()
+    statusText.value = 'Mochi 正在想...'
+    replyText.value = ''
+    try {
+      const reply = await streamChatMessage(trimmed, (token) => {
+        replyText.value += token
+      })
+      if (reply) {
+        commitAssistantMessage(reply)
+      } else {
+        commitAssistantMessage('嗯... 让我想想~')
+      }
+      finishTextTurn()
+    } catch (e) {
+      textViaRest = false
+      textSending = false
+      pendingTextTurn = null
+      clearTtsWatchdog()
+      setPhase('idle')
+      const last = messages.value[messages.value.length - 1]
+      if (last?.role === 'user' && last.content === trimmed) {
+        messages.value.pop()
+      }
+      statusText.value = e instanceof Error ? e.message : '发送失败，请重试'
+    }
+  }
+
   async function sendTextMessage(text: string) {
     const trimmed = text.trim()
-    if (!trimmed || textSending) return
+    if (!trimmed) return
+    if (textSending) {
+      statusText.value = 'Mochi 正在回复，请稍候...'
+      return
+    }
 
     await pauseVoiceForText()
 
-    await connect()
-    if (!realtimeSession.isOpen()) {
-      statusText.value = '连接断开，请关闭面板重新打开'
-      return
-    }
     if (processingRef.value && !recording) {
       statusText.value = 'Mochi 正在回复，请稍候...'
       return
     }
 
+    pendingTextTurn = trimmed
     textSending = true
     commitUserMessage(trimmed, 'text')
     partialText.value = ''
@@ -370,24 +548,60 @@ export const useRealtimeStore = defineStore('realtime', () => {
     turnStartAt = Date.now()
     playbackMarked = false
 
+    await connect()
+    if (!realtimeSession.isOpen()) {
+      await sendTextViaRest(trimmed)
+      return
+    }
+
+    const ackWait = beginTurnAckWait(TEXT_TURN_ACK_MS)
     const sent = realtimeSession.sendTextInput(trimmed)
     if (!sent) {
-      textSending = false
-      messages.value.pop()
-      statusText.value = '发送失败，请重试'
-      setPhase('idle')
+      await sendTextViaRest(trimmed)
+      return
+    }
+
+    const acked = await ackWait
+    if (!acked && textSending && pendingTextTurn === trimmed) {
+      await sendTextViaRest(trimmed)
     }
   }
 
   async function connect() {
-    if (connected.value) return
+    if (connected.value && realtimeSession.isOpen()) return
+
+    if (connected.value && !realtimeSession.isOpen()) {
+      connected.value = false
+      unsub?.()
+      unsub = null
+      realtimeSession.disconnect()
+    }
+
     statusText.value = '连接中...'
 
     unsub = realtimeSession.on(handleEvent)
-    await realtimeSession.connect()
+    try {
+      await realtimeSession.connect()
+    } catch {
+      connected.value = false
+      unsub?.()
+      unsub = null
+      statusText.value = '连接失败，请关闭面板重新打开'
+      return
+    }
     connected.value = true
     realtimeSession.sendPrewarm()
     statusText.value = recording ? '点击开始对话' : '输入消息或开始语音对话'
+  }
+
+  /** Keep /ws/voice open for push reminders (no mic). */
+  async function ensurePushConnected() {
+    if (connected.value) return
+    try {
+      await connect()
+    } catch (e) {
+      console.warn('[realtime] push connect skipped', e)
+    }
   }
 
   function disconnect() {
@@ -399,19 +613,8 @@ export const useRealtimeStore = defineStore('realtime', () => {
     statusText.value = ''
   }
 
-  async function startTalk() {
-    if (recording) return
-
-    await connect()
-    realtimeSession.sendPrewarm()
+  async function startCloudTalk() {
     await initVad()
-
-    partialText.value = ''
-    replyText.value = ''
-    ttsPlayer.stop()
-    clearTtsWatchdog()
-    submitLock = false
-    micLevel.value = 0
 
     try {
       await capture.start((pcm, _seq) => {
@@ -467,6 +670,50 @@ export const useRealtimeStore = defineStore('realtime', () => {
     enterResting()
   }
 
+  async function startLocalTalk() {
+    localStt = new LocalSTT()
+    try {
+      recording = true
+      talking.value = true
+      enterResting()
+      startLocalListening()
+    } catch {
+      stopLocalListening()
+      localStt = null
+      recording = false
+      talking.value = false
+      effectiveSttMode = 'cloud'
+      statusText.value = '本地语音识别不可用，切换云端模式...'
+      await startCloudTalk()
+    }
+  }
+
+  async function startTalk() {
+    if (recording) return
+
+    await initClientConfig().catch(() => {})
+    refreshRuntimeParams()
+
+    await connect()
+    realtimeSession.sendPrewarm()
+
+    effectiveSttMode = resolveSttMode(getRealtimeConfig(), isLocalSttSupported())
+
+    partialText.value = ''
+    replyText.value = ''
+    ttsPlayer.stop()
+    clearTtsWatchdog()
+    submitLock = false
+    micLevel.value = 0
+
+    if (effectiveSttMode === 'local') {
+      await startLocalTalk()
+      return
+    }
+
+    await startCloudTalk()
+  }
+
   async function endConversation() {
     if (!recording) return
     clearSilenceWatch()
@@ -480,6 +727,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
     ttsPlayer.stop()
     speechVad?.destroy()
     speechVad = null
+    stopLocalListening()
+    localStt = null
+    effectiveSttMode = 'cloud'
     setPhase('idle')
     await capture.stop()
     statusText.value = connected.value ? '点击开始对话' : ''
@@ -511,12 +761,14 @@ export const useRealtimeStore = defineStore('realtime', () => {
         statusText.value = 'Mochi 正在想...'
         break
       case 'llm_token':
+        if (textViaRest) break
         if (recording && phase === 'processing') {
           statusText.value = 'Mochi 正在回复...'
         }
         replyText.value += ev.token
         break
       case 'llm_done':
+        if (textViaRest) break
         replyText.value = ev.text
         commitAssistantMessage(ev.text)
         if (recording) {
@@ -551,6 +803,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
         }
         break
       case 'turn_ack':
+        signalTurnAck()
         if (turnStartAt <= 0) turnStartAt = Date.now()
         setPhase('processing')
         startTtsWatchdog()
@@ -599,15 +852,32 @@ export const useRealtimeStore = defineStore('realtime', () => {
           statusText.value = ev.message
         }
         break
+      case 'proactive_message':
+        handleProactiveMessage({ message: ev.message, animation: ev.animation })
+        commitAssistantMessage(ev.message)
+        break
       case 'disconnected':
         connected.value = false
         talking.value = false
         recording = false
         clearSilenceWatch()
+        clearTurnAckWait()
+        if (textSending && pendingTextTurn) {
+          clearTtsWatchdog()
+          void sendTextViaRest(pendingTextTurn)
+          statusText.value = '连接断开，改用文字通道...'
+          void connect().catch(() => {})
+          break
+        }
         clearTtsWatchdog()
+        textSending = false
+        pendingTextTurn = null
         setPhase('idle')
         resting.value = false
-        statusText.value = '连接断开'
+        statusText.value = '连接断开，正在重连...'
+        void connect().catch(() => {
+          statusText.value = '连接断开，请关闭面板重新打开'
+        })
         break
     }
   }
@@ -626,6 +896,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     processing: processingRef,
     userSpeaking,
     connect,
+    ensurePushConnected,
     disconnect,
     startTalk,
     sendTextMessage,

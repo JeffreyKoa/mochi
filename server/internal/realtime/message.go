@@ -29,7 +29,8 @@ const (
 	MsgAnimation    = "animation"
 	MsgError        = "error"
 	MsgAck          = "ack"
-	MsgTurnMetrics  = "turn_metrics"
+	MsgTurnMetrics       = "turn_metrics"
+	MsgProactiveMessage  = "proactive_message"
 )
 
 type Envelope struct {
@@ -45,7 +46,8 @@ type AudioIn struct {
 }
 
 type TextInput struct {
-	Text string `json:"text"`
+	Text       string `json:"text"`
+	VoiceReply bool   `json:"voice_reply,omitempty"`
 }
 
 type VADEvent struct {
@@ -100,6 +102,12 @@ type TurnMetrics struct {
 
 type PlaybackMark struct {
 	AtMS int64 `json:"at_ms"`
+}
+
+type ProactiveMessage struct {
+	Message    string `json:"message"`
+	Animation  string `json:"animation"`
+	ReminderID uint64 `json:"reminder_id,omitempty"`
 }
 
 func marshalMsg(msgType string, data any, seq int64) ([]byte, error) {
