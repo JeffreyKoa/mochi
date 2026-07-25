@@ -20,6 +20,7 @@ type Config struct {
 	Companion CompanionConfig `yaml:"companion"`
 	Growth    GrowthConfig    `yaml:"growth"`
 	Tools     ToolsConfig     `yaml:"tools"`
+	Wellness  WellnessConfig  `yaml:"wellness"`
 }
 
 type ServerConfig struct {
@@ -168,6 +169,18 @@ type GrowthConfig struct {
 	StyleEvolutionThreshold int  `yaml:"style_evolution_threshold"`
 }
 
+type WellnessConfig struct {
+	Enabled                   bool              `yaml:"enabled"`
+	TickMinutes               int               `yaml:"tick_minutes"`
+	MaxDailyNudges            int               `yaml:"max_daily_nudges"`
+	ActivityIdleBreakMinutes  int               `yaml:"activity_idle_break_minutes"`
+	DrinkActiveMinutes        int               `yaml:"drink_active_minutes"`
+	RestActiveMinutes         int               `yaml:"rest_active_minutes"`
+	OverworkActiveMinutes     int               `yaml:"overwork_active_minutes"`
+	MealWindows               map[string][]string `yaml:"meal_windows"`
+	EveningRestHour           int               `yaml:"evening_rest_hour"`
+}
+
 type ToolsConfig struct {
 	Enabled               bool   `yaml:"enabled"`
 	Mode                  string `yaml:"mode"`
@@ -253,6 +266,7 @@ func (c *Config) applyDefaults() {
 	c.Companion.applyDefaults()
 	c.Growth.applyDefaults()
 	c.Tools.applyDefaults()
+	c.Wellness.applyDefaults()
 }
 
 func (c *CompanionConfig) applyDefaults() {
@@ -276,6 +290,30 @@ func (c *GrowthConfig) applyDefaults() {
 	}
 	if c.StyleEvolutionThreshold == 0 {
 		c.StyleEvolutionThreshold = 3
+	}
+}
+
+func (c *WellnessConfig) applyDefaults() {
+	if c.TickMinutes == 0 {
+		c.TickMinutes = 10
+	}
+	if c.MaxDailyNudges == 0 {
+		c.MaxDailyNudges = 2
+	}
+	if c.ActivityIdleBreakMinutes == 0 {
+		c.ActivityIdleBreakMinutes = 5
+	}
+	if c.DrinkActiveMinutes == 0 {
+		c.DrinkActiveMinutes = 90
+	}
+	if c.RestActiveMinutes == 0 {
+		c.RestActiveMinutes = 120
+	}
+	if c.OverworkActiveMinutes == 0 {
+		c.OverworkActiveMinutes = 180
+	}
+	if c.EveningRestHour == 0 {
+		c.EveningRestHour = 22
 	}
 }
 

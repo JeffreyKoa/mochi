@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/mochi-ai/server/internal/catalog"
+	"github.com/mochi-ai/server/internal/lifecycle"
 	"github.com/mochi-ai/server/internal/models"
 )
 
@@ -30,9 +31,10 @@ func NewService(db *gorm.DB, catalogSvc *catalog.Service) *Service {
 }
 
 type AdoptInput struct {
-	SKUId              string
-	PersonalityPreset  string // clingy|calm|playful — optional, uses SKU default
-	PetName            string
+	SKUId             string
+	PersonalityPreset string // clingy|calm|playful — optional, uses SKU default
+	PetName           string
+	Gender            string // male | female
 }
 
 type AdoptResult struct {
@@ -71,7 +73,7 @@ func (s *Service) Adopt(ctx context.Context, userID uint64, in AdoptInput) (*Ado
 			return err
 		}
 
-		pet, err := s.claimPet(tx, userID, sku, personality, in.PetName, now)
+		pet, err := s.claimPet(tx, userID, sku, personality, in.PetName, lifecycle.NormalizeGender(in.Gender), now)
 		if err != nil {
 			return err
 		}
@@ -92,7 +94,7 @@ func (s *Service) Adopt(ctx context.Context, userID uint64, in AdoptInput) (*Ado
 	return &result, nil
 }
 
-func (s *Service) claimPet(tx *gorm.DB, userID uint64, sku *models.PetSKU, personality []byte, petName string, now time.Time) (*models.Pet, error) {
+func (s *Service) claimPet(tx *gorm.DB, userID uint64, sku *models.PetSKU, personality []byte, petName, gender string, now time.Time) (*models.Pet, error) {
 	var pet models.Pet
 	err := tx.Where("user_id = ?", userID).First(&pet).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -106,6 +108,7 @@ func (s *Service) claimPet(tx *gorm.DB, userID uint64, sku *models.PetSKU, perso
 			SKUId:           sku.SKUId,
 			Species:         sku.Species,
 			Breed:           sku.Breed,
+			Gender:          lifecycle.NormalizeGender(gender),
 			BornAt:          now,
 			MaxAgeYears:     sku.MaxAgeYears,
 			LifeStage:       "newborn",
@@ -150,6 +153,9 @@ func (s *Service) claimPet(tx *gorm.DB, userID uint64, sku *models.PetSKU, perso
 	pet.Breed = sku.Breed
 	pet.MaxAgeYears = sku.MaxAgeYears
 	pet.PersonalityJSON = personality
+	if gender != "" {
+		pet.Gender = lifecycle.NormalizeGender(gender)
+	}
 	if petName != "" {
 		pet.Name = petName
 	}

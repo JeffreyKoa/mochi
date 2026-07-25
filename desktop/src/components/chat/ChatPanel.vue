@@ -7,7 +7,7 @@ import { getChatHistory } from '@/services/api'
 import { getClientConfig, initClientConfig } from '@/config'
 import { listenProactive } from '@/services/proactiveSync'
 
-defineProps<{ floating?: boolean; compact?: boolean }>()
+defineProps<{ floating?: boolean; compact?: boolean; docked?: boolean }>()
 
 const pet = usePetStore()
 const rt = useRealtimeStore()
@@ -41,7 +41,9 @@ async function close() {
   if (isTauri()) {
     await closeChatPanel()
     try {
-      await import('@tauri-apps/api/event').then(({ emit }) => emit('chat-closed', {}))
+      const { emit } = await import('@tauri-apps/api/event')
+      await emit('chat-closed', {})
+      await emit('side-panel-closed', { mode: 'chat' })
     } catch {
       // optional
     }
@@ -72,7 +74,7 @@ onMounted(async () => {
   })
 
   try {
-    const history = await getChatHistory()
+    const history = (await getChatHistory()) as Array<{ role: string; content: string }> | null
     if (Array.isArray(history) && history.length > 0) {
       rt.loadHistory(
         history.map((m: { role: string; content: string }) => ({
@@ -97,7 +99,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="chat-root" :class="{ floating, compact }">
+  <div class="chat-root" :class="{ floating, compact, docked }">
     <div class="chat-panel">
       <div class="chat-header">
         <span>{{ pet.petName }}</span>
@@ -185,6 +187,24 @@ onUnmounted(() => {
   border-radius: 16px;
   overflow: hidden;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+}
+
+.chat-root.docked {
+  width: 320px;
+  height: 440px;
+  flex-shrink: 0;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+}
+
+.chat-root.docked .chat-panel {
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+.chat-root.docked .chat-header {
+  border-radius: 16px 16px 0 0;
 }
 
 .chat-panel {
@@ -409,12 +429,22 @@ onUnmounted(() => {
   z-index: -1;
 }
 
+.chat-root.floating.panel-on-left::after {
+  left: auto;
+  right: 22px;
+}
+
 .chat-root.floating.compact::after {
   left: 18px;
   right: auto;
   bottom: -7px;
   width: 12px;
   height: 12px;
+}
+
+.chat-root.floating.compact.panel-on-left::after {
+  left: auto;
+  right: 18px;
 }
 
 .chat-root.floating .chat-header {

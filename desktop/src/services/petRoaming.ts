@@ -56,13 +56,13 @@ export async function saveWindowPosition(win: TauriWindow): Promise<void> {
 
 async function getRoamingBounds(win: TauriWindow): Promise<RoamingBounds | null> {
   try {
-    const { currentMonitor, PrimaryMonitor, availableMonitors } = await import(
+    const { currentMonitor, primaryMonitor, availableMonitors } = await import(
       '@tauri-apps/api/window'
     )
     let monitor = await currentMonitor()
     if (!monitor) {
       const all = await availableMonitors()
-      monitor = all[0] ?? (await PrimaryMonitor())
+      monitor = all[0] ?? (await primaryMonitor())
     }
     if (!monitor) return null
 

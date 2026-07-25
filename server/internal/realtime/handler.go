@@ -32,6 +32,8 @@ type Handler struct {
 	pipeline *Pipeline
 	cfg      config.RealtimeConfig
 	sessions *Registry
+	deferMu  sync.RWMutex
+	deferUntil map[uint64]time.Time
 }
 
 func NewHandler(authSvc *auth.Service, chatSvc *chat.Service, appCfg *config.Config) *Handler {
@@ -40,7 +42,24 @@ func NewHandler(authSvc *auth.Service, chatSvc *chat.Service, appCfg *config.Con
 		pipeline: NewPipeline(chatSvc, appCfg.Realtime, appCfg),
 		cfg:      appCfg.Realtime,
 		sessions: NewRegistry(),
+		deferUntil: make(map[uint64]time.Time),
 	}
+}
+
+func (h *Handler) DeferWellness(userID uint64, d time.Duration) {
+	h.deferMu.Lock()
+	defer h.deferMu.Unlock()
+	until := time.Now().Add(d)
+	if prev, ok := h.deferUntil[userID]; !ok || until.After(prev) {
+		h.deferUntil[userID] = until
+	}
+}
+
+func (h *Handler) WellnessDeferred(userID uint64) bool {
+	h.deferMu.RLock()
+	defer h.deferMu.RUnlock()
+	until, ok := h.deferUntil[userID]
+	return ok && time.Now().Before(until)
 }
 
 func (h *Handler) SendProactiveReminder(userID, reminderID uint64, message, animation string) bool {
@@ -222,6 +241,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 		processingMu.Lock()
 		processing = true
 		processingMu.Unlock()
+		h.DeferWellness(userID, 15*time.Minute)
 
 		resetASR()
 		audioMu.Lock()
@@ -280,6 +300,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 		processingMu.Lock()
 		processing = true
 		processingMu.Unlock()
+		h.DeferWellness(userID, 15*time.Minute)
 
 		sess.SetState(StateThinking)
 		sender.SendAnimation(StateThinking)

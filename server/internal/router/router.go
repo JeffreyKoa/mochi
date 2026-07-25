@@ -14,6 +14,7 @@ import (
 	"github.com/mochi-ai/server/internal/subscribe"
 	"github.com/mochi-ai/server/internal/tools"
 	"github.com/mochi-ai/server/internal/voice"
+	"github.com/mochi-ai/server/internal/wellness"
 	"github.com/mochi-ai/server/internal/ws"
 )
 
@@ -25,6 +26,7 @@ type Handlers struct {
 	Voice           *voice.Handler
 	Realtime        *realtime.Handler
 	Tools           *tools.Handler
+	Wellness        *wellness.Handler
 	Hub             *ws.Hub
 	AuthSvc       *auth.Service
 	ClientAPIBase      string
@@ -82,11 +84,16 @@ func Setup(mode string, h Handlers) *gin.Engine {
 			protected.POST("/brief/entries/:id/reject", h.Pet.RejectBriefEntry)
 			protected.GET("/user/preferences", h.Auth.GetPreferences)
 			protected.PUT("/user/preferences", h.Auth.UpdatePreferences)
+			protected.GET("/user/learning-preferences", h.Auth.GetLearningPreferences)
+			protected.PUT("/user/learning-preferences", h.Auth.UpdateLearningPreferences)
 			if h.Tools != nil {
 				protected.GET("/reminders", h.Tools.ListReminders)
 				protected.PATCH("/reminders/:id", h.Tools.PatchReminder)
 				protected.GET("/todos", h.Tools.ListTodos)
 				protected.PATCH("/todos/:id", h.Tools.PatchTodo)
+			}
+			if h.Wellness != nil {
+				protected.POST("/activity/heartbeat", h.Wellness.Heartbeat)
 			}
 			protected.POST("/pet/onboarding", h.Pet.Onboarding)
 			protected.POST("/subscribe/adopt", h.Subscribe.Adopt)

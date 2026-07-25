@@ -5,13 +5,35 @@ import (
 )
 
 type User struct {
-	ID               uint64    `gorm:"primaryKey" json:"id"`
-	Email            string    `gorm:"uniqueIndex;size:255" json:"email"`
-	Password         string    `gorm:"size:255" json:"-"`
-	ProactiveEnabled bool      `gorm:"default:true" json:"proactive_enabled"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
-	Pet              *Pet      `gorm:"foreignKey:UserID" json:"pet,omitempty"`
+	ID                 uint64    `gorm:"primaryKey" json:"id"`
+	Email              string    `gorm:"uniqueIndex;size:255" json:"email"`
+	Password           string    `gorm:"size:255" json:"-"`
+	ProactiveEnabled   bool      `gorm:"default:true" json:"proactive_enabled"`
+	QuietHoursStart    int       `gorm:"default:23" json:"quiet_hours_start"`
+	QuietHoursEnd      int       `gorm:"default:8" json:"quiet_hours_end"`
+	MorningGreeting    bool      `gorm:"default:true" json:"morning_greeting"`
+	ReminderVoice      bool      `gorm:"default:true" json:"reminder_voice"`
+	FollowUpEnabled    bool      `gorm:"default:true" json:"follow_up_enabled"`
+	VoiceReplyDefault  bool      `gorm:"default:true" json:"voice_reply_default"`
+	SttMode                string `gorm:"size:16;default:auto" json:"stt_mode"`
+	WellnessNudgesEnabled  bool   `gorm:"default:true" json:"wellness_nudges_enabled"`
+	WellnessDrink          bool   `gorm:"default:true" json:"wellness_drink"`
+	WellnessMeal           bool   `gorm:"default:true" json:"wellness_meal"`
+	WellnessRest           bool   `gorm:"default:true" json:"wellness_rest"`
+	LunchHour              int    `gorm:"default:12" json:"lunch_hour"`
+	DinnerHour             int    `gorm:"default:18" json:"dinner_hour"`
+	WellnessDailyMax       int    `gorm:"default:2" json:"wellness_daily_max"`
+	LearningPrefsJSON      []byte `gorm:"type:json" json:"learning_prefs,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+	Pet                *Pet      `gorm:"foreignKey:UserID" json:"pet,omitempty"`
+}
+
+type LearningPrefs struct {
+	LearningTopics       []string `json:"learning_topics,omitempty"`
+	EnglishLevel         string   `json:"english_level,omitempty"`
+	StudyPaceMinutes     int      `json:"study_pace_minutes,omitempty"`
+	NoUnsolicitedAdvice  bool     `json:"no_unsolicited_advice"`
 }
 
 type Pet struct {
@@ -22,6 +44,7 @@ type Pet struct {
 	SKUId           string         `gorm:"column:sku_id;size:64" json:"sku_id"`
 	Species         string         `gorm:"size:16;default:cat" json:"species"`
 	Breed           string         `gorm:"size:32" json:"breed"`
+	Gender          string         `gorm:"size:8;default:female" json:"gender"`
 	BornAt          time.Time      `json:"born_at"`
 	MaxAgeYears     float32        `gorm:"default:18" json:"max_age_years"`
 	LifeStage       string         `gorm:"size:16;default:newborn" json:"life_stage"`
@@ -158,6 +181,16 @@ type Reminder struct {
 	FiredAt    *time.Time `json:"fired_at,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
 	UpdatedAt  time.Time  `json:"updated_at"`
+}
+
+type WellnessNudgeLog struct {
+	ID        uint64    `gorm:"primaryKey" json:"id"`
+	PetID     uint64    `gorm:"index" json:"pet_id"`
+	UserID    uint64    `gorm:"index" json:"user_id"`
+	Type      string    `gorm:"size:32" json:"type"`
+	Message   string    `gorm:"size:512" json:"message"`
+	SentAt    time.Time `json:"sent_at"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type Todo struct {

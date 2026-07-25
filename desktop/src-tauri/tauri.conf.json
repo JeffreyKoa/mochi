@@ -30,12 +30,12 @@
         "title": "Mochi Chat",
         "width": 320,
         "height": 440,
-        "transparent": false,
+        "transparent": true,
         "decorations": false,
         "alwaysOnTop": true,
-        "skipTaskbar": false,
+        "skipTaskbar": true,
         "resizable": false,
-        "shadow": true,
+        "shadow": false,
         "center": false,
         "visible": false
       }

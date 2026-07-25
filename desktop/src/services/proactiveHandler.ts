@@ -19,6 +19,7 @@ export function handleProactiveMessage(payload: ProactivePayload) {
 }
 
 function speakReminder(text: string) {
+  if (localStorage.getItem('mochi_reminder_voice') === '0') return
   if (typeof window === 'undefined' || !window.speechSynthesis) return
   window.speechSynthesis.cancel()
   const utterance = new SpeechSynthesisUtterance(text)

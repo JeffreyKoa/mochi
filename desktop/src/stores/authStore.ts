@@ -35,7 +35,7 @@ export const useAuthStore = defineStore('auth', () => {
   async function doLogin(e: string, password: string) {
     error.value = ''
     const data = await login(e, password)
-    setToken(data.token)
+    setToken((data as { token: string }).token)
     email.value = e
     localStorage.setItem('mochi_email', e)
     return data
@@ -44,7 +44,7 @@ export const useAuthStore = defineStore('auth', () => {
   async function doRegister(e: string, password: string, petName?: string) {
     error.value = ''
     const data = await register(e, password, petName)
-    setToken(data.token)
+    setToken((data as { token: string }).token)
     email.value = e
     localStorage.setItem('mochi_email', e)
     return data

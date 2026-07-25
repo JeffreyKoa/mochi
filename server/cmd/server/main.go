@@ -24,6 +24,7 @@ import (
 	"github.com/mochi-ai/server/internal/reflection"
 	"github.com/mochi-ai/server/internal/router"
 	"github.com/mochi-ai/server/internal/voice"
+	"github.com/mochi-ai/server/internal/wellness"
 	"github.com/mochi-ai/server/internal/ws"
 	"github.com/mochi-ai/server/pkg/ai"
 )
@@ -74,6 +75,10 @@ func main() {
 	authSvc := auth.NewService(db, cfg.JWT.Secret)
 	realtimeHandler := realtime.NewHandler(authSvc, chatSvc, cfg)
 
+	wellnessSvc := wellness.NewService(db, rdb, aiProvider, cfg.Wellness, hub, realtimeHandler.WellnessDeferred)
+	wellnessSvc.Start()
+	wellnessHandler := wellness.NewHandler(wellnessSvc)
+
 	companionScheduler := companion.NewScheduler(db, rdb, aiProvider, bondSvc, cfg.Companion, hub, toolsSvc, cfg.Tools, realtimeHandler)
 	companionScheduler.Start()
 
@@ -97,6 +102,7 @@ func main() {
 		Voice:           voiceHandler,
 		Realtime:        realtimeHandler,
 		Tools:           toolsHandler,
+		Wellness:        wellnessHandler,
 		Hub:             hub,
 		AuthSvc:         authSvc,
 		ClientAPIBase:    cfg.Client.APIBase,

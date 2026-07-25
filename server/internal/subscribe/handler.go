@@ -32,6 +32,7 @@ func (h *Handler) Adopt(c *gin.Context) {
 	var req struct {
 		SKUId   string `json:"sku_id" binding:"required"`
 		PetName string `json:"pet_name"`
+		Gender  string `json:"gender"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -41,6 +42,7 @@ func (h *Handler) Adopt(c *gin.Context) {
 	result, err := h.subscribe.Adopt(c.Request.Context(), userID, AdoptInput{
 		SKUId:   req.SKUId,
 		PetName: req.PetName,
+		Gender:  req.Gender,
 	})
 	if err != nil {
 		if err == ErrSKUNotFound {

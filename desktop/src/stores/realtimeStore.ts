@@ -342,6 +342,20 @@ export const useRealtimeStore = defineStore('realtime', () => {
     statusText.value = '正在听...'
   }
 
+  /** Click pet while resting — start listening immediately. */
+  function wakeListening() {
+    if (phase !== 'resting' || !recording) return false
+    if (effectiveSttMode === 'local') {
+      setPhase('user_speaking')
+      statusText.value = '正在听...'
+      startLocalListening()
+      return true
+    }
+    if (!realtimeSession.isOpen()) return false
+    wakeOnSpeech()
+    return true
+  }
+
   function handleAsrEndpoint(text: string) {
     if (!params.endpointingEnabled) return
     if (!heardSpeech || phase !== 'user_speaking') return
@@ -688,13 +702,18 @@ export const useRealtimeStore = defineStore('realtime', () => {
     }
   }
 
-  async function startTalk() {
-    if (recording) return
+  async function startTalk(): Promise<boolean> {
+    if (recording) return true
 
     await initClientConfig().catch(() => {})
     refreshRuntimeParams()
 
     await connect()
+    if (!realtimeSession.isOpen()) {
+      statusText.value = '连接失败，请稍后再试'
+      return false
+    }
+
     realtimeSession.sendPrewarm()
 
     effectiveSttMode = resolveSttMode(getRealtimeConfig(), isLocalSttSupported())
@@ -708,10 +727,11 @@ export const useRealtimeStore = defineStore('realtime', () => {
 
     if (effectiveSttMode === 'local') {
       await startLocalTalk()
-      return
+      return recording
     }
 
     await startCloudTalk()
+    return recording
   }
 
   async function endConversation() {
@@ -899,11 +919,13 @@ export const useRealtimeStore = defineStore('realtime', () => {
     ensurePushConnected,
     disconnect,
     startTalk,
+    wakeListening,
     sendTextMessage,
     loadHistory,
     appendAssistantMessage: commitAssistantMessage,
     submitUtterance,
     endConversation,
     stopTalk: submitUtterance,
+    lastTurnMetrics,
   }
 })

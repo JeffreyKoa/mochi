@@ -29,6 +29,11 @@ export interface PetLifecycle {
   is_alive: boolean
 }
 
+export interface PetPersonality {
+  traits?: string
+  speech_style?: string
+}
+
 export type Animation = 'idle' | 'happy' | 'sad' | 'sleep' | 'eat' | 'walk'
 
 export const usePetStore = defineStore('pet', () => {
@@ -48,11 +53,15 @@ export const usePetStore = defineStore('pet', () => {
   })
   const skuId = ref('')
   const skuName = ref('')
+  const gender = ref<'male' | 'female'>('female')
+  const personality = ref<PetPersonality>({})
+  const stageHint = ref('')
   const skin = ref<PetSkin | null>(null)
   const currentAnimation = ref<Animation>('idle')
   const facing = ref<'left' | 'right'>('right')
   const isRoaming = ref(false)
   const isChatOpen = ref(false)
+  const chatInline = ref(false)
   const bubbleText = ref('')
   const showBubble = ref(false)
   const bootFailed = ref(false)
@@ -106,8 +115,14 @@ export const usePetStore = defineStore('pet', () => {
     currentAnimation.value = anim
   }
 
+  function summarizeBubbleText(text: string, maxLen = 52): string {
+    const trimmed = text.trim()
+    if ([...trimmed].length <= maxLen) return trimmed
+    return [...trimmed].slice(0, maxLen).join('') + '…'
+  }
+
   function showSpeechBubble(text: string, duration = 4000) {
-    bubbleText.value = text
+    bubbleText.value = summarizeBubbleText(text)
     showBubble.value = true
     setTimeout(() => {
       showBubble.value = false
@@ -115,7 +130,7 @@ export const usePetStore = defineStore('pet', () => {
   }
 
   function showPersistentBubble(text: string) {
-    bubbleText.value = text
+    bubbleText.value = summarizeBubbleText(text)
     showBubble.value = true
   }
 
@@ -156,6 +171,9 @@ export const usePetStore = defineStore('pet', () => {
     lifecycle,
     skuId,
     skuName,
+    gender,
+    personality,
+    stageHint,
     skin,
     skinColors,
     animationColors,
@@ -166,6 +184,7 @@ export const usePetStore = defineStore('pet', () => {
     facing,
     isRoaming,
     isChatOpen,
+    chatInline,
     bubbleText,
     showBubble,
     bootFailed,

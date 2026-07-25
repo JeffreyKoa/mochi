@@ -100,14 +100,13 @@ func (s *Scheduler) Stop() {
 }
 
 func (s *Scheduler) scanAll() {
-	if s.inQuietHours() {
-		return
-	}
-
 	var pets []models.Pet
 	s.db.Preload("LifeState").Find(&pets)
 
 	for _, pet := range pets {
+		if s.inQuietHoursForUser(pet.UserID) {
+			continue
+		}
 		s.scanPet(context.Background(), pet)
 	}
 }
@@ -127,13 +126,13 @@ func (s *Scheduler) scanPet(ctx context.Context, pet models.Pet) {
 
 	bondProfile, _ := s.bond.GetOrCreate(ctx, pet.ID)
 
-	trigger, memorySnippet, animation := s.pickTrigger(ctx, pet, state, bondProfile)
-	if trigger == "" {
+	var user models.User
+	if s.db.First(&user, pet.UserID).Error != nil {
 		return
 	}
 
-	var user models.User
-	if s.db.First(&user, pet.UserID).Error != nil {
+	trigger, memorySnippet, animation := s.pickTrigger(ctx, pet, state, bondProfile, user)
+	if trigger == "" {
 		return
 	}
 	if !user.ProactiveEnabled && !s.isFollowUpTrigger(trigger) {
@@ -166,12 +165,13 @@ const (
 	triggerLifeState       triggerKind = "life_state"
 )
 
-func (s *Scheduler) pickTrigger(ctx context.Context, pet models.Pet, state models.LifeState, bondProfile models.BondProfile) (triggerKind, string, string) {
+func (s *Scheduler) pickTrigger(ctx context.Context, pet models.Pet, state models.LifeState, bondProfile models.BondProfile, user models.User) (triggerKind, string, string) {
 	now := time.Now()
 	hoursSince := time.Since(state.LastInteraction).Hours()
 
+	followUp := s.cfg.FollowUpEnabled && user.FollowUpEnabled
 	if bondProfile.LastMoodAt.After(now.Add(-24*time.Hour)) && emotion.IsNegativeMood(bondProfile.LastMoodTag) {
-		if s.cfg.FollowUpEnabled && hoursSince > 2 {
+		if followUp && hoursSince > 2 {
 			return triggerEmotionFollowUp, bondProfile.LastMoodTag, "concerned"
 		}
 	}
@@ -180,7 +180,9 @@ func (s *Scheduler) pickTrigger(ctx context.Context, pet models.Pet, state model
 	err := s.db.Where("pet_id = ? AND type = ? AND content LIKE ?", pet.ID, "event", "%明天%").
 		Order("created_at DESC").First(&eventMem).Error
 	if err == nil && eventMem.CreatedAt.Before(now.Add(-12*time.Hour)) {
-		return triggerEventFollowUp, eventMem.Content, "happy"
+		if followUp {
+			return triggerEventFollowUp, eventMem.Content, "happy"
+		}
 	}
 
 	if state.Hungry > 80 || state.Energy < 20 {
@@ -188,7 +190,8 @@ func (s *Scheduler) pickTrigger(ctx context.Context, pet models.Pet, state model
 	}
 
 	hour := now.Hour()
-	if s.cfg.MorningGreeting && hour >= 8 && hour < 9 && hoursSince > 4 {
+	morning := s.cfg.MorningGreeting && user.MorningGreeting
+	if morning && hour >= 8 && hour < 9 && hoursSince > 4 {
 		return triggerMorning, "", "happy"
 	}
 
@@ -253,12 +256,23 @@ func (s *Scheduler) fallbackMessage(trigger triggerKind, petName string, bond mo
 	}
 }
 
-func (s *Scheduler) inQuietHours() bool {
-	if len(s.cfg.QuietHours) < 2 {
-		return false
+func (s *Scheduler) inQuietHoursForUser(userID uint64) bool {
+	start, end := 23, 8
+	if len(s.cfg.QuietHours) >= 2 {
+		start, end = s.cfg.QuietHours[0], s.cfg.QuietHours[1]
+	}
+	if userID > 0 {
+		var user models.User
+		if s.db.First(&user, userID).Error == nil {
+			if user.QuietHoursStart > 0 || user.QuietHoursEnd > 0 {
+				start = user.QuietHoursStart
+				if user.QuietHoursEnd > 0 {
+					end = user.QuietHoursEnd
+				}
+			}
+		}
 	}
 	hour := time.Now().Hour()
-	start, end := s.cfg.QuietHours[0], s.cfg.QuietHours[1]
 	if start > end {
 		return hour >= start || hour < end
 	}

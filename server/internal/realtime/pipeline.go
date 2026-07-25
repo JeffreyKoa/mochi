@@ -24,16 +24,18 @@ type Pipeline struct {
 	asr       ASRRecognizer
 	tts       TTSSynthesizer
 	ttsFormat string
+	apiKey    string
+	ep        dashscope.EndpointConfig
 }
 
 func NewPipeline(chatSvc *chat.Service, cfg config.RealtimeConfig, appCfg *config.Config) *Pipeline {
-	p := &Pipeline{chat: chatSvc, cfg: cfg, ttsFormat: "mp3"}
 	apiKey := appCfg.AI.APIKey
 	ep := dashscope.EndpointConfig{
 		WSURL:       cfg.Dashscope.WSURL,
 		WorkspaceID: cfg.Dashscope.WorkspaceID,
 		Region:      cfg.Dashscope.Region,
 	}
+	p := &Pipeline{chat: chatSvc, cfg: cfg, ttsFormat: "mp3", apiKey: apiKey, ep: ep}
 	asrEp := dashscope.EndpointConfig{WSURL: cfg.Dashscope.ASRWSURL}
 	if cfg.ASR.Provider == "dashscope" && apiKey != "" {
 		p.asr = newDashscopeASR(dashscope.NewASRClient(apiKey, cfg.ASR.Model, cfg.ASR.SampleRate, asrEp))
@@ -41,6 +43,40 @@ func NewPipeline(chatSvc *chat.Service, cfg config.RealtimeConfig, appCfg *confi
 
 	p.tts, p.ttsFormat = buildTTSSynth(cfg, apiKey, ep)
 	return p
+}
+
+func (p *Pipeline) getTTSForPet(ctx context.Context, userID uint64) (TTSSynthesizer, string) {
+	if p.tts == nil {
+		return nil, p.ttsFormat
+	}
+	if p.chat == nil {
+		return p.tts, p.ttsFormat
+	}
+	pet, err := p.chat.GetPetByUser(ctx, userID)
+	if err != nil || pet == nil {
+		return p.tts, p.ttsFormat
+	}
+
+	profile := ResolveVoice(pet.Gender, pet.LifeStage, string(pet.PersonalityJSON))
+	cfg := p.cfg
+	if profile.DashscopeVoice != "" {
+		cfg.TTS.Voice = profile.DashscopeVoice
+	}
+	if profile.EdgeVoice != "" {
+		cfg.EdgeTTS.Voice = profile.EdgeVoice
+	}
+	if profile.Rate != "" {
+		cfg.EdgeTTS.Rate = profile.Rate
+	}
+	if profile.Pitch != "" {
+		cfg.EdgeTTS.Pitch = profile.Pitch
+	}
+
+	synth, fmtStr := buildTTSSynth(cfg, p.apiKey, p.ep)
+	if synth != nil {
+		return synth, fmtStr
+	}
+	return p.tts, p.ttsFormat
 }
 
 func edgeConfigFrom(cfg config.RealtimeConfig) edgetts.Config {
@@ -214,9 +250,12 @@ type segmentSynthResult struct {
 	err    error
 }
 
-func (p *Pipeline) synthSegmentBuffered(ctx context.Context, text string) segmentSynthResult {
+func (p *Pipeline) synthSegmentBufferedWithSynth(ctx context.Context, synth TTSSynthesizer, text string) segmentSynthResult {
+	if synth == nil {
+		synth = p.tts
+	}
 	var chunks [][]byte
-	err := p.tts.Synthesize(ctx, text, func(audio []byte) {
+	err := synth.Synthesize(ctx, text, func(audio []byte) {
 		if len(audio) == 0 {
 			return
 		}
@@ -225,16 +264,16 @@ func (p *Pipeline) synthSegmentBuffered(ctx context.Context, text string) segmen
 	return segmentSynthResult{chunks: chunks, err: err}
 }
 
-func (p *Pipeline) asyncSynthSegment(ctx context.Context, text string) <-chan segmentSynthResult {
+func (p *Pipeline) asyncSynthSegmentWithSynth(ctx context.Context, synth TTSSynthesizer, text string) <-chan segmentSynthResult {
 	ch := make(chan segmentSynthResult, 1)
 	go func() {
-		ch <- p.synthSegmentBuffered(ctx, text)
+		ch <- p.synthSegmentBufferedWithSynth(ctx, synth, text)
 	}()
 	return ch
 }
 
 // runPrefetchSegmentTTS synthesizes segments with one-ahead prefetch to hide inter-sentence gaps.
-func (p *Pipeline) runPrefetchSegmentTTS(ctx context.Context, segCh <-chan string, onChunk func([]byte)) error {
+func (p *Pipeline) runPrefetchSegmentTTS(ctx context.Context, synth TTSSynthesizer, segCh <-chan string, onChunk func([]byte)) error {
 	var ttsErr error
 
 	var ahead <-chan segmentSynthResult
@@ -255,7 +294,7 @@ func (p *Pipeline) runPrefetchSegmentTTS(ctx context.Context, segCh <-chan strin
 				if !ok {
 					return ttsErr
 				}
-				ahead = p.asyncSynthSegment(ctx, seg)
+				ahead = p.asyncSynthSegmentWithSynth(ctx, synth, seg)
 			default:
 			}
 			continue
@@ -266,12 +305,12 @@ func (p *Pipeline) runPrefetchSegmentTTS(ctx context.Context, segCh <-chan strin
 			return ttsErr
 		}
 
-		cur := p.asyncSynthSegment(ctx, seg)
+		cur := p.asyncSynthSegmentWithSynth(ctx, synth, seg)
 
 		select {
 		case nextSeg, nextOK := <-segCh:
 			if nextOK {
-				ahead = p.asyncSynthSegment(ctx, nextSeg)
+				ahead = p.asyncSynthSegmentWithSynth(ctx, synth, nextSeg)
 			} else {
 				res := p.playSegmentResult(<-cur, onChunk)
 				if res.err != nil && ttsErr == nil {
@@ -308,6 +347,13 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 	llmTokenSeen := false
 	sentenceFlushed := false
 	fillerPlayed := false
+	isFirstSegment := true
+
+	ttsSynth, ttsFormat := p.getTTSForPet(ctx, sess.UserID)
+	if ttsSynth == nil {
+		ttsSynth = p.tts
+		ttsFormat = p.ttsFormat
+	}
 
 	onAudio := func(audio []byte) {
 		if len(audio) == 0 {
@@ -331,19 +377,19 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		seq := sess.NextTTSSeq()
 		_ = send.Send(MsgTTSAudio, TTSAudio{
 			PCM:    base64.StdEncoding.EncodeToString(audio),
-			Format: p.ttsFormat,
+			Format: ttsFormat,
 			Seq:    seq,
 		})
 	}
 
 	var segCh chan string
 	var ttsDone chan struct{}
-	if withVoice && p.tts != nil {
+	if withVoice && ttsSynth != nil {
 		segCh = make(chan string, 16)
 		ttsDone = make(chan struct{})
 		go func() {
 			defer close(ttsDone)
-			err := p.runPrefetchSegmentTTS(ctx, segCh, onAudio)
+			err := p.runPrefetchSegmentTTS(ctx, ttsSynth, segCh, onAudio)
 			if err != nil {
 				ttsErrMu.Lock()
 				if ttsErr == nil {
@@ -372,10 +418,11 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 
 	flushBuffer := func() {
 		for {
-			seg := takeFlushSegment(&tokenBuf, p.cfg.Pipeline)
+			seg := takeFlushSegmentEx(&tokenBuf, p.cfg.Pipeline, isFirstSegment)
 			if seg == "" {
 				break
 			}
+			isFirstSegment = false
 			enqueueSeg(seg, true)
 		}
 	}

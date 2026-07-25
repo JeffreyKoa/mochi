@@ -1,14 +1,20 @@
 use tauri::{
-    AppHandle, LogicalSize, Manager, PhysicalPosition, Size, WebviewWindow,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Size, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
+
+mod activity;
 
 const PET_W: f64 = 280.0;
 const PET_H: f64 = 280.0;
 const CHAT_W: f64 = 320.0;
 const CHAT_H: f64 = 440.0;
 const CHAT_GAP: f64 = 8.0;
+
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static LAST_ON_LEFT: AtomicBool = AtomicBool::new(false);
 
 fn resolve_pet_window(app: &AppHandle, label: Option<&str>) -> Option<WebviewWindow> {
     if let Some(name) = label {
@@ -48,44 +54,122 @@ fn hide_pet_to_tray(window: &WebviewWindow) {
 }
 
 fn resolve_chat_window(app: &AppHandle) -> Result<WebviewWindow, String> {
-    app.get_webview_window("chat")
-        .ok_or_else(|| "chat window not found".to_string())
+    if let Some(win) = app.get_webview_window("chat") {
+        return Ok(win);
+    }
+    WebviewWindowBuilder::new(app, "chat", WebviewUrl::default())
+        .title("Mochi Chat")
+        .inner_size(CHAT_W, CHAT_H)
+        .transparent(true)
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .shadow(false)
+        .visible(false)
+        .build()
+        .map_err(|e| e.to_string())
 }
 
-fn place_chat_beside_pet(app: &AppHandle, pet_label: Option<&str>) -> Result<(), String> {
+fn place_chat_beside_pet_pos(
+    app: &AppHandle,
+    pet_label: Option<&str>,
+    override_pos: Option<PhysicalPosition<i32>>,
+) -> Result<(), String> {
     let chat = resolve_chat_window(app)?;
     let pet = resolve_pet_window(app, pet_label).ok_or_else(|| "pet window not found".to_string())?;
 
-    let pet_pos = pet.outer_position().map_err(|e| e.to_string())?;
-    let pet_size = pet.outer_size().map_err(|e| e.to_string())?;
-    let chat_size = chat.outer_size().map_err(|e| e.to_string())?;
+    let pet_pos = match override_pos {
+        Some(p) => p,
+        None => pet.outer_position().map_err(|e| e.to_string())?,
+    };
+    let scale = pet.scale_factor().unwrap_or(1.0);
 
-    let mut x = pet_pos.x + pet_size.width as i32 + CHAT_GAP as i32;
-    let mut y = pet_pos.y;
+    let gap_px = (CHAT_GAP * scale).round() as i32;
+    let pet_size = pet.outer_size().unwrap_or(PhysicalSize::new(
+        (PET_W * scale).round() as u32,
+        (PET_H * scale).round() as u32,
+    ));
+    let pet_w_px = pet_size.width as i32;
+    let pet_h_px = pet_size.height as i32;
+
+    let chat_w_px = (CHAT_W * scale).round() as i32;
+    let chat_h_px = (CHAT_H * scale).round() as i32;
+    let panel_offset_px = ((CHAT_W + CHAT_GAP) * scale).round() as i32;
+
+    let logical_w = pet
+        .outer_size()
+        .map(|s| s.width as f64 / scale)
+        .unwrap_or(PET_W);
+    let expanded = (logical_w - (PET_W + CHAT_GAP + CHAT_W)).abs() < 4.0;
+
+    let currently_left = LAST_ON_LEFT.load(Ordering::Relaxed);
+    let mut on_left = false;
+
+    if let Ok(Some(monitor)) = pet.current_monitor() {
+        let mon_pos = monitor.position();
+        let mon_size = monitor.size();
+        let right = mon_pos.x + mon_size.width as i32;
+        let expanded_px = ((PET_W + CHAT_GAP + CHAT_W) * scale).round() as i32;
+        let pet_screen_x = pet_pos.x;
+
+        let hysteresis = if currently_left { (30.0 * scale).round() as i32 } else { 0 };
+        let fits_right = pet_screen_x + expanded_px <= right - 8 - hysteresis;
+        let fits_left = pet_screen_x - panel_offset_px >= mon_pos.x + 4;
+        if !fits_right && fits_left {
+            on_left = true;
+        }
+    }
+    let prev_on_left = LAST_ON_LEFT.swap(on_left, Ordering::Relaxed);
+    if prev_on_left != on_left {
+        let _ = app.emit("side-panel-side-changed", on_left);
+    }
+
+    let pet_screen_x = if expanded && on_left {
+        pet_pos.x + panel_offset_px
+    } else {
+        pet_pos.x
+    };
+
+    let mut x = if on_left {
+        pet_screen_x - chat_w_px - gap_px
+    } else {
+        pet_screen_x + pet_w_px + gap_px
+    };
+    let mut y = pet_pos.y + pet_h_px - chat_h_px;
 
     if let Ok(Some(monitor)) = pet.current_monitor() {
         let mon_pos = monitor.position();
         let mon_size = monitor.size();
         let right = mon_pos.x + mon_size.width as i32;
         let bottom = mon_pos.y + mon_size.height as i32;
-        if x + chat_size.width as i32 > right - 8 {
-            x = pet_pos.x - chat_size.width as i32 - CHAT_GAP as i32;
-        }
-        x = x.clamp(mon_pos.x + 4, right - chat_size.width as i32 - 4);
-        y = y.clamp(mon_pos.y + 4, bottom - chat_size.height as i32 - 4);
+        x = x.clamp(
+            mon_pos.x + 4,
+            (right - chat_w_px - 4).max(mon_pos.x + 4),
+        );
+        y = y.clamp(
+            mon_pos.y + 4,
+            (bottom - chat_h_px - 4).max(mon_pos.y + 4),
+        );
     }
 
     chat.set_position(PhysicalPosition::new(x, y))
         .map_err(|e| e.to_string())?;
+
     Ok(())
+}
+
+fn place_chat_beside_pet(app: &AppHandle, pet_label: Option<&str>) -> Result<(), String> {
+    place_chat_beside_pet_pos(app, pet_label, None)
 }
 
 #[tauri::command]
 fn show_chat_window(app: AppHandle, label: Option<String>) -> Result<(), String> {
     let chat = resolve_chat_window(&app)?;
     place_chat_beside_pet(&app, label.as_deref())?;
+    let _ = app.emit("side-panel-side-changed", LAST_ON_LEFT.load(Ordering::Relaxed));
     chat.show().map_err(|e| e.to_string())?;
-    chat.set_focus().map_err(|e| e.to_string())?;
+    let _ = chat.set_focus();
     Ok(())
 }
 
@@ -127,7 +211,8 @@ pub fn run() {
             show_chat_window,
             hide_chat_window,
             expand_pet_for_chat,
-            collapse_pet_chat
+            collapse_pet_chat,
+            activity::get_activity_snapshot,
         ])
         .setup(|app| {
             let pet = app
@@ -139,12 +224,35 @@ pub fn run() {
                 let _ = pet.show();
                 let _ = pet.set_always_on_top(true);
 
-                // Close button / Alt+F4 → hide to tray instead of destroying the window
+                // Close button / Alt+F4 → hide to tray; sync popup on move
                 let pet_for_close = pet.clone();
+                let app_for_move = app.handle().clone();
                 pet.on_window_event(move |event| {
+                    match event {
+                        tauri::WindowEvent::CloseRequested { api, .. } => {
+                            api.prevent_close();
+                            hide_pet_to_tray(&pet_for_close);
+                        }
+                        tauri::WindowEvent::Moved(pos) => {
+                            if let Some(chat) = app_for_move.get_webview_window("chat") {
+                                if chat.is_visible().unwrap_or(false) {
+                                    let _ = place_chat_beside_pet_pos(&app_for_move, None, Some(*pos));
+                                }
+                            }
+                            let _ = app_for_move.emit("pet-window-moved", ());
+                        }
+                        _ => {}
+                    }
+                });
+            }
+
+            if let Some(chat) = app.get_webview_window("chat") {
+                let _ = chat.set_shadow(false);
+                let chat_for_close = chat.clone();
+                chat.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
-                        hide_pet_to_tray(&pet_for_close);
+                        let _ = chat_for_close.hide();
                     }
                 });
             }

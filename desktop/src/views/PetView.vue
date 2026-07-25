@@ -16,17 +16,14 @@ import {
 } from '@/services/petRoaming'
 import {
   ensurePetWindowVisible,
-  openChatPanel,
   closeChatPanel,
-  showChatPopupWindow,
-  syncChatPopupPosition,
+  hideSidePanelPopup,
+  showSidePanelPopup,
+  setPopupChatFollowsPet,
   isTauri,
-  PET_WITH_CHAT_W,
-  PET_WITH_CHAT_H,
 } from '@/services/chatWindow'
 import { getClientConfig, initClientConfig } from '@/config'
 import PetCanvas from '@/components/pet/PetCanvas.vue'
-import ChatPanel from '@/components/chat/ChatPanel.vue'
 
 const { sidePanelOpen = false } = defineProps<{ sidePanelOpen?: boolean }>()
 
@@ -37,13 +34,15 @@ const rt = useRealtimeStore()
 const menuVisible = ref(false)
 const menuPos = ref({ x: 0, y: 0 })
 const menuEl = ref<HTMLElement | null>(null)
+const bubbleEl = ref<HTMLElement | null>(null)
+const bubbleStyle = ref<Record<string, string>>({})
 const menuPosReady = ref(true)
 const MENU_PAD = 6
+const BUBBLE_PAD = 8
 const isDragging = ref(false)
 const dragMoved = ref(false)
 const didDragWindow = ref(false)
 const chatExternal = ref(false)
-const chatInline = ref(false)
 const lastHeadlessBubbleIndex = ref(0)
 
 const DRAG_THRESHOLD = 5
@@ -52,6 +51,7 @@ let dragWindow: ReturnType<typeof getCurrentWindow> | null = null
 let clickTimer: ReturnType<typeof setTimeout> | null = null
 let suppressClick = false
 let roamer: PetRoamer | null = null
+let unlistenPetMoved: (() => void) | null = null
 
 let dragPointerId = -1
 let dragWindowBase = { x: 0, y: 0 }
@@ -93,7 +93,9 @@ function scheduleWindowMove(x: number, y: number) {
     dragRaf = 0
     const pos = dragPendingPos
     dragPendingPos = null
-    if (pos && dragWindow) void dragWindow.setPosition(pos)
+    if (pos && dragWindow) {
+      void dragWindow.setPosition(pos)
+    }
   })
 }
 
@@ -109,7 +111,8 @@ function onWindowPointerMove(e: PointerEvent) {
   }
 
   e.preventDefault()
-  scheduleWindowMove(dragWindowBase.x + dx, dragWindowBase.y + dy)
+  const dpr = window.devicePixelRatio || 1
+  scheduleWindowMove(dragWindowBase.x + Math.round(dx * dpr), dragWindowBase.y + Math.round(dy * dpr))
 }
 
 async function onWindowPointerUp(e: PointerEvent) {
@@ -133,7 +136,6 @@ async function onWindowPointerUp(e: PointerEvent) {
 
   if (dragMoved.value && dragWindow) {
     await saveWindowPosition(dragWindow)
-    if (chatExternal.value) void syncChatPopupPosition()
   }
 
   setTimeout(() => {
@@ -186,7 +188,23 @@ function startRoamer() {
   })
 }
 
+watch(
+  () => [pet.showBubble, pet.bubbleText, pet.facing] as const,
+  () => {
+    if (!pet.showBubble) {
+      bubbleStyle.value = {}
+      return
+    }
+    void nextTick(() => {
+      layoutSpeechBubble()
+      requestAnimationFrame(() => layoutSpeechBubble())
+    })
+  },
+)
+
 onMounted(async () => {
+  window.addEventListener('resize', layoutSpeechBubble)
+
   try {
     dragWindow = getCurrentWindow()
   } catch {
@@ -224,8 +242,23 @@ onMounted(async () => {
     await listen('chat-closed', () => {
       pet.isChatOpen = false
       chatExternal.value = false
-      chatInline.value = false
+      pet.chatInline = false
+      setPopupChatFollowsPet(false)
       if (!rt.talking && !rt.processing) roamer?.resume()
+    })
+    await listen('side-panel-closed', (event) => {
+      const mode = (event.payload as { mode?: string } | undefined)?.mode
+      if (mode === 'settings') growth.closeSettings()
+      if (mode === 'chat' || !mode) {
+        pet.isChatOpen = false
+        pet.chatInline = false
+        chatExternal.value = false
+      }
+      setPopupChatFollowsPet(false)
+      if (!rt.talking && !rt.processing) roamer?.resume()
+    })
+    unlistenPetMoved = await listen('pet-window-moved', () => {
+      // Handled natively by Rust WindowEvent::Moved
     })
   } catch {
     // optional
@@ -233,7 +266,10 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  window.removeEventListener('resize', layoutSpeechBubble)
   roamer?.stop()
+  unlistenPetMoved?.()
+  unlistenPetMoved = null
   window.removeEventListener('pointermove', onWindowPointerMove)
   window.removeEventListener('pointerup', onWindowPointerUp)
   window.removeEventListener('pointercancel', onWindowPointerUp)
@@ -265,8 +301,10 @@ watch(
     }
     if (!wasOpen) return
     chatExternal.value = false
-    chatInline.value = false
-    await closeChatPanel().catch(() => {})
+    pet.chatInline = false
+    setPopupChatFollowsPet(false)
+    const keepExpanded = growth.showSettings || sidePanelOpen
+    await closeChatPanel(!keepExpanded).catch(() => {})
     if (!rt.talking && !rt.processing) roamer?.resume()
   },
 )
@@ -293,46 +331,86 @@ watch(
   },
 )
 
+async function closeChatSurface(collapse = true) {
+  pet.isChatOpen = false
+  chatExternal.value = false
+  pet.chatInline = false
+  setPopupChatFollowsPet(false)
+  if (isTauri()) {
+    await closeChatPanel(collapse)
+  }
+}
+
 async function openChat() {
   menuVisible.value = false
 
   if (pet.isChatOpen) {
-    pet.isChatOpen = false
+    await closeChatSurface(true)
+    if (!growth.showSettings && !sidePanelOpen) roamer?.resume()
     return
+  }
+
+  if (growth.showSettings) {
+    growth.closeSettings()
+    await hideSidePanelPopup()
   }
 
   roamer?.pause()
   auth.syncFromStorage()
-  chatExternal.value = false
-  chatInline.value = false
 
   if (isTauri()) {
-    const expanded = await openChatPanel()
-    if (expanded) {
-      chatInline.value = true
-      pet.isChatOpen = true
+    const ok = await showSidePanelPopup('chat')
+    if (!ok) {
+      pet.showSpeechBubble('聊天打开失败，请重试~', 4000)
+      roamer?.resume()
       return
     }
-
-    const popup = await showChatPopupWindow()
-    if (popup) {
-      chatExternal.value = true
-      pet.isChatOpen = true
-      return
-    }
-
-    pet.showSpeechBubble('聊天打开失败，请完全退出后重新运行')
-    roamer?.resume()
+    chatExternal.value = true
+    pet.chatInline = false
+    pet.isChatOpen = true
     return
   }
 
-  chatInline.value = true
+  chatExternal.value = false
+  pet.chatInline = true
   pet.isChatOpen = true
 }
 
 function openChatFromMenu() {
   closeMenu()
   void openChat()
+}
+
+async function startVoiceInteraction() {
+  roamer?.pause()
+
+  await initClientConfig().catch(() => {})
+  if (!getClientConfig().realtimeEnabled) {
+    pet.showSpeechBubble('语音对话未开启，请用聊天打字~')
+    roamer?.resume()
+    return false
+  }
+
+  pet.setAnimation('happy')
+  pet.showSpeechBubble('我在听，主人说~', 2500)
+
+  try {
+    await rt.connect()
+    const ok = await rt.startTalk()
+    if (!ok) {
+      const msg = rt.statusText || '无法启动语音，请稍后再试'
+      pet.showSpeechBubble(msg, 6000)
+      pet.syncAnimationFromState()
+      roamer?.resume()
+      return false
+    }
+    return true
+  } catch {
+    pet.showSpeechBubble('无法启动麦克风，请检查权限', 6000)
+    pet.syncAnimationFromState()
+    roamer?.resume()
+    return false
+  }
 }
 
 async function onPetClick() {
@@ -347,46 +425,23 @@ async function onPetClick() {
 
     if (rt.talking) {
       if (rt.resting) {
-        pet.showSpeechBubble('我在听，主人说~', 2500)
+        if (!rt.wakeListening()) {
+          pet.showSpeechBubble('连接断开，正在重连…', 3000)
+          void rt.connect().then(() => rt.startTalk())
+        } else {
+          pet.showSpeechBubble('我在听，主人说~', 2500)
+        }
       }
       return
     }
 
-    pet.setAnimation('happy')
-    pet.showSpeechBubble(pet.getWakeGreeting(), 3000)
-    setTimeout(() => {
-      pet.syncAnimationFromState()
-    }, 2000)
+    await startVoiceInteraction()
   }, 200)
 }
 
 async function startVoiceFromMenu() {
   closeMenu()
-  roamer?.pause()
-
-  await initClientConfig().catch(() => {})
-  if (!getClientConfig().realtimeEnabled) {
-    pet.showSpeechBubble('语音对话未开启，请用聊天打字~')
-    roamer?.resume()
-    return
-  }
-
-  pet.setAnimation('happy')
-  pet.showSpeechBubble('我在听，主人说~', 2500)
-
-  try {
-    await rt.connect()
-    await rt.startTalk()
-    if (!rt.talking && rt.statusText) {
-      pet.showSpeechBubble(rt.statusText, 6000)
-      pet.syncAnimationFromState()
-      roamer?.resume()
-    }
-  } catch {
-    pet.showSpeechBubble('无法启动麦克风，请检查权限')
-    pet.syncAnimationFromState()
-    roamer?.resume()
-  }
+  await startVoiceInteraction()
 }
 
 async function endVoiceFromMenu() {
@@ -404,7 +459,7 @@ async function onFeed() {
   roamer?.pause()
   try {
     const result = await interactWithRetry('feed')
-    pet.updateLifeState(result.state)
+    pet.updateLifeState(result.state as Parameters<typeof pet.updateLifeState>[0])
     pet.setAnimation('eat')
     pet.showSpeechBubble('好吃~ 谢谢主人！')
     setTimeout(() => {
@@ -422,7 +477,7 @@ async function onPlay() {
   roamer?.pause()
   try {
     const result = await interactWithRetry('play')
-    pet.updateLifeState(result.state)
+    pet.updateLifeState(result.state as Parameters<typeof pet.updateLifeState>[0])
     pet.setAnimation('happy')
     pet.showSpeechBubble('好开心！')
     setTimeout(() => {
@@ -435,9 +490,81 @@ async function onPlay() {
   }
 }
 
-function openSettingsFromMenu() {
+async function openSettingsFromMenu() {
   closeMenu()
+  if (growth.showSettings) {
+    growth.closeSettings()
+    await hideSidePanelPopup()
+    if (!pet.isChatOpen && !rt.talking && !rt.processing) roamer?.resume()
+    return
+  }
+
+  if (pet.isChatOpen || chatExternal.value) {
+    pet.isChatOpen = false
+    pet.chatInline = false
+    chatExternal.value = false
+    setPopupChatFollowsPet(false)
+    await hideSidePanelPopup()
+  }
+
+  if (isTauri()) {
+    growth.openSettings()
+    const ok = await showSidePanelPopup('settings')
+    if (!ok) {
+      growth.closeSettings()
+      pet.showSpeechBubble('设置打开失败，请重试~', 4000)
+    }
+    return
+  }
+
   growth.openSettings()
+}
+
+function layoutSpeechBubble() {
+  const el = bubbleEl.value
+  if (!el || !pet.showBubble) return
+
+  const pad = 10
+  bubbleStyle.value = {
+    left: '50%',
+    top: `${BUBBLE_PAD}px`,
+    transform: 'translateX(-50%)',
+    '--tail-x': '50%',
+  }
+
+  requestAnimationFrame(() => {
+    const node = bubbleEl.value
+    if (!node || !pet.showBubble) return
+
+    const rect = node.getBoundingClientRect()
+    let shift = 0
+    if (rect.left < pad) shift += pad - rect.left
+    if (rect.right > window.innerWidth - pad) {
+      shift -= rect.right - (window.innerWidth - pad)
+    }
+
+    if (shift !== 0) {
+      bubbleStyle.value = {
+        left: '50%',
+        top: `${BUBBLE_PAD}px`,
+        transform: `translateX(calc(-50% + ${Math.round(shift)}px))`,
+        '--tail-x': '50%',
+      }
+    }
+
+    requestAnimationFrame(() => {
+      const bubble = bubbleEl.value
+      const area = bubble?.closest('.pet-area') as HTMLElement | null
+      if (!bubble || !area) return
+      const areaRect = area.getBoundingClientRect()
+      const bubbleRect = bubble.getBoundingClientRect()
+      const tailX = areaRect.left + areaRect.width / 2 - bubbleRect.left
+      bubbleStyle.value = {
+        ...bubbleStyle.value,
+        '--tail-x': `${Math.round(Math.max(18, Math.min(bubbleRect.width - 18, tailX)))}px`,
+      }
+    })
+  })
 }
 
 function clampMenuPos(clientX: number, clientY: number, menuW: number, menuH: number) {
@@ -507,14 +634,9 @@ function onDblClick() {
   <div
     class="pet-shell"
     :class="{
-      'chat-open': chatInline,
       'side-panel-open': sidePanelOpen,
       dragging: isDragging && dragMoved,
     }"
-    :style="chatInline && !isTauri() ? {
-      width: PET_WITH_CHAT_W + 'px',
-      height: PET_WITH_CHAT_H + 'px',
-    } : undefined"
     @pointerdown="onDragStart"
   >
     <div
@@ -524,17 +646,16 @@ function onDblClick() {
       @contextmenu="onContextMenu"
     >
       <PetCanvas />
+      <div
+        v-if="pet.showBubble"
+        ref="bubbleEl"
+        class="speech-bubble"
+        :class="pet.facing === 'left' ? 'speech-bubble--tr' : 'speech-bubble--tl'"
+        :style="bubbleStyle"
+      >
+        {{ pet.bubbleText }}
+      </div>
     </div>
-
-    <div
-      v-if="pet.showBubble"
-      class="speech-bubble"
-      :class="pet.facing === 'left' ? 'speech-bubble--tr' : 'speech-bubble--tl'"
-    >
-      {{ pet.bubbleText }}
-    </div>
-
-    <ChatPanel v-if="chatInline" class="chat-side" @pointerdown.stop />
 
     <div
       v-if="menuVisible"
@@ -550,7 +671,7 @@ function onDblClick() {
       <button type="button" @pointerdown.stop @click.stop="openChatFromMenu">💬 聊天</button>
       <button v-if="!rt.talking" type="button" @click.stop="startVoiceFromMenu">🎤 语音对话</button>
       <button v-if="rt.talking" type="button" @click.stop="endVoiceFromMenu">🔇 结束对话</button>
-      <button type="button" @click.stop="openSettingsFromMenu">⚙️ 设置</button>
+      <button type="button" @pointerdown.stop @click.stop="openSettingsFromMenu">⚙️ 设置</button>
     </div>
   </div>
 </template>
@@ -561,7 +682,7 @@ function onDblClick() {
   width: 280px;
   height: 280px;
   background: transparent;
-  overflow: hidden;
+  overflow: visible;
   cursor: grab;
   touch-action: none;
 }
@@ -573,23 +694,14 @@ function onDblClick() {
 
 .pet-shell.side-panel-open {
   width: 280px;
-  height: 100%;
-  min-height: 440px;
+  height: 440px;
+  align-self: flex-end;
   cursor: default;
 }
 
 .pet-shell.side-panel-open .pet-area {
-  height: 100%;
-}
-
-.pet-shell.chat-open {
-  display: flex;
-  flex-direction: row;
-  align-items: flex-end;
-  gap: 8px;
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
+  width: 280px;
+  height: 280px;
 }
 
 .pet-area {
@@ -597,53 +709,54 @@ function onDblClick() {
   height: 280px;
   flex-shrink: 0;
   position: relative;
-}
-
-.chat-side {
-  width: 320px;
-  height: 440px;
-  flex-shrink: 0;
+  overflow: visible;
+  z-index: 1;
 }
 
 .speech-bubble {
   position: absolute;
-  top: 4px;
+  top: 8px;
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(255, 255, 255, 0.95);
-  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.97);
+  padding: 6px 10px;
   border-radius: 14px;
-  font-size: 12px;
+  font-size: 11px;
   color: #333;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
-  max-width: calc(100% - 24px);
-  width: max-content;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.14);
+  max-width: calc(100% - 20px);
+  width: auto;
+  min-width: 0;
   box-sizing: border-box;
   overflow-wrap: anywhere;
   word-break: break-word;
   line-height: 1.35;
-  text-align: center;
-  z-index: 20;
+  text-align: left;
+  z-index: 30;
   pointer-events: none;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .speech-bubble::after {
   content: '';
   position: absolute;
   bottom: -6px;
-  left: 50%;
+  left: var(--tail-x, 50%);
   transform: translateX(-50%);
   border: 6px solid transparent;
-  border-top-color: rgba(255, 255, 255, 0.95);
+  border-top-color: rgba(255, 255, 255, 0.97);
 }
 
-/* 朝右时指针略偏右，朝左时略偏左 */
 .speech-bubble--tl::after {
-  left: 58%;
+  left: var(--tail-x, 58%);
 }
 
 .speech-bubble--tr::after {
-  left: 42%;
+  left: var(--tail-x, 42%);
 }
 
 .context-menu {

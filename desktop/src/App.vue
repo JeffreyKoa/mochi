@@ -2,11 +2,12 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useAuthStore } from '@/stores/authStore'
-import { usePetStore, type PetLifecycle } from '@/stores/petStore'
+import { usePetStore, type PetLifecycle, type PetPersonality } from '@/stores/petStore'
 import { useRealtimeStore } from '@/stores/realtimeStore'
 import { useGrowthStore } from '@/stores/growthStore'
 import { getPet, getLifeState, getChatHistory, initClientConfig, AuthError, ApiError } from '@/services/api'
 import { healthMonitor } from '@/services/healthMonitor'
+import { startActivityHeartbeat, stopActivityHeartbeat } from '@/services/activityHeartbeat'
 import { wsManager } from '@/services/ws'
 import { handleProactiveMessage } from '@/services/proactiveHandler'
 import { listenProactive } from '@/services/proactiveSync'
@@ -15,8 +16,12 @@ import {
   initPetWindowChrome,
   isPetWindowLabel,
   isTauri,
+  sidePanelOnLeft,
+  syncBrowserSidePanelPlacement,
+  syncPanelShellLayout,
+  consumeSidePanelPending,
 } from '@/services/chatWindow'
-import { setLoginLayout, setPetOnlyLayout, setSidePanelLayout, PET_WITH_SIDE_W, PET_WITH_SIDE_H } from '@/services/windowLayout'
+import { setLoginLayout, setPetOnlyLayout, PET_WITH_SIDE_W, PET_WITH_SIDE_H } from '@/services/windowLayout'
 import LoginView from '@/views/LoginView.vue'
 import OnboardingView from '@/views/OnboardingView.vue'
 import PetView from '@/views/PetView.vue'
@@ -35,11 +40,56 @@ const showOnboarding = ref(false)
 const showAdopt = ref(false)
 const winLabel = ref('browser')
 const wsInitialized = ref(false)
+const popupPanelMode = ref<'chat' | 'settings' | null>(null)
 let unlistenProactive: (() => void) | null = null
+
+async function applyPopupPanelMode(mode: 'chat' | 'settings', token?: string | null) {
+  auth.syncFromStorage()
+  if (token && !auth.isLoggedIn) {
+    auth.setToken(token)
+  }
+  popupPanelMode.value = mode
+  if (!auth.isLoggedIn) {
+    console.warn('[panel] not logged in in popup window')
+    return
+  }
+  if (mode === 'settings') {
+    growth.openSettings()
+  } else {
+    await loadUserData()
+  }
+}
 
 const isBrowserDev = computed(() => !isTauri())
 const isChatWindow = computed(() => winLabel.value === 'chat')
 const isPetShell = computed(() => isBrowserDev.value || isPetWindowLabel(winLabel.value))
+const sidePanelOpen = computed(
+  () => showOnboarding.value || growth.showSettings || showAdopt.value,
+)
+/** Inline expand only for onboarding/adopt in Tauri; chat/settings use popup. */
+const shellExpanded = computed(() => {
+  if (isTauri() && isPetShell.value && !isBrowserDev.value) {
+    return showOnboarding.value || showAdopt.value
+  }
+  return sidePanelOpen.value || pet.isChatOpen
+})
+const useInlineSidePanel = computed(() => isBrowserDev.value)
+
+async function applySidePanelLayout() {
+  if (isChatWindow.value) return
+  if (isBrowserDev.value) {
+    if (shellExpanded.value) syncBrowserSidePanelPlacement()
+    return
+  }
+  await syncPanelShellLayout(shellExpanded.value)
+}
+
+watch(
+  () => shellExpanded.value,
+  () => {
+    void applySidePanelLayout()
+  },
+)
 
 function friendlyLoadError(e: unknown): string {
   if (e instanceof ApiError) {
@@ -145,6 +195,9 @@ async function loadUserData() {
       breed?: string
       life_stage?: string
       life_stage_label?: string
+      stage_hint?: string
+      gender?: string
+      personality?: PetPersonality
       age_days?: number
       age_years?: number
       age_days_in_year?: number
@@ -162,6 +215,9 @@ async function loadUserData() {
     }
 
     pet.petName = petData.name
+    pet.gender = petData.gender === 'male' ? 'male' : 'female'
+    pet.personality = petData.personality ?? {}
+    pet.stageHint = petData.stage_hint ?? ''
     pet.applySkinFromSKU(petData.sku)
     pet.updateLifecycle({
       species: petData.species ?? 'cat',
@@ -188,7 +244,7 @@ async function loadUserData() {
     pet.syncAnimationFromState()
 
     try {
-      const history = await getChatHistory()
+      const history = (await getChatHistory()) as Array<{ role: string; content: string }> | null
       rt.loadHistory(
         (history ?? []).map((m: { role: string; content: string }) => ({
           role: m.role as 'user' | 'assistant',
@@ -201,6 +257,7 @@ async function loadUserData() {
 
     setupWs()
     void rt.ensurePushConnected()
+    startActivityHeartbeat()
     healthMonitor.stop()
     loadError.value = ''
     pet.setBootFailed(false)
@@ -244,23 +301,27 @@ onMounted(async () => {
     unlistenProactive = await listenProactive((payload) => {
       rt.appendAssistantMessage(payload.message)
     })
-    if (auth.isLoggedIn) void loadUserData()
     try {
       const { listen } = await import('@tauri-apps/api/event')
+      await listen('side-panel-opened', async (event) => {
+        const payload = event.payload as { mode?: 'chat' | 'settings'; token?: string | null } | undefined
+        await applyPopupPanelMode(payload?.mode ?? 'chat', payload?.token)
+      })
       await listen('chat-opened', async (event) => {
-        auth.syncFromStorage()
-        const payload = event.payload as { token?: string | null } | undefined
-        if (payload?.token && !auth.isLoggedIn) {
-          auth.setToken(payload.token)
-        }
-        if (!auth.isLoggedIn) {
-          console.warn('[chat] not logged in in chat window')
-          return
-        }
-        await loadUserData()
+        const payload = event.payload as { mode?: 'chat' | 'settings'; token?: string | null } | undefined
+        await applyPopupPanelMode(payload?.mode ?? 'chat', payload?.token)
+      })
+      await listen('side-panel-side-changed', (event) => {
+        sidePanelOnLeft.value = !!event.payload
       })
     } catch (e) {
       console.warn('[chat] init listener failed', e)
+    }
+    const pending = consumeSidePanelPending()
+    if (pending) {
+      await applyPopupPanelMode(pending.mode, pending.token)
+    } else if (auth.isLoggedIn) {
+      void loadUserData()
     }
     return
   }
@@ -292,6 +353,7 @@ watch(
       pet.isChatOpen = false
       loading.value = false
       healthMonitor.stop()
+      stopActivityHeartbeat()
       await setLoginLayout()
     }
   },
@@ -322,72 +384,68 @@ function onAdoptLogout() {
   showOnboarding.value = false
   wsManager.disconnect()
   wsInitialized.value = false
+  stopActivityHeartbeat()
   void setLoginLayout()
 }
 
-async function applySidePanelLayout() {
-  if (!isTauri() || isChatWindow.value) return
-  if (showOnboarding.value || growth.showSettings || showAdopt.value) {
-    await setSidePanelLayout()
-  } else {
-    await setPetOnlyLayout()
-  }
-}
-
-watch(
-  () => [showOnboarding.value, growth.showSettings, showAdopt.value] as const,
-  () => {
-    void applySidePanelLayout()
-  },
-)
-
 onUnmounted(() => {
   healthMonitor.stop()
+  stopActivityHeartbeat()
   unlistenProactive?.()
   unlistenProactive = null
 })
 </script>
 
 <template>
-  <div class="app-root">
+  <div class="app-root" :class="{ 'app-root--chat-popup': isChatWindow }">
     <!-- Vite browser dev -->
     <template v-if="isBrowserDev">
       <LoginView v-if="ready && !auth.isLoggedIn" @success="onLoginSuccess" />
       <template v-else-if="ready && auth.isLoggedIn">
         <div
           class="dual-shell"
-          :class="{ 'dual-shell--expanded': showOnboarding || growth.showSettings || showAdopt }"
-          :style="(showOnboarding || growth.showSettings || showAdopt) && isBrowserDev ? {
+          :class="{
+            'dual-shell--expanded': shellExpanded,
+            'dual-shell--panel-left': shellExpanded && sidePanelOnLeft,
+          }"
+          :style="shellExpanded && isBrowserDev ? {
             width: PET_WITH_SIDE_W + 'px',
             height: PET_WITH_SIDE_H + 'px',
           } : undefined"
         >
-          <PetView :side-panel-open="showOnboarding || growth.showSettings || showAdopt" />
+          <PetView :side-panel-open="useInlineSidePanel && (sidePanelOpen || pet.chatInline)" />
           <AdoptView v-if="showAdopt" @adopted="onAdopted" @logout="onAdoptLogout" />
           <OnboardingView v-else-if="showOnboarding" @done="onOnboardingDone" />
-          <SettingsPanel v-else-if="growth.showSettings" />
+          <SettingsPanel v-else-if="useInlineSidePanel && growth.showSettings" />
+          <ChatPanel v-else-if="useInlineSidePanel && pet.isChatOpen && pet.chatInline" docked @pointerdown.stop />
         </div>
         <p v-if="loadError && !showOnboarding && !showAdopt" class="load-error">{{ loadError }}</p>
       </template>
     </template>
 
-    <!-- Tauri chat popup window (separate webview) -->
-    <ChatPanel v-else-if="isChatWindow && ready" />
+    <!-- Tauri side panel popup (chat / settings) -->
+    <template v-else-if="isChatWindow && ready">
+      <SettingsPanel v-if="popupPanelMode === 'settings'" :class="{ 'panel-on-left': sidePanelOnLeft }" />
+      <ChatPanel v-else floating :class="{ 'panel-on-left': sidePanelOnLeft }" />
+    </template>
 
     <!-- Tauri pet window -->
     <template v-else-if="isPetShell && ready">
       <LoginView v-if="!auth.isLoggedIn" @success="onLoginSuccess" />
       <template v-else>
         <div
-          class="dual-shell dual-shell--expanded"
-          v-if="showOnboarding || growth.showSettings || showAdopt"
+          class="dual-shell"
+          :class="{
+            'dual-shell--expanded': shellExpanded,
+            'dual-shell--panel-left': shellExpanded && sidePanelOnLeft,
+          }"
         >
-          <PetView :side-panel-open="true" />
+          <PetView :side-panel-open="useInlineSidePanel && (sidePanelOpen || pet.chatInline)" />
           <AdoptView v-if="showAdopt" @adopted="onAdopted" @logout="onAdoptLogout" />
           <OnboardingView v-else-if="showOnboarding" @done="onOnboardingDone" />
-          <SettingsPanel v-else-if="growth.showSettings" />
+          <SettingsPanel v-else-if="useInlineSidePanel && growth.showSettings" />
+          <ChatPanel v-else-if="useInlineSidePanel && pet.isChatOpen && pet.chatInline" docked @pointerdown.stop />
         </div>
-        <PetView v-else />
         <p v-if="loading && !showOnboarding && !growth.showSettings && !showAdopt" class="boot-hint">Mochi 醒来中...</p>
         <p v-if="loadError" class="load-error">{{ loadError }}</p>
       </template>
@@ -403,6 +461,11 @@ onUnmounted(() => {
   overflow: visible;
 }
 
+.app-root--chat-popup {
+  background: transparent;
+  overflow: visible;
+}
+
 .dev-shell {
   display: flex;
   flex-direction: row;
@@ -412,16 +475,21 @@ onUnmounted(() => {
 .dual-shell {
   display: flex;
   flex-direction: row;
-  align-items: stretch;
+  align-items: flex-end;
+  gap: 8px;
   width: 100%;
   height: 100%;
   background: transparent;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .dual-shell--expanded {
   width: 100%;
   height: 100%;
+}
+
+.dual-shell--panel-left {
+  flex-direction: row-reverse;
 }
 
 .boot-hint {

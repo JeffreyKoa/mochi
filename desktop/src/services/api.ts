@@ -105,11 +105,11 @@ export async function getCatalogSKUs() {
   return data.skus ?? []
 }
 
-export async function adoptPet(skuId: string, petName?: string) {
+export async function adoptPet(skuId: string, petName?: string, gender?: string) {
   const { data } = await request(`${getApiBase()}/api/v1/subscribe/adopt`, {
     method: 'POST',
     headers: authHeaders(),
-    body: JSON.stringify({ sku_id: skuId, pet_name: petName }),
+    body: JSON.stringify({ sku_id: skuId, pet_name: petName, gender: gender || 'female' }),
   })
   return data
 }
@@ -248,17 +248,76 @@ export async function rejectBriefEntry(id: number) {
   return data
 }
 
+export interface UserPreferences {
+  proactive_enabled?: boolean
+  quiet_hours_start?: number
+  quiet_hours_end?: number
+  morning_greeting?: boolean
+  reminder_voice?: boolean
+  follow_up_enabled?: boolean
+  voice_reply_default?: boolean
+  stt_mode?: 'auto' | 'local' | 'cloud'
+  wellness_nudges_enabled?: boolean
+  wellness_drink?: boolean
+  wellness_meal?: boolean
+  wellness_rest?: boolean
+  lunch_hour?: number
+  dinner_hour?: number
+  wellness_daily_max?: number
+  learning_prefs?: LearningPreferences
+}
+
+export interface LearningPreferences {
+  learning_topics?: string[]
+  english_level?: string
+  study_pace_minutes?: number
+  no_unsolicited_advice?: boolean
+}
+
 export async function getUserPreferences() {
-  const { data } = await request<{ proactive_enabled?: boolean }>(
+  const { data } = await request<UserPreferences>(
     `${getApiBase()}/api/v1/user/preferences`,
     { headers: authHeaders() },
   )
   return data
 }
 
-export async function updateUserPreferences(body: { proactive_enabled: boolean }) {
-  const { data } = await request(`${getApiBase()}/api/v1/user/preferences`, {
+export async function updateUserPreferences(body: Partial<UserPreferences>) {
+  const { data } = await request<UserPreferences>(`${getApiBase()}/api/v1/user/preferences`, {
     method: 'PUT',
+    headers: authHeaders(),
+    body: JSON.stringify(body),
+  })
+  return data
+}
+
+export async function getLearningPreferences() {
+  const { data } = await request<LearningPreferences>(
+    `${getApiBase()}/api/v1/user/learning-preferences`,
+    { headers: authHeaders() },
+  )
+  return data
+}
+
+export async function updateLearningPreferences(body: LearningPreferences) {
+  const { data } = await request<LearningPreferences>(
+    `${getApiBase()}/api/v1/user/learning-preferences`,
+    {
+      method: 'PUT',
+      headers: authHeaders(),
+      body: JSON.stringify(body),
+    },
+  )
+  return data
+}
+
+export async function postActivityHeartbeat(body: {
+  idle_seconds: number
+  continuous_active_minutes: number
+  session_active_minutes_today: number
+}) {
+  const { data } = await request(`${getApiBase()}/api/v1/activity/heartbeat`, {
+    method: 'POST',
     headers: authHeaders(),
     body: JSON.stringify(body),
   })
@@ -304,9 +363,9 @@ export interface TodoItem {
   done: boolean
 }
 
-export async function getReminders(status = 'pending') {
+export async function getReminders(status = 'pending', limit = 20) {
   const { data } = await request<{ reminders?: ReminderItem[] }>(
-    `${getApiBase()}/api/v1/reminders?status=${encodeURIComponent(status)}`,
+    `${getApiBase()}/api/v1/reminders?status=${encodeURIComponent(status)}&limit=${limit}`,
     { headers: authHeaders() },
   )
   return data.reminders ?? []
@@ -321,9 +380,9 @@ export async function cancelReminder(id: number) {
   return data
 }
 
-export async function getTodos(done = false) {
+export async function getTodos(done = false, limit = 20) {
   const { data } = await request<{ todos?: TodoItem[] }>(
-    `${getApiBase()}/api/v1/todos?done=${done}`,
+    `${getApiBase()}/api/v1/todos?done=${done}&limit=${limit}`,
     { headers: authHeaders() },
   )
   return data.todos ?? []

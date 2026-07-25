@@ -1,6 +1,7 @@
 package pet
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -40,14 +41,16 @@ func NewHandler(db *gorm.DB, lifeSvc *life.Service, lifecycleSvc *lifecycle.Serv
 
 type petResponse struct {
 	models.Pet
-	AgeDays        int             `json:"age_days"`
-	AgeYears       int             `json:"age_years"`
-	AgeDaysInYear  int             `json:"age_days_in_year"`
-	RemainingDays  int             `json:"remaining_days"`
-	MaxDays        int             `json:"max_days"`
-	LifeStageLabel string          `json:"life_stage_label"`
-	SKU            *models.PetSKU  `json:"sku,omitempty"`
-	NeedsAdopt     bool            `json:"needs_adopt"`
+	AgeDays        int                    `json:"age_days"`
+	AgeYears       int                    `json:"age_years"`
+	AgeDaysInYear  int                    `json:"age_days_in_year"`
+	RemainingDays  int                    `json:"remaining_days"`
+	MaxDays        int                    `json:"max_days"`
+	LifeStageLabel string                 `json:"life_stage_label"`
+	StageHint      string                 `json:"stage_hint"`
+	Personality    models.Personality     `json:"personality"`
+	SKU            *models.PetSKU         `json:"sku,omitempty"`
+	NeedsAdopt     bool                   `json:"needs_adopt"`
 }
 
 func (h *Handler) Get(c *gin.Context) {
@@ -58,6 +61,14 @@ func (h *Handler) Get(c *gin.Context) {
 		return
 	}
 	info, _, _ := h.lifecycle.SyncPet(c.Request.Context(), &pet)
+
+	var personality models.Personality
+	if len(pet.PersonalityJSON) > 0 {
+		_ = json.Unmarshal(pet.PersonalityJSON, &personality)
+	}
+	if pet.Gender == "" {
+		pet.Gender = lifecycle.NormalizeGender("")
+	}
 
 	var sku *models.PetSKU
 	if pet.SKUId != "" {
@@ -75,6 +86,8 @@ func (h *Handler) Get(c *gin.Context) {
 		RemainingDays:  info.RemainingDays,
 		MaxDays:        info.MaxDays,
 		LifeStageLabel: lifecycle.StageLabel(info.Stage),
+		StageHint:      lifecycle.StageHintForUser(info.Stage),
+		Personality:    personality,
 		SKU:            sku,
 		NeedsAdopt:     pet.SKUId == "",
 	})

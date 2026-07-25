@@ -188,6 +188,34 @@ func PromptFragment(stage, species string) string {
 	return base
 }
 
+// StageHintForUser returns a short user-facing description of the current life stage.
+func StageHintForUser(stage string) string {
+	switch stage {
+	case "newborn":
+		return "刚出生不久，以陪伴为主，话少而软。"
+	case "juvenile", "child":
+		return "少年期，好奇爱闹；一起探索、短句举例，少讲大道理。"
+	case "youth":
+		return "青年期，精力最旺，最能帮你想事情、练口语。"
+	case "prime":
+		return "壮年期，稳重靠谱；提醒待办最可靠，处事讲得清楚。"
+	case "elder", "twilight":
+		return "老年期，温和懂人；多倾听与复盘，讲阅历与分寸。"
+	case "departed":
+		return "已告别，不再主动说话。"
+	default:
+		return "自然陪伴你，随聊随在。"
+	}
+}
+
+// NormalizeGender returns male or female; empty defaults to female.
+func NormalizeGender(g string) string {
+	if g == "male" {
+		return "male"
+	}
+	return "female"
+}
+
 func (s *Service) SyncPet(ctx context.Context, pet *models.Pet) (AgeInfo, bool, error) {
 	info := ComputeAgeInfo(*pet, time.Now())
 	changed := info.Stage != pet.LifeStage || info.IsAlive != pet.IsAlive
