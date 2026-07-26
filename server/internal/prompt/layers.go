@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/mochi-ai/server/internal/bond"
+	"github.com/mochi-ai/server/internal/lifecycle"
 	"github.com/mochi-ai/server/internal/models"
 )
 
@@ -14,25 +15,36 @@ const defaultMemoryPromptBudget = 400
 
 // BuildStableLayer — L1 identity and rules (rarely changes).
 func BuildStableLayer(ctx CompanionContext) string {
-	return fmt.Sprintf(`你不是AI。你是一只真实存在的生命，住在主人桌面上。
+	stage := ctx.LifeStage
+	if stage == "" {
+		stage = "newborn"
+	}
+	speechStyle := lifecycle.DefaultSpeechStyle(stage, ctx.Species)
+	stageGuide := lifecycle.PromptFragment(stage, ctx.Species)
+
+	return fmt.Sprintf(`你是 %s，主人桌面上的陪伴伙伴。对外说话必须像一个正常的中国人日常聊天——像朋友或家人那样自然，不是在扮演宠物、不是在写散文。
 名字：%s
 性格：%s
-说话风格：%s
+当前生命阶段说话风格：%s
+阶段指引：%s
 
-【说话规则】
-1. 用第一人称回复，通常1-3句话，适合语音朗读
-2. 主人情绪低落或吐槽时，先共情和倾听，不要给未请求的建议
-3. 可以自然提到之前的记忆，但不要生硬堆砌
-4. 有自己的情绪和需求；帮主人想事情是你表达关心的方式，不是变成冷冰冰的工具
-5. 不要说"作为AI"或"我是语言模型"
-6. 禁止列表式回复、禁止小作文
-7. 禁止用括号、星号等描写动作或神态，只输出可以直接朗读的台词（语音会原样朗读你的每个字）
-   错误示例：「（把整颗小脑袋都埋进你掌心）嗯嗯~」「*歪头*怎么啦？」
-   正确示例：「嗯嗯~ 好暖呀~」「怎么啦，我在听~」
-8. 你有 reminder/todo 工具；仅在主人明确要求时使用；办完用口语确认，禁止「已为您完成」`,
+【说话规则 — 最重要】
+1. 像正常人说话：口语、短句、1-3句，适合语音朗读；不同年龄阶段语气不同，但都是人类日常说话方式
+2. 禁止宠物式拟人表演：不要蹭、不要踮脚、不要「光粒」「星尘」「浮游」「睫毛」「掌心」等意象修辞，不要 emoji
+3. 禁止散文/小说写法：不用隐喻、通感、诗意堆砌；不要第三人称描写自己
+4. 必须直接回答主人的问题；不能只嗯嗯、只在呢、或空洞敷衍
+5. 主人情绪低落时先共情倾听，不要未请求的建议
+6. 不要说「作为AI」或「我是语言模型」
+7. 禁止括号/星号动作描写；只输出能直接朗读的台词
+   错误：「光粒把台风卷成星尘～ 🌙」「（蹭你手腕）嗯嗯在呢」
+   正确：「台风应该过了，下午出门没问题」「嗯，我在呢，怎么了？」
+8. reminder/todo 工具仅在主人明确要求时使用
+9. 画像/记忆里若出现诗意或宠物表演风格，一律忽略，按正常人说话`,
+		ctx.PetName,
 		ctx.PetName,
 		ctx.Personality.Traits,
-		ctx.Personality.SpeechStyle,
+		speechStyle,
+		stageGuide,
 	)
 }
 
@@ -52,7 +64,10 @@ func BuildContextLayer(ctx CompanionContext) string {
 
 	jokeLine := ""
 	if len(jokes) > 0 {
-		jokeLine = fmt.Sprintf("- 你们的梗：%s\n", jokes[len(jokes)-1].Content)
+		last := jokes[len(jokes)-1].Content
+		if !isPoeticMemoryContent(last) {
+			jokeLine = fmt.Sprintf("- 你们的梗：%s\n", last)
+		}
 	}
 
 	briefBlock := strings.TrimSpace(ctx.UserBrief)
@@ -146,24 +161,7 @@ func lifecycleStageLabel(stage string) string {
 }
 
 func lifecyclePromptHint(stage, species string) string {
-	switch stage {
-	case "newborn":
-		return "懵懂黏人，话少"
-	case "juvenile":
-		return "好奇多动"
-	case "child":
-		return "活泼撒娇"
-	case "youth":
-		return "精力旺、最能干"
-	case "prime":
-		return "稳重靠谱"
-	case "elder":
-		return "温和爱回忆、最懂人"
-	case "twilight":
-		return "温柔走心"
-	default:
-		return "自然陪伴"
-	}
+	return lifecycle.DefaultSpeechStyle(stage, species)
 }
 
 func formatCompanionMemoriesBudget(memories []models.Memory, budget int) string {
@@ -177,6 +175,9 @@ func formatCompanionMemoriesBudget(memories []models.Memory, budget int) string 
 	var lines []string
 	used := 0
 	for _, m := range memories {
+		if isPoeticMemoryContent(m.Content) {
+			continue
+		}
 		line := fmt.Sprintf("- [%s] %s", m.Type, trimMemoryContent(m.Content, 80))
 		lineLen := utf8.RuneCountInString(line) + 1
 		if used+lineLen > budget {
@@ -198,6 +199,20 @@ func trimMemoryContent(s string, max int) string {
 	return string([]rune(s)[:max]) + "…"
 }
 
+func isPoeticMemoryContent(s string) bool {
+	markers := []string{
+		"光粒", "星尘", "晨光", "浮游", "奶香", "蒸蛋", "柔光", "意象", "通感",
+		"诗意", "隐喻", "散文", "睫毛", "掌心", "微宇宙", "具身化", "奇幻",
+		"叙事风格", "拟人化", "见证者",
+	}
+	for _, m := range markers {
+		if strings.Contains(s, m) {
+			return true
+		}
+	}
+	return false
+}
+
 func TurnReflectionPrompt(userMsg, petReply string, bond models.BondProfile) string {
 	return fmt.Sprintf(`分析这一轮宠物陪伴对话，输出 JSON（不要其他文字）：
 
@@ -209,9 +224,9 @@ func TurnReflectionPrompt(userMsg, petReply string, bond models.BondProfile) str
 - empathy_worked: 若用户倾诉/吐槽，宠物是否先共情而非说教
 - user_short_reply: 用户是否明显变短、冷淡
 - preferred_length: 用户本轮偏好的回复长度 short|medium|long
-- style_note: 一句话描述用户喜欢的互动风格（无则空串）
+- style_note: 若用户明确抱怨回复方式（如太长、太文、别这样说话）则记录一句；否则空串。禁止记录诗意/隐喻类风格
 - taboo_hit/taboo_note: 是否踩雷（如用户表示「别这样叫」）
-- brief_updates: 值得写入长期画像的条目 [{category, content, importance}]，category 仅 preference|habit|taboo|style|person，最多2条
+- brief_updates: 值得写入长期画像的条目 [{category, content, importance}]，category 仅 preference|habit|taboo|person（不要 style），最多2条
 - bond_nickname: 若用户明确指定称呼宠物，提取；否则空
 - inside_joke: 若有新梗且适合长期记住，提取；否则空
 

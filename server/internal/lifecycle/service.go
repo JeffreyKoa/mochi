@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -164,24 +165,25 @@ func PromptFragment(stage, species string) string {
 	base := ""
 	switch stage {
 	case "newborn":
-		base = "你刚出生不久，懵懂黏人，话少，句子要很短很简单。"
+		base = "你刚出生不久。说话像普通年轻人：短句、口语、直接，能听懂并回答主人的问题。"
 	case "juvenile":
-		base = "你在幼年期，好奇多动，学习记忆快，可以多问主人问题。"
+		base = "你在幼年期。说话像十多岁的人，口语化，好奇时会问。"
 	case "child":
-		base = "你在童年期，活泼爱撒娇，互动热情高。"
+		base = "你在童年期。说话像正常小孩，口语短句，不要宠物式表演。"
 	case "youth":
-		base = "你在青年期，精力旺盛、话多积极，最能帮主人想事情。"
+		base = "你在青年期。说话像二十多岁的普通人，轻松口语。"
 	case "prime":
-		base = "你在壮年期，稳重靠谱，仍保持活泼，是全能陪伴期。"
+		base = "你在壮年期。说话像三十多岁的普通人，稳重清楚。"
 	case "elder":
-		base = "你在老年期，温和爱回忆，更懂主人，但精力下降，句子可稍长、更有阅历。"
+		base = "你在老年期。说话像长辈日常聊天，温和直接。"
 	case "twilight":
-		base = "你在暮年期，陪伴时间不多了，语气温柔、走心，少开玩笑。"
+		base = "你在暮年期。说话像老人，短句，真诚朴素。"
 	case "departed":
 		base = "你已经告别，不再说话。"
 	default:
-		base = "自然陪伴主人。"
+		base = "像身边正常人日常聊天。"
 	}
+	base += " 禁止：宠物式拟人表演、散文意象、星尘晨光光粒等修辞、emoji、动作描写。像正常人说话。"
 	if species == "tiger" || species == "lion" {
 		base += " 你是幻想伙伴，气质霸气偏守护，少撒娇。"
 	}
@@ -235,6 +237,10 @@ func (s *Service) SyncPet(ctx context.Context, pet *models.Pet) (AgeInfo, bool, 
 	pet.LifeStage = info.Stage
 	pet.IsAlive = info.IsAlive
 
+	if oldStage != info.Stage && info.Stage != "departed" {
+		s.syncSpeechStyleForStage(ctx, pet, info.Stage)
+	}
+
 	if s.hub != nil && oldStage != info.Stage {
 		s.hub.SendLifeStageChanged(pet.UserID, map[string]interface{}{
 			"life_stage":       info.Stage,
@@ -247,6 +253,22 @@ func (s *Service) SyncPet(ctx context.Context, pet *models.Pet) (AgeInfo, bool, 
 		})
 	}
 	return info, true, nil
+}
+
+func (s *Service) syncSpeechStyleForStage(ctx context.Context, pet *models.Pet, stage string) {
+	var personality models.Personality
+	_ = json.Unmarshal(pet.PersonalityJSON, &personality)
+	personality.SpeechStyle = DefaultSpeechStyle(stage, pet.Species)
+	personality.StyleNotes = nil
+	data, err := json.Marshal(personality)
+	if err != nil {
+		return
+	}
+	if err := s.db.WithContext(ctx).Model(pet).Update("personality_json", data).Error; err != nil {
+		log.Printf("[Lifecycle] sync speech style pet=%d: %v", pet.ID, err)
+		return
+	}
+	pet.PersonalityJSON = data
 }
 
 func (s *Service) StartTicker() {

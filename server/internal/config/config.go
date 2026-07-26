@@ -75,7 +75,6 @@ type RealtimeConfig struct {
 	BargeIn        RealtimeBargeIn        `yaml:"barge_in"`
 	ASR            RealtimeASR            `yaml:"asr"`
 	TTS            RealtimeTTS            `yaml:"tts"`
-	EdgeTTS        RealtimeEdgeTTS        `yaml:"edge_tts"`
 	Pipeline       RealtimePipeline       `yaml:"pipeline"`
 	ThinkingFiller RealtimeThinkingFiller `yaml:"thinking_filler"`
 }
@@ -114,6 +113,7 @@ type RealtimePublicConfig struct {
 		PeakThreshold float64 `json:"peak_threshold"`
 		BargeInMS     int     `json:"barge_in_ms"`
 	} `json:"barge_in"`
+	TTSTransport string `json:"tts_transport"`
 }
 
 type RealtimeASR struct {
@@ -123,19 +123,20 @@ type RealtimeASR struct {
 }
 
 type RealtimeTTS struct {
-	Provider   string `yaml:"provider"`
-	Fallback   string `yaml:"fallback"` // edge | (empty)
-	Model      string `yaml:"model"`
-	Voice      string `yaml:"voice"`
-	SampleRate int    `yaml:"sample_rate"`
+	Provider   string             `yaml:"provider"`
+	Fallback   string             `yaml:"fallback"`
+	Model      string             `yaml:"model"`
+	Voice      string             `yaml:"voice"`
+	SampleRate int                `yaml:"sample_rate"`
+	Transport  string             `yaml:"transport"` // mp3 | opus
+	Opus       RealtimeOpusConfig `yaml:"opus"`
 }
 
-type RealtimeEdgeTTS struct {
-	Voice  string `yaml:"voice"`
-	Rate   string `yaml:"rate"`
-	Volume string `yaml:"volume"`
-	Pitch  string `yaml:"pitch"`
-	Proxy  string `yaml:"proxy"`
+type RealtimeOpusConfig struct {
+	SampleRate  int    `yaml:"sample_rate"`
+	Bitrate     int    `yaml:"bitrate"`
+	FrameMS     int    `yaml:"frame_ms"`
+	Application string `yaml:"application"`
 }
 
 type RealtimePipeline struct {
@@ -389,17 +390,20 @@ func (r *RealtimeConfig) applyDefaults() {
 	if r.TTS.SampleRate == 0 {
 		r.TTS.SampleRate = 22050
 	}
-	if r.EdgeTTS.Voice == "" {
-		r.EdgeTTS.Voice = "zh-CN-XiaoyiNeural"
+	if r.TTS.Transport == "" {
+		r.TTS.Transport = "opus"
 	}
-	if r.EdgeTTS.Rate == "" {
-		r.EdgeTTS.Rate = "+0%"
+	if r.TTS.Opus.SampleRate == 0 {
+		r.TTS.Opus.SampleRate = 48000
 	}
-	if r.EdgeTTS.Volume == "" {
-		r.EdgeTTS.Volume = "+0%"
+	if r.TTS.Opus.Bitrate == 0 {
+		r.TTS.Opus.Bitrate = 24000
 	}
-	if r.EdgeTTS.Pitch == "" {
-		r.EdgeTTS.Pitch = "+0Hz"
+	if r.TTS.Opus.FrameMS == 0 {
+		r.TTS.Opus.FrameMS = 20
+	}
+	if r.TTS.Opus.Application == "" {
+		r.TTS.Opus.Application = "voip"
 	}
 	if r.Pipeline.TTSMinChars == 0 {
 		r.Pipeline.TTSMinChars = 5
@@ -414,6 +418,7 @@ func (r RealtimeConfig) PublicClient() RealtimePublicConfig {
 	out := RealtimePublicConfig{
 		STTMode:      r.STTMode,
 		SpeechLocale: "zh-CN",
+		TTSTransport: r.TTS.Transport,
 	}
 	out.VAD.SilenceMS = r.VAD.SilenceMS
 	out.VAD.MinSpeechMS = r.VAD.MinSpeechMS

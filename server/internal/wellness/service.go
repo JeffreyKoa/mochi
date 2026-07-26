@@ -14,6 +14,7 @@ import (
 
 	"github.com/mochi-ai/server/internal/config"
 	"github.com/mochi-ai/server/internal/life"
+	"github.com/mochi-ai/server/internal/lifecycle"
 	"github.com/mochi-ai/server/internal/models"
 	"github.com/mochi-ai/server/pkg/ai"
 )
@@ -438,8 +439,8 @@ func (s *Service) generateMessage(ctx context.Context, pet models.Pet, user mode
 照护类型：%s
 主人已连续活跃约 %d 分钟
 
-要求：像朋友轻轻关心，点明照护意图但不要说「健康提醒」；禁止用括号描述动作，只输出对话。只输出正文。`,
-			pet.Name, personality.Traits, personality.SpeechStyle,
+要求：像朋友轻轻关心，点明照护意图但不要说「健康提醒」；禁止散文/隐喻写法；禁止用括号描述动作，只输出对话。只输出正文。`,
+			pet.Name, personality.Traits, lifecycle.DefaultSpeechStyle(pet.LifeStage, pet.Species),
 			pet.LifeStage, bond.RapportLevel, kind,
 			act.ContinuousActiveMinutes,
 		)

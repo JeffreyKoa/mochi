@@ -11,7 +11,6 @@ func TestResolveVoice(t *testing.T) {
 		lifeStage   string
 		personality string
 		wantDash    string
-		wantEdge    string
 		wantRate    string
 		wantPitch   string
 	}{
@@ -21,7 +20,6 @@ func TestResolveVoice(t *testing.T) {
 			lifeStage:   "newborn",
 			personality: "",
 			wantDash:    "longxiaochun_v2",
-			wantEdge:    "zh-CN-XiaoyiNeural",
 			wantRate:    "+0%",
 			wantPitch:   "+0Hz",
 		},
@@ -31,7 +29,6 @@ func TestResolveVoice(t *testing.T) {
 			lifeStage:   "youth",
 			personality: "",
 			wantDash:    "longwan_v2",
-			wantEdge:    "zh-CN-XiaoxiaoNeural",
 			wantRate:    "+0%",
 			wantPitch:   "+0Hz",
 		},
@@ -41,7 +38,6 @@ func TestResolveVoice(t *testing.T) {
 			lifeStage:   "elder",
 			personality: "",
 			wantDash:    "longwan_v2",
-			wantEdge:    "zh-CN-XiaohanNeural",
 			wantRate:    "-8%",
 			wantPitch:   "+0Hz",
 		},
@@ -51,7 +47,6 @@ func TestResolveVoice(t *testing.T) {
 			lifeStage:   "youth",
 			personality: "",
 			wantDash:    "longyue_v2",
-			wantEdge:    "zh-CN-YunjianNeural",
 			wantRate:    "+0%",
 			wantPitch:   "+0Hz",
 		},
@@ -61,7 +56,6 @@ func TestResolveVoice(t *testing.T) {
 			lifeStage:   "prime",
 			personality: "",
 			wantDash:    "longshu_v2",
-			wantEdge:    "zh-CN-YunxiNeural",
 			wantRate:    "+0%",
 			wantPitch:   "+0Hz",
 		},
@@ -71,7 +65,6 @@ func TestResolveVoice(t *testing.T) {
 			lifeStage:   "elder",
 			personality: "",
 			wantDash:    "longshu_v2",
-			wantEdge:    "zh-CN-YunxiNeural",
 			wantRate:    "-10%",
 			wantPitch:   "-5%",
 		},
@@ -81,7 +74,6 @@ func TestResolveVoice(t *testing.T) {
 			lifeStage:   "youth",
 			personality: "阳光",
 			wantDash:    "longyue_v2",
-			wantEdge:    "zh-CN-YunjianNeural",
 			wantRate:    "+5%",
 			wantPitch:   "+0Hz",
 		},
@@ -92,9 +84,6 @@ func TestResolveVoice(t *testing.T) {
 			got := ResolveVoice(tt.gender, tt.lifeStage, tt.personality)
 			if got.DashscopeVoice != tt.wantDash {
 				t.Errorf("DashscopeVoice = %v, want %v", got.DashscopeVoice, tt.wantDash)
-			}
-			if got.EdgeVoice != tt.wantEdge {
-				t.Errorf("EdgeVoice = %v, want %v", got.EdgeVoice, tt.wantEdge)
 			}
 			if got.Rate != tt.wantRate {
 				t.Errorf("Rate = %v, want %v", got.Rate, tt.wantRate)

@@ -31,7 +31,16 @@ const (
 	MsgAck          = "ack"
 	MsgTurnMetrics       = "turn_metrics"
 	MsgProactiveMessage  = "proactive_message"
+	MsgTTSStreamStart    = "tts_stream_start"
 )
+
+type TTSStreamStart struct {
+	Codec      string `json:"codec"`
+	SampleRate int    `json:"sample_rate"`
+	Channels   int    `json:"channels"`
+	FrameMS    int    `json:"frame_ms"`
+	Bitrate    int    `json:"bitrate"`
+}
 
 type Envelope struct {
 	Type string          `json:"type"`

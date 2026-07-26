@@ -314,11 +314,14 @@ onUnmounted(() => {
 
 .bubble {
   max-width: 100%;
+  width: fit-content;
   padding: 8px 12px;
   border-radius: 14px;
   font-size: 13px;
   line-height: 1.5;
   word-break: break-word;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .message.user .bubble {

@@ -327,11 +327,29 @@ watch(
 )
 
 watch(
+  () => rt.partialText,
+  (text) => {
+    if (pet.isChatOpen || !rt.talking || !rt.userSpeaking) return
+    pet.showPersistentBubble(text.trim() || '正在听…')
+  },
+)
+
+watch(
+  () => rt.replyText,
+  (text) => {
+    if (pet.isChatOpen || !rt.talking) return
+    if (rt.processing && text.trim()) {
+      pet.showPersistentBubble(text.trim())
+    }
+  },
+)
+
+watch(
   () => rt.userSpeaking,
   (speaking) => {
     if (pet.isChatOpen || !rt.talking) return
     if (speaking) {
-      pet.showSpeechBubble(rt.partialText.trim() || '正在听…', 3000)
+      pet.showPersistentBubble(rt.partialText.trim() || '正在听…')
     }
   },
 )
@@ -724,26 +742,22 @@ function onDblClick() {
   left: 50%;
   transform: translateX(-50%);
   background: rgba(255, 255, 255, 0.97);
-  padding: 6px 10px;
+  padding: 8px 12px;
   border-radius: 14px;
-  font-size: 11px;
+  font-size: 12px;
   color: #333;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.14);
-  max-width: calc(100% - 20px);
-  width: auto;
+  max-width: min(360px, calc(100vw - 24px));
+  width: max-content;
   min-width: 0;
   box-sizing: border-box;
   overflow-wrap: anywhere;
   word-break: break-word;
-  line-height: 1.35;
+  line-height: 1.45;
   text-align: left;
   z-index: 30;
   pointer-events: none;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  white-space: pre-wrap;
 }
 
 .speech-bubble::after {

@@ -8,6 +8,7 @@ export type RealtimeEvent =
   | { type: 'llm_token'; token: string }
   | { type: 'llm_done'; text: string }
   | { type: 'tts_audio'; pcm: string; audioBuffer?: ArrayBuffer; format: string; seq: number }
+  | { type: 'tts_stream_start'; codec: string; sampleRate: number; channels: number; frameMs: number; bitrate: number }
   | { type: 'tts_done' }
   | { type: 'interrupted' }
   | { type: 'turn_ack' }
@@ -186,6 +187,16 @@ export class RealtimeSession {
           seq: Number(data.seq),
         })
         break
+      case 'tts_stream_start':
+        this.emit({
+          type: 'tts_stream_start',
+          codec: String(data.codec || 'opus'),
+          sampleRate: Number(data.sample_rate || 48000),
+          channels: Number(data.channels || 1),
+          frameMs: Number(data.frame_ms || 20),
+          bitrate: Number(data.bitrate || 24000),
+        })
+        break
       case 'tts_done':
         this.emit({ type: 'tts_done' })
         break
@@ -232,7 +243,7 @@ export class RealtimeSession {
     const msgType = view.getUint8(0)
     if (msgType === 0x01) {
       const formatByte = view.getUint8(1)
-      const format = formatByte === 0x02 ? 'pcm' : 'mp3'
+      const format = formatByte === 0x03 ? 'opus' : formatByte === 0x02 ? 'pcm' : 'mp3'
       const high = view.getUint32(2)
       const low = view.getUint32(6)
       const seq = high * 4294967296 + low

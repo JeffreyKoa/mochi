@@ -202,6 +202,9 @@ func (s *Service) Recompile(ctx context.Context, petID uint64) error {
 	var lines []string
 	used := utf8.RuneCountInString(header)
 	for _, e := range entries {
+		if e.Category == "style" || isPoeticBriefContent(e.Content) {
+			continue
+		}
 		line := fmt.Sprintf("- [%s] %s", e.Category, e.Content)
 		lineLen := utf8.RuneCountInString(line) + 1
 		if used+lineLen > budget {
@@ -288,6 +291,20 @@ func trimRunes(s string, max int) string {
 	return string(runes[:max])
 }
 
+func isPoeticBriefContent(s string) bool {
+	markers := []string{
+		"光粒", "星尘", "晨光", "浮游", "奶香", "蒸蛋", "柔光", "意象", "通感",
+		"诗意", "隐喻", "散文", "睫毛", "掌心", "微宇宙", "拟人化", "具身化",
+		"感官", "奇幻", "叙事风格", "共振", "见证者", "playful control",
+	}
+	for _, m := range markers {
+		if strings.Contains(s, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // CompileEntries builds prompt text from entries (exported for tests).
 func CompileEntries(entries []models.UserBriefEntry, budget int) string {
 	header := "【主人画像】（策展摘要，优先相信）"
@@ -297,6 +314,9 @@ func CompileEntries(entries []models.UserBriefEntry, budget int) string {
 	var lines []string
 	used := utf8.RuneCountInString(header)
 	for _, e := range entries {
+		if e.Category == "style" || isPoeticBriefContent(e.Content) {
+			continue
+		}
 		line := fmt.Sprintf("- [%s] %s", e.Category, e.Content)
 		lineLen := utf8.RuneCountInString(line) + 1
 		if used+lineLen > budget {

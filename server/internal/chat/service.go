@@ -29,7 +29,7 @@ import (
 )
 
 func finalizeReply(reply string) string {
-	return text.StripActionParentheticals(strings.TrimSpace(reply))
+	return text.SanitizeSpokenReply(text.StripActionParentheticals(strings.TrimSpace(reply)))
 }
 
 type chatBuildResult struct {

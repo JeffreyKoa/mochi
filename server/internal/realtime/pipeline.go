@@ -13,7 +13,6 @@ import (
 	"github.com/mochi-ai/server/internal/chat"
 	"github.com/mochi-ai/server/internal/config"
 	"github.com/mochi-ai/server/pkg/dashscope"
-	"github.com/mochi-ai/server/pkg/edgetts"
 )
 
 // Pipeline orchestrates ASR → LLM → TTS (turn-based, half-duplex).
@@ -61,15 +60,6 @@ func (p *Pipeline) getTTSForPet(ctx context.Context, userID uint64) (TTSSynthesi
 	if profile.DashscopeVoice != "" {
 		cfg.TTS.Voice = profile.DashscopeVoice
 	}
-	if profile.EdgeVoice != "" {
-		cfg.EdgeTTS.Voice = profile.EdgeVoice
-	}
-	if profile.Rate != "" {
-		cfg.EdgeTTS.Rate = profile.Rate
-	}
-	if profile.Pitch != "" {
-		cfg.EdgeTTS.Pitch = profile.Pitch
-	}
 
 	synth, fmtStr := buildTTSSynth(cfg, p.apiKey, p.ep)
 	if synth != nil {
@@ -78,55 +68,20 @@ func (p *Pipeline) getTTSForPet(ctx context.Context, userID uint64) (TTSSynthesi
 	return p.tts, p.ttsFormat
 }
 
-func edgeConfigFrom(cfg config.RealtimeConfig) edgetts.Config {
-	return edgetts.Config{
-		Voice:  cfg.EdgeTTS.Voice,
-		Rate:   cfg.EdgeTTS.Rate,
-		Volume: cfg.EdgeTTS.Volume,
-		Pitch:  cfg.EdgeTTS.Pitch,
-		Proxy:  cfg.EdgeTTS.Proxy,
-	}
-}
-
 func buildTTSSynth(cfg config.RealtimeConfig, apiKey string, ep dashscope.EndpointConfig) (TTSSynthesizer, string) {
-	provider := strings.ToLower(strings.TrimSpace(cfg.TTS.Provider))
-	fallback := strings.ToLower(strings.TrimSpace(cfg.TTS.Fallback))
 	format := "mp3"
-
-	var primary TTSSynthesizer
-	primaryName := provider
-
-	switch provider {
-	case "edge":
-		primary = newEdgeTTSSynth(edgetts.NewClient(edgeConfigFrom(cfg)))
-	case "dashscope":
-		if apiKey != "" {
-			client := dashscope.NewTTSClient(apiKey, cfg.TTS.Model, cfg.TTS.Voice, cfg.TTS.SampleRate, ep)
-			primary = newDashscopeTTSSynth(client)
-			format = client.AudioFormat()
-		} else {
-			primary = nil
-		}
-	default:
-		if apiKey != "" {
-			client := dashscope.NewTTSClient(apiKey, cfg.TTS.Model, cfg.TTS.Voice, cfg.TTS.SampleRate, ep)
-			primary = newDashscopeTTSSynth(client)
-			format = client.AudioFormat()
-			primaryName = "dashscope"
-		}
+	if apiKey == "" {
+		return nil, format
 	}
 
-	if fallback == "edge" && provider != "edge" {
-		edgeSynth := newEdgeTTSSynth(edgetts.NewClient(edgeConfigFrom(cfg)))
-		if primary != nil {
-			log.Printf("[realtime] tts fallback enabled: primary=%s fallback=edge voice=%s", primaryName, cfg.EdgeTTS.Voice)
-			return newFallbackSynth(primary, edgeSynth, primaryName, "edge"), format
-		}
-		log.Printf("[realtime] tts using edge (no primary) voice=%s", cfg.EdgeTTS.Voice)
-		return edgeSynth, format
+	client := dashscope.NewTTSClient(apiKey, cfg.TTS.Model, cfg.TTS.Voice, cfg.TTS.SampleRate, ep)
+	if strings.ToLower(cfg.TTS.Transport) == "opus" {
+		client.SetAudioFormat("pcm")
+		format = "pcm"
+	} else {
+		format = client.AudioFormat()
 	}
-
-	return primary, format
+	return newDashscopeTTSSynth(client), format
 }
 
 func (p *Pipeline) StartASRSession(ctx context.Context, onPartial ASRPartialHandler) (ASRSession, error) {
@@ -354,6 +309,16 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		ttsFormat = p.ttsFormat
 	}
 
+	var opusBridge *OpusBridge
+	var streamStartSent bool
+	if strings.ToLower(p.cfg.TTS.Transport) == "opus" {
+		var err error
+		opusBridge, err = NewOpusBridge(p.cfg.TTS.SampleRate, p.cfg.TTS.Opus.Bitrate)
+		if err != nil {
+			log.Printf("[realtime] opus unavailable, fallback to %s: %v", ttsFormat, err)
+		}
+	}
+
 	onAudio := func(audio []byte) {
 		if len(audio) == 0 {
 			return
@@ -373,8 +338,24 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 			send.SendAnimation(StateSpeaking)
 			log.Printf("[realtime] tts first audio session=%s", sess.ID)
 		}
-		seq := sess.NextTTSSeq()
-		_ = send.SendTTSAudioBinary(audio, ttsFormat, seq)
+		if opusBridge != nil {
+			if !streamStartSent {
+				streamStartSent = true
+				opusBridge.SendStreamStart(send)
+			}
+			frames, err := opusBridge.EncodeChunk(audio)
+			if err != nil {
+				log.Printf("[realtime] opus encode error: %v", err)
+				return
+			}
+			for _, frame := range frames {
+				seq := sess.NextTTSSeq()
+				_ = send.SendTTSAudioBinary(frame, "opus", seq)
+			}
+		} else {
+			seq := sess.NextTTSSeq()
+			_ = send.SendTTSAudioBinary(audio, ttsFormat, seq)
+		}
 	}
 
 	var segCh chan string
@@ -385,6 +366,14 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		go func() {
 			defer close(ttsDone)
 			err := p.runPrefetchSegmentTTS(ctx, ttsSynth, segCh, onAudio)
+			if opusBridge != nil {
+				if frames, errFl := opusBridge.Flush(); errFl == nil {
+					for _, frame := range frames {
+						seq := sess.NextTTSSeq()
+						_ = send.SendTTSAudioBinary(frame, "opus", seq)
+					}
+				}
+			}
 			if err != nil {
 				ttsErrMu.Lock()
 				if ttsErr == nil {
@@ -554,7 +543,17 @@ func (p *Pipeline) speakReply(ctx context.Context, sess *Session, send Sender, r
 func (p *Pipeline) speakAudio(ctx context.Context, sess *Session, send Sender, reply string) bool {
 	lat := sess.TurnLatency()
 	var chunks int
-	if err := p.tts.Synthesize(ctx, reply, func(audio []byte) {
+	var opusBridge *OpusBridge
+	var streamStartSent bool
+	if strings.ToLower(p.cfg.TTS.Transport) == "opus" {
+		var err error
+		opusBridge, err = NewOpusBridge(p.cfg.TTS.SampleRate, p.cfg.TTS.Opus.Bitrate)
+		if err != nil {
+			log.Printf("[realtime] opus unavailable in speakAudio, fallback to %s: %v", p.ttsFormat, err)
+		}
+	}
+
+	err := p.tts.Synthesize(ctx, reply, func(audio []byte) {
 		select {
 		case <-ctx.Done():
 			return
@@ -567,9 +566,34 @@ func (p *Pipeline) speakAudio(ctx context.Context, sess *Session, send Sender, r
 		if lat != nil {
 			lat.MarkTTSFirstByte()
 		}
-		seq := sess.NextTTSSeq()
-		_ = send.SendTTSAudioBinary(audio, p.ttsFormat, seq)
-	}); err != nil {
+		if opusBridge != nil {
+			if !streamStartSent {
+				streamStartSent = true
+				opusBridge.SendStreamStart(send)
+			}
+			frames, err := opusBridge.EncodeChunk(audio)
+			if err == nil {
+				for _, frame := range frames {
+					seq := sess.NextTTSSeq()
+					_ = send.SendTTSAudioBinary(frame, "opus", seq)
+				}
+			}
+		} else {
+			seq := sess.NextTTSSeq()
+			_ = send.SendTTSAudioBinary(audio, p.ttsFormat, seq)
+		}
+	})
+
+	if opusBridge != nil {
+		if frames, errFl := opusBridge.Flush(); errFl == nil {
+			for _, frame := range frames {
+				seq := sess.NextTTSSeq()
+				_ = send.SendTTSAudioBinary(frame, "opus", seq)
+			}
+		}
+	}
+
+	if err != nil {
 		if p.handleCancelled(ctx, sess, send, err) {
 			return false
 		}

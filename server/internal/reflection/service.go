@@ -137,6 +137,9 @@ func (s *Service) apply(ctx context.Context, petID uint64, ref TurnReflection, n
 		if delta.Content == "" || delta.Category == "" {
 			continue
 		}
+		if delta.Category == "style" {
+			continue
+		}
 		if err := s.brief.UpsertEntry(ctx, petID, models.UserBriefEntry{
 			Category:   delta.Category,
 			Content:    delta.Content,
@@ -163,17 +166,14 @@ func (s *Service) apply(ctx context.Context, petID uint64, ref TurnReflection, n
 		_ = s.bond.BoostTrust(ctx, petID, 1)
 	}
 
-	if ref.StyleNote != "" {
+	if ref.StyleNote != "" && isActionableStyleFeedback(ref.StyleNote) {
 		_ = s.brief.UpsertEntry(ctx, petID, models.UserBriefEntry{
-			Category:   "style",
+			Category:   "preference",
 			Content:    ref.StyleNote,
-			Importance: 0.65,
+			Importance: 0.75,
 			Source:     "reflection",
 		})
 		changed = true
-		if s.cfg.StyleEvolutionEnabled {
-			_ = s.evolveSpeechStyle(ctx, petID, ref.StyleNote)
-		}
 	}
 
 	if ref.BondNickname != "" {
@@ -189,61 +189,29 @@ func (s *Service) apply(ctx context.Context, petID uint64, ref TurnReflection, n
 	return nil
 }
 
-func (s *Service) evolveSpeechStyle(ctx context.Context, petID uint64, styleNote string) error {
-	var pet models.Pet
-	if err := s.db.WithContext(ctx).First(&pet, petID).Error; err != nil {
-		return err
+// isActionableStyleFeedback returns true only for explicit user complaints about reply style.
+func isActionableStyleFeedback(note string) bool {
+	note = strings.TrimSpace(note)
+	if note == "" {
+		return false
 	}
-
-	var personality models.Personality
-	_ = json.Unmarshal(pet.PersonalityJSON, &personality)
-
-	key := normalizeStyleKey(styleNote)
-	if key == "" {
-		return nil
+	lower := strings.ToLower(note)
+	poeticMarkers := []string{
+		"诗意", "隐喻", "通感", "意象", "星尘", "晨光", "浮游", "奶香",
+		"散文", "小说", "拟人化表达", "感官", "光影", "具身",
 	}
-
-	count := 0
-	var kept []string
-	for _, note := range personality.StyleNotes {
-		if normalizeStyleKey(note) == key {
-			count++
-		}
-		kept = append(kept, note)
-	}
-	personality.StyleNotes = append(kept, styleNote)
-	if len(personality.StyleNotes) > 3 {
-		personality.StyleNotes = personality.StyleNotes[len(personality.StyleNotes)-3:]
-	}
-
-	threshold := s.cfg.StyleEvolutionThreshold
-	if threshold <= 0 {
-		threshold = 3
-	}
-	if count+1 >= threshold && !strings.Contains(personality.SpeechStyle, styleNote) {
-		phrase := trimRunes(styleNote, 20)
-		if utf8.RuneCountInString(personality.SpeechStyle)+utf8.RuneCountInString(phrase)+1 <= 120 {
-			personality.SpeechStyle = strings.TrimSpace(personality.SpeechStyle + "，" + phrase)
+	for _, m := range poeticMarkers {
+		if strings.Contains(note, m) {
+			return false
 		}
 	}
-
-	data, err := json.Marshal(personality)
-	if err != nil {
-		return err
+	actionMarkers := []string{
+		"太长", "太短", "太文", "别这样", "不要", "简洁", "短句", "口语", "直白", "说教", "小作文",
 	}
-	return s.db.WithContext(ctx).Model(&pet).Update("personality_json", data).Error
-}
-
-func normalizeStyleKey(s string) string {
-	s = strings.TrimSpace(s)
-	s = strings.TrimPrefix(s, "用户")
-	s = strings.TrimPrefix(s, "主人")
-	return strings.TrimSpace(s)
-}
-
-func trimRunes(s string, max int) string {
-	if utf8.RuneCountInString(s) <= max {
-		return s
+	for _, m := range actionMarkers {
+		if strings.Contains(lower, m) || strings.Contains(note, m) {
+			return true
+		}
 	}
-	return string([]rune(s)[:max])
+	return false
 }

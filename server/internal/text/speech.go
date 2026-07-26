@@ -10,7 +10,19 @@ var (
 	fullWidthParenRE = regexp.MustCompile(`（[^）]*）`)
 	halfWidthParenRE = regexp.MustCompile(`\([^)]*\)`)
 	asteriskActionRE = regexp.MustCompile(`\*[^*]+\*`)
+	emojiRE          = regexp.MustCompile(`[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}]`)
 )
+
+// SanitizeSpokenReply strips stage directions, emojis, and poetic narrative tails.
+func SanitizeSpokenReply(s string) string {
+	s = StripActionParentheticals(s)
+	s = emojiRE.ReplaceAllString(s, "")
+	s = strings.ReplaceAll(s, "光粒", "Mochi")
+	if idx := strings.Index(s, "——"); idx > 0 {
+		s = s[:idx]
+	}
+	return collapseSpaces(strings.TrimSpace(s))
+}
 
 // StripActionParentheticals removes stage-direction text wrapped in parentheses or asterisks.
 func StripActionParentheticals(s string) string {

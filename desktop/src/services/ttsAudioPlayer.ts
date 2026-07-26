@@ -1,4 +1,5 @@
 import { playAudioBuffer, playBase64Audio, stopAllPlayback } from '@/services/voice'
+import { opusStreamPlayer } from '@/services/opusStreamPlayer'
 
 function mergeArrayBuffers(chunks: ArrayBuffer[]): ArrayBuffer {
   const total = chunks.reduce((n, c) => n + c.byteLength, 0)
@@ -21,9 +22,15 @@ export class TTSAudioQueue {
   private onIdle: (() => void) | null = null
   private onFirstPlay: (() => void) | null = null
   private firstPlayFired = false
+  private opusActive = false
 
   enqueue(data: string | ArrayBuffer, format = 'mp3', onFirstPlay?: () => void) {
     if (onFirstPlay) this.onFirstPlay = onFirstPlay
+    if (format === 'opus' && data instanceof ArrayBuffer) {
+      this.opusActive = true
+      opusStreamPlayer.enqueue(data, onFirstPlay)
+      return
+    }
     if (data instanceof ArrayBuffer) {
       if (data.byteLength === 0) return
       this.pendingBinary.push(data)
@@ -39,17 +46,17 @@ export class TTSAudioQueue {
     this.onIdle = onIdle ?? null
     this.markedDone = true
     void this.flushBinary()
-    if (!this.pumping && this.queue.length === 0 && this.pendingBinary.length === 0) {
-      this.finish()
-    }
+    void this.awaitOpusAndFinish()
   }
 
   stop() {
     stopAllPlayback()
+    opusStreamPlayer.stop()
     this.queue = []
     this.pendingBinary = []
     this.pumping = false
     this.markedDone = false
+    this.opusActive = false
     this.onIdle = null
     this.onFirstPlay = null
     this.firstPlayFired = false
@@ -94,8 +101,24 @@ export class TTSAudioQueue {
     this.maybeFinish()
   }
 
+  private async awaitOpusAndFinish() {
+    if (!this.opusActive) {
+      this.maybeFinish()
+      return
+    }
+    await opusStreamPlayer.waitUntilIdle()
+    this.opusActive = false
+    this.maybeFinish()
+  }
+
   private maybeFinish() {
-    if (this.markedDone && !this.pumping && this.queue.length === 0 && this.pendingBinary.length === 0) {
+    if (
+      this.markedDone &&
+      !this.pumping &&
+      !this.opusActive &&
+      this.queue.length === 0 &&
+      this.pendingBinary.length === 0
+    ) {
       this.finish()
     }
   }

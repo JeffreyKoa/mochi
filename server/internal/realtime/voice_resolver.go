@@ -7,7 +7,6 @@ import (
 // VoiceProfile holds the resolved TTS voice parameters based on gender, life stage, and personality.
 type VoiceProfile struct {
 	DashscopeVoice string
-	EdgeVoice      string
 	Rate           string
 	Pitch          string
 }
@@ -31,37 +30,28 @@ func ResolveVoice(gender, lifeStage, personality string) VoiceProfile {
 		switch stage {
 		case "newborn", "child", "juvenile":
 			profile.DashscopeVoice = "longyue_v2"
-			profile.EdgeVoice = "zh-CN-YunjianNeural"
 		case "youth":
 			profile.DashscopeVoice = "longyue_v2"
-			profile.EdgeVoice = "zh-CN-YunjianNeural"
 		case "prime":
 			profile.DashscopeVoice = "longshu_v2"
-			profile.EdgeVoice = "zh-CN-YunxiNeural"
 		case "elder", "twilight":
 			profile.DashscopeVoice = "longshu_v2"
-			profile.EdgeVoice = "zh-CN-YunxiNeural"
 			profile.Rate = "-10%"
 			profile.Pitch = "-5%"
 		default: // default male youth/prime
 			profile.DashscopeVoice = "longyue_v2"
-			profile.EdgeVoice = "zh-CN-YunjianNeural"
 		}
 	} else { // female
 		switch stage {
 		case "newborn", "child", "juvenile":
 			profile.DashscopeVoice = "longxiaochun_v2"
-			profile.EdgeVoice = "zh-CN-XiaoyiNeural"
 		case "youth", "prime":
 			profile.DashscopeVoice = "longwan_v2"
-			profile.EdgeVoice = "zh-CN-XiaoxiaoNeural"
 		case "elder", "twilight":
 			profile.DashscopeVoice = "longwan_v2"
-			profile.EdgeVoice = "zh-CN-XiaohanNeural"
 			profile.Rate = "-8%"
 		default: // default female
 			profile.DashscopeVoice = "longxiaochun_v2"
-			profile.EdgeVoice = "zh-CN-XiaoyiNeural"
 		}
 	}
 

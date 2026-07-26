@@ -15,6 +15,7 @@ import (
 	"github.com/mochi-ai/server/internal/config"
 	"github.com/mochi-ai/server/internal/emotion"
 	"github.com/mochi-ai/server/internal/life"
+	"github.com/mochi-ai/server/internal/lifecycle"
 	"github.com/mochi-ai/server/internal/models"
 	"github.com/mochi-ai/server/internal/tools"
 	"github.com/mochi-ai/server/pkg/ai"
@@ -221,8 +222,8 @@ func (s *Scheduler) generateMessage(ctx context.Context, pet models.Pet, bondPro
 相关记忆：%s
 自身状态：心情%d 饥饿%d 精力%d
 
-要求：自然、像伙伴关心主人，不要像通知推送；禁止用括号描述动作，只输出对话。只输出消息正文。`,
-		pet.Name, personality.Traits, personality.SpeechStyle,
+要求：自然、像伙伴关心主人，不要像通知推送；禁止散文/隐喻/诗意写法；禁止用括号描述动作，只输出对话。只输出消息正文。`,
+		pet.Name, personality.Traits, lifecycle.DefaultSpeechStyle(pet.LifeStage, pet.Species),
 		bondProfile.RapportLevel, trigger, orDefault(snippet, "无"),
 		state.Mood, state.Hungry, state.Energy,
 	)

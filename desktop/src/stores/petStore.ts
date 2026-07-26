@@ -125,14 +125,12 @@ export const usePetStore = defineStore('pet', () => {
     currentAnimation.value = anim
   }
 
-  function summarizeBubbleText(text: string, maxLen = 52): string {
-    const trimmed = text.trim()
-    if ([...trimmed].length <= maxLen) return trimmed
-    return [...trimmed].slice(0, maxLen).join('') + '…'
+  function bubbleDisplayText(text: string): string {
+    return text.trim()
   }
 
   function showSpeechBubble(text: string, duration = 4000) {
-    bubbleText.value = summarizeBubbleText(text)
+    bubbleText.value = bubbleDisplayText(text)
     showBubble.value = true
     setTimeout(() => {
       showBubble.value = false
@@ -140,7 +138,7 @@ export const usePetStore = defineStore('pet', () => {
   }
 
   function showPersistentBubble(text: string) {
-    bubbleText.value = summarizeBubbleText(text)
+    bubbleText.value = bubbleDisplayText(text)
     showBubble.value = true
   }
 

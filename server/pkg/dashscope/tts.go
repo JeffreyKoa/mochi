@@ -48,6 +48,13 @@ func NewTTSClient(apiKey, model, voice string, sampleRate int, ep ...EndpointCon
 	}
 }
 
+// SetAudioFormat configures the audio output format (mp3 or pcm).
+func (c *TTSClient) SetAudioFormat(format string) {
+	if format == "pcm" || format == "mp3" {
+		c.audioFormat = format
+	}
+}
+
 // AudioFormat returns the configured output format (mp3 or pcm).
 func (c *TTSClient) AudioFormat() string {
 	if c.audioFormat == "" {
