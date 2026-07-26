@@ -58,6 +58,24 @@ func NewHub(rdb *redis.Client) *Hub {
 	return &Hub{connections: make(map[uint64]*Connection), rdb: rdb}
 }
 
+func (h *Hub) ActiveConnectionsCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.connections)
+}
+
+func ValidateMessage(msg Message) bool {
+	if msg.Type == "" {
+		return false
+	}
+	switch msg.Type {
+	case "heartbeat", "interaction", "sync_request", "state_update", "proactive_message", "life_stage_changed":
+		return true
+	default:
+		return false
+	}
+}
+
 func (h *Hub) SetReminderDeliveredHook(fn func(reminderID uint64)) {
 	h.onDelivered = fn
 }
@@ -232,8 +250,10 @@ func (h *Hub) readPump(c *Connection) {
 		}
 
 		var msg Message
-		if json.Unmarshal(message, &msg) == nil && msg.Type == "heartbeat" {
-			c.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		if err := json.Unmarshal(message, &msg); err == nil && ValidateMessage(msg) {
+			if msg.Type == "heartbeat" {
+				c.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+			}
 		}
 	}
 }

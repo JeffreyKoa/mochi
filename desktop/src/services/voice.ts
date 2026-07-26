@@ -101,6 +101,18 @@ function writeString(view: DataView, offset: number, str: string) {
   }
 }
 
+export type LipSyncListener = (volume: number) => void
+const lipSyncListeners: Set<LipSyncListener> = new Set()
+
+export function onLipSync(fn: LipSyncListener): () => void {
+  lipSyncListeners.add(fn)
+  return () => lipSyncListeners.delete(fn)
+}
+
+export function emitLipSync(volume: number) {
+  lipSyncListeners.forEach((fn) => fn(volume))
+}
+
 const activeAudios: HTMLAudioElement[] = []
 
 export function stopAllPlayback() {
@@ -109,9 +121,10 @@ export function stopAllPlayback() {
     audio.src = ''
   }
   activeAudios.length = 0
+  emitLipSync(0)
 }
 
-export function playBase64Audio(base64: string, format = 'mp3'): Promise<void> {
+export function playBase64Audio(base64: string, format = 'mp3', onVolume?: (v: number) => void): Promise<void> {
   return new Promise((resolve, reject) => {
     const mime = format === 'mp3' ? 'audio/mpeg' : `audio/${format}`
     const binary = atob(base64)
@@ -120,8 +133,42 @@ export function playBase64Audio(base64: string, format = 'mp3'): Promise<void> {
     const blob = new Blob([bytes], { type: mime })
     const url = URL.createObjectURL(blob)
     const audio = new Audio(url)
+    audio.crossOrigin = 'anonymous'
     activeAudios.push(audio)
+
+    let audioCtx: AudioContext | null = null
+    let animFrame: number | null = null
+
+    try {
+      audioCtx = new AudioContext()
+      const source = audioCtx.createMediaElementSource(audio)
+      const analyser = audioCtx.createAnalyser()
+      analyser.fftSize = 256
+      source.connect(analyser)
+      analyser.connect(audioCtx.destination)
+
+      const dataArray = new Uint8Array(analyser.frequencyBinCount)
+      const updateVolume = () => {
+        if (audio.paused || audio.ended) return
+        analyser.getByteFrequencyData(dataArray)
+        const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255
+        const vol = Math.min(1, avg * 2.5)
+        onVolume?.(vol)
+        emitLipSync(vol)
+        animFrame = requestAnimationFrame(updateVolume)
+      }
+      audio.onplay = () => {
+        updateVolume()
+      }
+    } catch {
+      // Fallback if AudioContext CORS or policy restricts element source
+    }
+
     const cleanup = () => {
+      if (animFrame) cancelAnimationFrame(animFrame)
+      if (audioCtx) void audioCtx.close()
+      onVolume?.(0)
+      emitLipSync(0)
       URL.revokeObjectURL(url)
       const idx = activeAudios.indexOf(audio)
       if (idx >= 0) activeAudios.splice(idx, 1)

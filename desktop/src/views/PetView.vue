@@ -24,10 +24,12 @@ import {
 } from '@/services/chatWindow'
 import { getClientConfig, initClientConfig } from '@/config'
 import PetCanvas from '@/components/pet/PetCanvas.vue'
+import { onLipSync } from '@/services/voice'
 
 const { sidePanelOpen = false } = defineProps<{ sidePanelOpen?: boolean }>()
 
 const pet = usePetStore()
+let unlistenLipSync: (() => void) | null = null
 const auth = useAuthStore()
 const growth = useGrowthStore()
 const rt = useRealtimeStore()
@@ -204,6 +206,7 @@ watch(
 
 onMounted(async () => {
   window.addEventListener('resize', layoutSpeechBubble)
+  unlistenLipSync = onLipSync((vol) => pet.setLipSyncVolume(vol))
 
   try {
     dragWindow = getCurrentWindow()
@@ -267,6 +270,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener('resize', layoutSpeechBubble)
+  unlistenLipSync?.()
+  unlistenLipSync = null
   roamer?.stop()
   unlistenPetMoved?.()
   unlistenPetMoved = null

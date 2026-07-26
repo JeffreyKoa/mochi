@@ -22,6 +22,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   source?: 'voice' | 'text'
+  createdAt?: string | number
 }
 
 const WAKE_PEAK = 0.022
@@ -116,7 +117,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     if (!trimmed) return
     const last = messages.value[messages.value.length - 1]
     if (last?.role === 'user' && last.content === trimmed) return
-    messages.value.push({ role: 'user', content: trimmed, source })
+    messages.value.push({ role: 'user', content: trimmed, source, createdAt: Date.now() })
   }
 
   function commitAssistantMessage(text: string) {
@@ -124,7 +125,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     if (!trimmed) return
     const last = messages.value[messages.value.length - 1]
     if (last?.role === 'assistant' && last.content === trimmed) return
-    messages.value.push({ role: 'assistant', content: trimmed })
+    messages.value.push({ role: 'assistant', content: trimmed, createdAt: Date.now() })
   }
 
   function loadHistory(history: ChatMessage[]) {
@@ -132,6 +133,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
       role: m.role,
       content: m.content,
       source: m.source,
+      createdAt: m.createdAt,
     }))
   }
 

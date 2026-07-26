@@ -37,11 +37,25 @@ type ChatChunk struct {
 	Done    bool   `json:"done"`
 }
 
+type AIProvider interface {
+	Name() string
+	Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error)
+	ChatStream(ctx context.Context, req ChatRequest) (<-chan ChatChunk, error)
+	ChatWithTools(ctx context.Context, req ChatWithToolsRequest) (*ChatWithToolsResponse, error)
+}
+
 type Provider struct {
 	baseURL string
 	apiKey  string
 	model   string
 	client  *http.Client
+}
+
+func (p *Provider) Name() string {
+	if p.model != "" {
+		return p.model
+	}
+	return "openai"
 }
 
 func NewProvider(baseURL, apiKey, model string) *Provider {

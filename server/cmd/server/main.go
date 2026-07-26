@@ -45,15 +45,18 @@ func main() {
 		log.Fatal("connect redis:", err)
 	}
 
-	aiProvider := ai.NewProvider(cfg.AI.APIBase, cfg.AI.APIKey, cfg.AI.ModelCode)
+	primaryProvider := ai.NewProvider(cfg.AI.APIBase, cfg.AI.APIKey, cfg.AI.ModelCode)
 	if cfg.AI.APIKey == "" {
 		log.Println("[WARN] ai.api_key not set in config.yaml")
 	}
 
+	aiRouter := ai.NewRouter()
+	aiRouter.Register("primary", primaryProvider, false)
+
 	bondSvc := bond.NewService(db)
 	briefSvc := brief.NewService(db, cfg.Growth)
-	memSvc := memory.NewService(db, rdb, aiProvider, briefSvc)
-	emotionSvc := emotion.NewService(rdb, aiProvider)
+	memSvc := memory.NewService(db, rdb, aiRouter, briefSvc)
+	emotionSvc := emotion.NewService(rdb, aiRouter)
 	hub := ws.NewHub(rdb)
 
 	lifeSvc := life.NewService(db, hub)
@@ -62,24 +65,24 @@ func main() {
 	lifecycleSvc := lifecycle.NewService(db, hub)
 	lifecycleSvc.StartTicker()
 
-	reflectionSvc := reflection.NewService(db, aiProvider, briefSvc, bondSvc, cfg.Growth)
+	reflectionSvc := reflection.NewService(db, aiRouter, briefSvc, bondSvc, cfg.Growth)
 	toolsSvc := tools.NewService(db, cfg.Tools)
 	hub.SetReminderDeliveredHook(func(reminderID uint64) {
 		_ = toolsSvc.MarkReminderFired(context.Background(), reminderID)
 	})
 	toolsExec := tools.NewExecutor(toolsSvc, cfg.Tools)
 	toolsHandler := tools.NewHandler(db, toolsSvc)
-	chatSvc := chat.NewService(db, aiProvider, memSvc, lifeSvc, lifecycleSvc, bondSvc, emotionSvc, briefSvc, reflectionSvc, cfg.Growth, toolsExec, cfg.Tools)
+	chatSvc := chat.NewService(db, aiRouter, memSvc, lifeSvc, lifecycleSvc, bondSvc, emotionSvc, briefSvc, reflectionSvc, cfg.Growth, toolsExec, cfg.Tools)
 	chatHandler := chat.NewHandler(chatSvc)
 
 	authSvc := auth.NewService(db, cfg.JWT.Secret)
 	realtimeHandler := realtime.NewHandler(authSvc, chatSvc, cfg)
 
-	wellnessSvc := wellness.NewService(db, rdb, aiProvider, cfg.Wellness, hub, realtimeHandler.WellnessDeferred)
+	wellnessSvc := wellness.NewService(db, rdb, aiRouter, cfg.Wellness, hub, realtimeHandler.WellnessDeferred)
 	wellnessSvc.Start()
 	wellnessHandler := wellness.NewHandler(wellnessSvc)
 
-	companionScheduler := companion.NewScheduler(db, rdb, aiProvider, bondSvc, cfg.Companion, hub, toolsSvc, cfg.Tools, realtimeHandler)
+	companionScheduler := companion.NewScheduler(db, rdb, aiRouter, bondSvc, cfg.Companion, hub, toolsSvc, cfg.Tools, realtimeHandler)
 	companionScheduler.Start()
 
 	authHandler := auth.NewHandler(authSvc)

@@ -25,10 +25,10 @@ type Hint struct {
 
 type Service struct {
 	rdb *redis.Client
-	ai  *ai.Provider
+	ai  ai.AIProvider
 }
 
-func NewService(rdb *redis.Client, aiProvider *ai.Provider) *Service {
+func NewService(rdb *redis.Client, aiProvider ai.AIProvider) *Service {
 	return &Service{rdb: rdb, ai: aiProvider}
 }
 

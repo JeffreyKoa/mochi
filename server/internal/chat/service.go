@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/mochi-ai/server/internal/agent"
 	"github.com/mochi-ai/server/internal/bond"
 	"github.com/mochi-ai/server/internal/brief"
 	"github.com/mochi-ai/server/internal/config"
@@ -40,34 +41,36 @@ type chatBuildResult struct {
 }
 
 type Service struct {
-	db         *gorm.DB
-	ai         *ai.Provider
-	memory     *memory.Service
-	life       *life.Service
-	lifecycle  *lifecycle.Service
-	bond       *bond.Service
-	emotion    *emotion.Service
-	brief      *brief.Service
-	reflection *reflection.Service
-	growth     config.GrowthConfig
-	toolsExec  *tools.Executor
-	toolsCfg   config.ToolsConfig
+	db           *gorm.DB
+	ai           ai.AIProvider
+	memory       *memory.Service
+	life         *life.Service
+	lifecycle    *lifecycle.Service
+	bond         *bond.Service
+	emotion      *emotion.Service
+	brief        *brief.Service
+	reflection   *reflection.Service
+	growth       config.GrowthConfig
+	toolsExec    *tools.Executor
+	toolsCfg     config.ToolsConfig
+	orchestrator *agent.Orchestrator
 }
 
-func NewService(db *gorm.DB, aiProvider *ai.Provider, memSvc *memory.Service, lifeSvc *life.Service, lifecycleSvc *lifecycle.Service, bondSvc *bond.Service, emotionSvc *emotion.Service, briefSvc *brief.Service, reflectionSvc *reflection.Service, growthCfg config.GrowthConfig, toolsExec *tools.Executor, toolsCfg config.ToolsConfig) *Service {
+func NewService(db *gorm.DB, aiProvider ai.AIProvider, memSvc *memory.Service, lifeSvc *life.Service, lifecycleSvc *lifecycle.Service, bondSvc *bond.Service, emotionSvc *emotion.Service, briefSvc *brief.Service, reflectionSvc *reflection.Service, growthCfg config.GrowthConfig, toolsExec *tools.Executor, toolsCfg config.ToolsConfig) *Service {
 	return &Service{
-		db:         db,
-		ai:         aiProvider,
-		memory:     memSvc,
-		life:       lifeSvc,
-		lifecycle:  lifecycleSvc,
-		bond:       bondSvc,
-		emotion:    emotionSvc,
-		brief:      briefSvc,
-		reflection: reflectionSvc,
-		growth:     growthCfg,
-		toolsExec:  toolsExec,
-		toolsCfg:   toolsCfg,
+		db:           db,
+		ai:           aiProvider,
+		memory:       memSvc,
+		life:         lifeSvc,
+		lifecycle:    lifecycleSvc,
+		bond:         bondSvc,
+		emotion:      emotionSvc,
+		brief:        briefSvc,
+		reflection:   reflectionSvc,
+		growth:       growthCfg,
+		toolsExec:    toolsExec,
+		toolsCfg:     toolsCfg,
+		orchestrator: agent.NewOrchestrator(memSvc, emotionSvc, briefSvc, bondSvc),
 	}
 }
 
@@ -131,21 +134,13 @@ func (s *Service) buildChatMessages(ctx context.Context, userID uint64, message 
 		return nil, fmt.Errorf("pet has departed")
 	}
 
-	shortHistory, _ := s.memory.GetShortTerm(dbCtx, pet.ID)
-
-	cached := s.emotion.GetCached(dbCtx, pet.ID)
-	quick := emotion.QuickDetect(message)
-	hint := emotion.MergeHint(cached, quick, message)
-
-	memories, _ := s.memory.RetrieveRelevant(dbCtx, pet.ID, message, 5, hint.UserMood)
-	bondProfile, _ := s.bond.GetOrCreate(dbCtx, pet.ID)
-
-	userBrief, _ := s.brief.GetCompiled(dbCtx, pet.ID)
+	// 使用 Multi-Agent Orchestrator 并行准备情绪、记忆与上下文
+	agentCtx := s.orchestrator.PrepareChatContext(dbCtx, pet.ID, message)
 
 	var personality models.Personality
 	_ = json.Unmarshal(pet.PersonalityJSON, &personality)
 
-	state := models.LifeState{Mood: 70, Love: 60, Hungry: 30, Energy: 80}
+	state := models.LifeState{Mood: 70, Love: 60, Hungry: 30, Energy: 80, Health: 90, Sleep: 20, Curiosity: 50, Knowledge: 40}
 	if pet.LifeState != nil {
 		state = *pet.LifeState
 	}
@@ -159,11 +154,11 @@ func (s *Service) buildChatMessages(ctx context.Context, userID uint64, message 
 		PetName:            pet.Name,
 		Personality:        personality,
 		State:              state,
-		Bond:               bondProfile,
-		UserBrief:          userBrief,
-		Memories:           memories,
-		ShortHistory:       shortHistory,
-		Emotion:            hint,
+		Bond:               agentCtx.BondProfile,
+		UserBrief:          agentCtx.UserBrief,
+		Memories:           agentCtx.Memories,
+		ShortHistory:       agentCtx.ShortHistory,
+		Emotion:            agentCtx.EmotionHint,
 		Now:                time.Now(),
 		MemoryPromptBudget: memBudget,
 		LifeStage:          ageInfo.Stage,
@@ -176,9 +171,9 @@ func (s *Service) buildChatMessages(ctx context.Context, userID uint64, message 
 	return &chatBuildResult{
 		pet:         pet,
 		messages:    messages,
-		temperature: hint.Temperature,
-		emotionHint: hint,
-		bond:        bondProfile,
+		temperature: agentCtx.EmotionHint.Temperature,
+		emotionHint: agentCtx.EmotionHint,
+		bond:        agentCtx.BondProfile,
 	}, nil
 }
 

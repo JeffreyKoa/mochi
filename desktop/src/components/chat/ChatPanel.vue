@@ -7,6 +7,22 @@ import { getChatHistory } from '@/services/api'
 import { getClientConfig, initClientConfig } from '@/config'
 import { listenProactive } from '@/services/proactiveSync'
 
+type HistoryRow = { role: string; content: string; created_at?: string }
+
+function formatMessageTime(ts?: string | number): string {
+  if (ts == null || ts === '') return ''
+  const d = typeof ts === 'number' ? new Date(ts) : new Date(ts)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`
+  const now = new Date()
+  if (d.toDateString() === now.toDateString()) return time
+  const yesterday = new Date(now)
+  yesterday.setDate(yesterday.getDate() - 1)
+  if (d.toDateString() === yesterday.toDateString()) return `昨天 ${time}`
+  return `${d.getMonth() + 1}/${d.getDate()} ${time}`
+}
+
 defineProps<{ floating?: boolean; compact?: boolean; docked?: boolean }>()
 
 const pet = usePetStore()
@@ -74,12 +90,13 @@ onMounted(async () => {
   })
 
   try {
-    const history = (await getChatHistory()) as Array<{ role: string; content: string }> | null
+    const history = (await getChatHistory()) as HistoryRow[] | null
     if (Array.isArray(history) && history.length > 0) {
       rt.loadHistory(
-        history.map((m: { role: string; content: string }) => ({
+        history.map((m) => ({
           role: m.role as 'user' | 'assistant',
           content: m.content,
+          createdAt: m.created_at,
         })),
       )
     }
@@ -116,7 +133,10 @@ onUnmounted(() => {
           class="message"
           :class="m.role"
         >
-          <div class="bubble">{{ m.content }}</div>
+          <div class="message-col">
+            <div class="bubble">{{ m.content }}</div>
+            <span v-if="m.createdAt" class="msg-time">{{ formatMessageTime(m.createdAt) }}</span>
+          </div>
         </div>
         <div v-if="rt.partialText" class="message user">
           <div class="bubble streaming">{{ rt.partialText }}</div>
@@ -261,6 +281,29 @@ onUnmounted(() => {
   display: flex;
 }
 
+.message-col {
+  display: flex;
+  flex-direction: column;
+  max-width: 85%;
+  gap: 2px;
+}
+
+.message.user .message-col {
+  align-items: flex-end;
+}
+
+.message.assistant .message-col {
+  align-items: flex-start;
+}
+
+.msg-time {
+  font-size: 10px;
+  color: #aaa;
+  line-height: 1.2;
+  padding: 0 4px;
+  user-select: none;
+}
+
 .message.user {
   justify-content: flex-end;
 }
@@ -270,7 +313,7 @@ onUnmounted(() => {
 }
 
 .bubble {
-  max-width: 85%;
+  max-width: 100%;
   padding: 8px 12px;
   border-radius: 14px;
   font-size: 13px;
@@ -527,6 +570,10 @@ onUnmounted(() => {
   padding: 5px;
   font-size: 10px;
   border-radius: 8px;
+}
+
+.chat-root.compact .msg-time {
+  font-size: 8px;
 }
 
 .chat-root.compact .end-link {

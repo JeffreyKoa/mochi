@@ -25,7 +25,7 @@ const proactiveCountPrefix = "mochi:proactive:count:"
 type Scheduler struct {
 	db          *gorm.DB
 	rdb         *redis.Client
-	ai          *ai.Provider
+	ai          ai.AIProvider
 	bond        *bond.Service
 	cfg         config.CompanionConfig
 	toolsSvc    *tools.Service
@@ -39,7 +39,7 @@ type realtimeReminderDeliverer interface {
 	SendProactiveReminder(userID, reminderID uint64, message, animation string) bool
 }
 
-func NewScheduler(db *gorm.DB, rdb *redis.Client, aiProvider *ai.Provider, bondSvc *bond.Service, cfg config.CompanionConfig, hub life.StateBroadcaster, toolsSvc *tools.Service, toolsCfg config.ToolsConfig, rt realtimeReminderDeliverer) *Scheduler {
+func NewScheduler(db *gorm.DB, rdb *redis.Client, aiProvider ai.AIProvider, bondSvc *bond.Service, cfg config.CompanionConfig, broadcaster life.StateBroadcaster, toolsSvc *tools.Service, toolsCfg config.ToolsConfig, rtReminders realtimeReminderDeliverer) *Scheduler {
 	return &Scheduler{
 		db:          db,
 		rdb:         rdb,
@@ -48,8 +48,8 @@ func NewScheduler(db *gorm.DB, rdb *redis.Client, aiProvider *ai.Provider, bondS
 		cfg:         cfg,
 		toolsSvc:    toolsSvc,
 		toolsCfg:    toolsCfg,
-		broadcaster: hub,
-		rtReminders: rt,
+		broadcaster: broadcaster,
+		rtReminders: rtReminders,
 		done:        make(chan struct{}),
 	}
 }

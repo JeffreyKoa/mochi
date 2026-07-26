@@ -244,11 +244,12 @@ async function loadUserData() {
     pet.syncAnimationFromState()
 
     try {
-      const history = (await getChatHistory()) as Array<{ role: string; content: string }> | null
+      const history = (await getChatHistory()) as Array<{ role: string; content: string; created_at?: string }> | null
       rt.loadHistory(
-        (history ?? []).map((m: { role: string; content: string }) => ({
+        (history ?? []).map((m) => ({
           role: m.role as 'user' | 'assistant',
           content: m.content,
+          createdAt: m.created_at,
         })),
       )
     } catch (e) {

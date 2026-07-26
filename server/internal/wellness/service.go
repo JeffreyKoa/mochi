@@ -28,16 +28,16 @@ const (
 type deferChecker func(userID uint64) bool
 
 type Service struct {
-	db    *gorm.DB
-	rdb   *redis.Client
-	ai    *ai.Provider
-	cfg   config.WellnessConfig
-	hub   life.StateBroadcaster
+	db      *gorm.DB
+	rdb     *redis.Client
+	ai      ai.AIProvider
+	cfg     config.WellnessConfig
+	hub     life.StateBroadcaster
 	deferFn deferChecker
-	done  chan struct{}
+	done    chan struct{}
 }
 
-func NewService(db *gorm.DB, rdb *redis.Client, aiProvider *ai.Provider, cfg config.WellnessConfig, hub life.StateBroadcaster, deferFn deferChecker) *Service {
+func NewService(db *gorm.DB, rdb *redis.Client, aiProvider ai.AIProvider, cfg config.WellnessConfig, hub life.StateBroadcaster, deferFn deferChecker) *Service {
 	return &Service{
 		db:      db,
 		rdb:     rdb,

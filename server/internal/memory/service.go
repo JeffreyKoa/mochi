@@ -22,11 +22,11 @@ const shortTermKeyPrefix = "mochi:chat:short:"
 type Service struct {
 	db    *gorm.DB
 	rdb   *redis.Client
-	ai    *ai.Provider
+	ai    ai.AIProvider
 	brief *brief.Service
 }
 
-func NewService(db *gorm.DB, rdb *redis.Client, aiProvider *ai.Provider, briefSvc *brief.Service) *Service {
+func NewService(db *gorm.DB, rdb *redis.Client, aiProvider ai.AIProvider, briefSvc *brief.Service) *Service {
 	return &Service{db: db, rdb: rdb, ai: aiProvider, brief: briefSvc}
 }
 

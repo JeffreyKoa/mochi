@@ -2,8 +2,8 @@
 description: 任务开始前写计划待确认，执行后写执行结果与完成度
 alwaysApply: true
 ---
-
-MCP ->mysql_MOCHI
+## 数据库
+数据库请通过MCP ->mysql_MOCHI
 
 # 计划 → 确认 → 执行 → 汇报
 

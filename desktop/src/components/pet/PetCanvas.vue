@@ -237,7 +237,11 @@ function drawPet(color: number, scale = 1, eyeOpen = true) {
   }
 
   // Mouth
-  if (anim === 'happy' || anim === 'eat') {
+  if (pet.isSpeaking) {
+    const mouthH = Math.max(4, Math.min(16, pet.lipSyncVolume * 18))
+    petGraphic.ellipse(0, 8 + cy, 8, mouthH)
+    petGraphic.fill(0x333333)
+  } else if (anim === 'happy' || anim === 'eat') {
     petGraphic.arc(0, 6 + cy, 13, 0, Math.PI)
     petGraphic.stroke({ width: 2.5, color: 0x333333 })
   } else if (anim === 'sad') {

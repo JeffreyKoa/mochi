@@ -109,6 +109,10 @@ type LifeState struct {
 	Love            uint8     `gorm:"default:60" json:"love"`
 	Hungry          uint8     `gorm:"default:30" json:"hungry"`
 	Energy          uint8     `gorm:"default:80" json:"energy"`
+	Health          uint8     `gorm:"default:90" json:"health"`
+	Sleep           uint8     `gorm:"default:20" json:"sleep"`
+	Curiosity       uint8     `gorm:"default:50" json:"curiosity"`
+	Knowledge       uint8     `gorm:"default:40" json:"knowledge"`
 	LastInteraction time.Time `json:"last_interaction"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }

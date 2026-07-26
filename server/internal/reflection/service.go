@@ -21,13 +21,13 @@ import (
 
 type Service struct {
 	db    *gorm.DB
-	ai    *ai.Provider
+	ai    ai.AIProvider
 	brief *brief.Service
 	bond  *bond.Service
 	cfg   config.GrowthConfig
 }
 
-func NewService(db *gorm.DB, aiProvider *ai.Provider, briefSvc *brief.Service, bondSvc *bond.Service, cfg config.GrowthConfig) *Service {
+func NewService(db *gorm.DB, aiProvider ai.AIProvider, briefSvc *brief.Service, bondSvc *bond.Service, cfg config.GrowthConfig) *Service {
 	return &Service{db: db, ai: aiProvider, brief: briefSvc, bond: bondSvc, cfg: cfg}
 }
 

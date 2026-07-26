@@ -14,6 +14,10 @@ export interface LifeState {
   love: number
   hungry: number
   energy: number
+  health?: number
+  sleep?: number
+  curiosity?: number
+  knowledge?: number
 }
 
 export interface PetLifecycle {
@@ -38,7 +42,13 @@ export type Animation = 'idle' | 'happy' | 'sad' | 'sleep' | 'eat' | 'walk'
 
 export const usePetStore = defineStore('pet', () => {
   const petName = ref('Mochi')
-  const lifeState = ref<LifeState>({ mood: 70, love: 60, hungry: 30, energy: 80 })
+  const lifeState = ref<LifeState>({ mood: 70, love: 60, hungry: 30, energy: 80, health: 90, sleep: 20, curiosity: 50, knowledge: 40 })
+  const lipSyncVolume = ref(0)
+  const isSpeaking = computed(() => lipSyncVolume.value > 0.05)
+
+  function setLipSyncVolume(vol: number) {
+    lipSyncVolume.value = vol
+  }
   const lifecycle = ref<PetLifecycle>({
     species: 'cat',
     breed: '',
@@ -188,6 +198,9 @@ export const usePetStore = defineStore('pet', () => {
     bubbleText,
     showBubble,
     bootFailed,
+    lipSyncVolume,
+    isSpeaking,
+    setLipSyncVolume,
     moodEmoji,
     updateLifeState,
     updateLifecycle,

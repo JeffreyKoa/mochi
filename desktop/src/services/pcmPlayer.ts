@@ -1,3 +1,5 @@
+import { emitLipSync } from './voice'
+
 /** PCM int16 LE mono player for streaming TTS (22050Hz default) */
 export class PCMPlayer {
   private context: AudioContext | null = null
@@ -28,9 +30,15 @@ export class PCMPlayer {
     const samples = pcm.byteLength / 2
     const buffer = this.context.createBuffer(1, samples, this.sampleRate)
     const channel = buffer.getChannelData(0)
+    let sum = 0
     for (let i = 0; i < samples; i++) {
-      channel[i] = view.getInt16(i * 2, true) / 32768
+      const val = view.getInt16(i * 2, true) / 32768
+      channel[i] = val
+      sum += Math.abs(val)
     }
+
+    const avgVol = Math.min(1, (sum / samples) * 3)
+    emitLipSync(avgVol)
 
     const source = this.context.createBufferSource()
     source.buffer = buffer
@@ -48,6 +56,7 @@ export class PCMPlayer {
       if (this.pending <= 0) {
         this.pending = 0
         this.active = false
+        emitLipSync(0)
         this.onIdle?.()
       }
     }

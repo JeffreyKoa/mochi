@@ -49,6 +49,8 @@ func Setup(mode string, h Handlers) *gin.Engine {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
+	r.GET("/metrics", realtime.PrometheusMetricsHandler(h.Hub))
+
 	r.GET("/api/v1/public/config", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"api_base":         h.ClientAPIBase,
