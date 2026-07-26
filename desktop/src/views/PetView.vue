@@ -317,7 +317,7 @@ watch(
 watch(
   () => rt.messages.length,
   (len) => {
-    if (pet.isChatOpen || len === 0) return
+    if (pet.isChatOpen || len === 0 || pet.isReminderBubbleActive()) return
     const last = rt.messages[len - 1]
     if (last?.role === 'assistant' && len > lastHeadlessBubbleIndex.value) {
       lastHeadlessBubbleIndex.value = len
@@ -329,7 +329,7 @@ watch(
 watch(
   () => rt.partialText,
   (text) => {
-    if (pet.isChatOpen || !rt.talking || !rt.userSpeaking) return
+    if (pet.isChatOpen || !rt.talking || !rt.userSpeaking || pet.isReminderBubbleActive()) return
     pet.showPersistentBubble(text.trim() || '正在听…')
   },
 )
@@ -337,7 +337,7 @@ watch(
 watch(
   () => rt.replyText,
   (text) => {
-    if (pet.isChatOpen || !rt.talking) return
+    if (pet.isChatOpen || !rt.talking || pet.isReminderBubbleActive()) return
     if (rt.processing && text.trim()) {
       pet.showPersistentBubble(text.trim())
     }
@@ -347,7 +347,7 @@ watch(
 watch(
   () => rt.userSpeaking,
   (speaking) => {
-    if (pet.isChatOpen || !rt.talking) return
+    if (pet.isChatOpen || !rt.talking || pet.isReminderBubbleActive()) return
     if (speaking) {
       pet.showPersistentBubble(rt.partialText.trim() || '正在听…')
     }

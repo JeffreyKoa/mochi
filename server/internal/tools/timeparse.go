@@ -14,8 +14,40 @@ var cnDigit = map[rune]int{
 	'五': 5, '六': 6, '七': 7, '八': 8, '九': 9,
 }
 
+// ParseRelativeFireAt handles colloquial relative times like "两分钟后".
+func ParseRelativeFireAt(text string, now time.Time) (time.Time, bool) {
+	if now.IsZero() {
+		now = time.Now().In(loc)
+	} else {
+		now = now.In(loc)
+	}
+	text = strings.TrimSpace(text)
+
+	reMin := regexp.MustCompile(`([零一二两三四五六七八九十\d]+)\s*分钟(?:钟)?后`)
+	if m := reMin.FindStringSubmatch(text); len(m) >= 2 {
+		if mins, ok := parseHourToken(m[1]); ok && mins > 0 && mins <= 24*60 {
+			return now.Add(time.Duration(mins) * time.Minute), true
+		}
+	}
+	if strings.Contains(text, "半小时后") {
+		return now.Add(30 * time.Minute), true
+	}
+	if strings.Contains(text, "小时后") || strings.Contains(text, "钟头后") {
+		reHr := regexp.MustCompile(`([零一二两三四五六七八九十\d]+)\s*(?:个?\s*)?(?:小时|钟头)后`)
+		if m := reHr.FindStringSubmatch(text); len(m) >= 2 {
+			if hrs, ok := parseHourToken(m[1]); ok && hrs > 0 && hrs <= 48 {
+				return now.Add(time.Duration(hrs) * time.Hour), true
+			}
+		}
+	}
+	return time.Time{}, false
+}
+
 // ParseFireAt extracts reminder time from Chinese colloquial text (UTC+8).
 func ParseFireAt(text string, now time.Time) (time.Time, bool) {
+	if t, ok := ParseRelativeFireAt(text, now); ok {
+		return t, true
+	}
 	if now.IsZero() {
 		now = time.Now().In(loc)
 	} else {

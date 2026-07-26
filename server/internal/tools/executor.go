@@ -111,7 +111,17 @@ func (e *Executor) reminderList(ctx context.Context, exec ExecContext, args map[
 	if err != nil {
 		return nil, err
 	}
-	return list, nil
+	out := make([]map[string]interface{}, 0, len(list))
+	for _, r := range list {
+		out = append(out, map[string]interface{}{
+			"id":           r.ID,
+			"title":        r.Title,
+			"fire_at":      r.FireAt.In(loc).Format(time.RFC3339),
+			"fire_at_local": FormatFireAt(r.FireAt),
+			"status":       r.Status,
+		})
+	}
+	return out, nil
 }
 
 func (e *Executor) reminderCancel(ctx context.Context, exec ExecContext, args map[string]interface{}) (interface{}, error) {
@@ -194,11 +204,18 @@ func parseTimeISO(raw, fallback string) (time.Time, error) {
 			return t, nil
 		}
 	}
-	if t, ok := ParseFireAt(fallback, time.Now()); ok {
+	now := time.Now().In(loc)
+	if t, ok := ParseRelativeFireAt(fallback, now); ok {
+		return t, nil
+	}
+	if t, ok := ParseRelativeFireAt(raw, now); ok {
+		return t, nil
+	}
+	if t, ok := ParseFireAt(fallback, now); ok {
 		return t, nil
 	}
 	if raw != "" {
-		if t, ok := ParseFireAt(raw, time.Now()); ok {
+		if t, ok := ParseFireAt(raw, now); ok {
 			return t, nil
 		}
 	}

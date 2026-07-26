@@ -329,7 +329,7 @@ func (c *ToolsConfig) applyDefaults() {
 		c.MinTrustForAutoCreate = 30
 	}
 	if c.ReminderTickSeconds == 0 {
-		c.ReminderTickSeconds = 60
+		c.ReminderTickSeconds = 5
 	}
 	if c.MaxPendingReminders == 0 {
 		c.MaxPendingReminders = 50

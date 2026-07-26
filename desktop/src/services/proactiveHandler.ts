@@ -4,15 +4,25 @@ import { broadcastProactive, notifyTasksRefresh, type ProactivePayload } from '.
 
 let lastShown = { text: '', at: 0 }
 
+export type ProactiveOptions = {
+  /** When true, use persistent reminder bubble (voice chat should pass true). */
+  priority?: boolean
+}
+
 /** Show reminder/proactive UI. Caller should append chat message separately. */
-export function handleProactiveMessage(payload: ProactivePayload) {
+export function handleProactiveMessage(payload: ProactivePayload, opts: ProactiveOptions = {}) {
   if (!payload.message?.trim()) return
   const now = Date.now()
-  if (payload.message === lastShown.text && now-lastShown.at < 8000) return
+  if (payload.message === lastShown.text && now - lastShown.at < 8000) return
   lastShown = { text: payload.message, at: now }
+
   const pet = usePetStore()
   pet.setAnimation(mapServerAnimation(payload.animation ?? 'happy'))
-  pet.showSpeechBubble(payload.message, 12000)
+  if (opts.priority) {
+    pet.showReminderBubble(payload.message, 15000)
+  } else {
+    pet.showSpeechBubble(payload.message, 12000)
+  }
   speakReminder(payload.message)
   void broadcastProactive(payload)
   void notifyTasksRefresh()

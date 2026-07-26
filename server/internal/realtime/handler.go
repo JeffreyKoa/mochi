@@ -283,6 +283,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 		}
 
 		sess.BeginTurn(time.Now())
+		sess.SetTurnAudioBytes(len(buf))
 		if lat := sess.TurnLatency(); lat != nil {
 			lat.MarkAudioEnd()
 		}

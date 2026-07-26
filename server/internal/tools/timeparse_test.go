@@ -5,6 +5,17 @@ import (
 	"time"
 )
 
+func TestParseRelativeFireAt(t *testing.T) {
+	now := time.Date(2026, 7, 26, 18, 35, 0, 0, loc)
+	fire, ok := ParseRelativeFireAt("两分钟后有一个会议", now)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if fire.Hour() != 18 || fire.Minute() != 37 {
+		t.Fatalf("unexpected fire time: %v", fire)
+	}
+}
+
 func TestParseFireAtTomorrow(t *testing.T) {
 	now := time.Date(2026, 7, 23, 14, 0, 0, 0, loc)
 	fire, ok := ParseFireAt("明天早上9点提醒我开会", now)

@@ -339,27 +339,30 @@ func (s *Scheduler) scanDueReminders() {
 			continue
 		}
 
-		delivered := false
-		if rb != nil {
-			delivered = rb.SendProactiveReminder(user.ID, r.ID, msg, "happy")
-		} else if s.broadcaster != nil {
-			delivered = s.broadcaster.SendProactive(user.ID, msg, "happy")
-			if delivered {
-				_ = s.toolsSvc.MarkReminderFired(ctx, r.ID)
-			}
-		}
-		if s.rtReminders != nil {
-			if s.rtReminders.SendProactiveReminder(user.ID, r.ID, msg, "happy") {
-				delivered = true
-				_ = s.toolsSvc.MarkReminderFired(ctx, r.ID)
-			}
-		}
-		if delivered {
+		if s.deliverReminder(ctx, rb, user.ID, r.ID, msg) {
 			log.Printf("[Companion] reminder delivered id=%d pet=%d", r.ID, r.PetID)
 		} else {
 			log.Printf("[Companion] reminder pending delivery id=%d pet=%d", r.ID, r.PetID)
 		}
 	}
+}
+
+// deliverReminder pushes a reminder to the client. Hub (main WS + Redis queue) is preferred;
+// realtime voice WS is fallback. MarkReminderFired is via hub onDelivered hook, or immediately
+// when only the realtime path succeeds.
+func (s *Scheduler) deliverReminder(ctx context.Context, rb reminderBroadcaster, userID, reminderID uint64, msg string) bool {
+	if rb != nil && rb.SendProactiveReminder(userID, reminderID, msg, "happy") {
+		return true
+	}
+	if s.rtReminders != nil && s.rtReminders.SendProactiveReminder(userID, reminderID, msg, "happy") {
+		_ = s.toolsSvc.MarkReminderFired(ctx, reminderID)
+		return true
+	}
+	if s.broadcaster != nil && s.broadcaster.SendProactive(userID, msg, "happy") {
+		_ = s.toolsSvc.MarkReminderFired(ctx, reminderID)
+		return true
+	}
+	return false
 }
 
 func (s *Scheduler) reminderMessage(ctx context.Context, pet models.Pet, r models.Reminder) string {

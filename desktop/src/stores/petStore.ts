@@ -142,6 +142,24 @@ export const usePetStore = defineStore('pet', () => {
     showBubble.value = true
   }
 
+  let reminderBubbleUntil = 0
+
+  /** Reminder bubble stays visible and is not overwritten by voice partial/reply text. */
+  function showReminderBubble(text: string, duration = 15000) {
+    bubbleText.value = bubbleDisplayText(text)
+    showBubble.value = true
+    reminderBubbleUntil = Date.now() + duration
+    setTimeout(() => {
+      if (Date.now() >= reminderBubbleUntil) {
+        showBubble.value = false
+      }
+    }, duration)
+  }
+
+  function isReminderBubbleActive() {
+    return Date.now() < reminderBubbleUntil
+  }
+
   function hideSpeechBubble() {
     showBubble.value = false
   }
@@ -208,6 +226,8 @@ export const usePetStore = defineStore('pet', () => {
     setRoaming,
     showSpeechBubble,
     showPersistentBubble,
+    showReminderBubble,
+    isReminderBubbleActive,
     hideSpeechBubble,
     registerBootRetry,
     retryBoot,

@@ -112,6 +112,7 @@ func (p *Pipeline) OnSpeechEnd(ctx context.Context, sess *Session, audio []byte,
 	send.SendAnimation(StateThinking)
 
 	log.Printf("[realtime] session=%s user=%d audio_bytes=%d", sess.ID, sess.UserID, len(audio))
+	sess.SetTurnAudioBytes(len(audio))
 
 	if p.asr == nil {
 		p.failTurn(ctx, sess, send, "ASR_NOT_CONFIGURED", "ASR 未配置，请在 config.yaml 设置 ai.api_key")
@@ -177,16 +178,13 @@ func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text
 	_ = send.Send(MsgASRFinal, ASRText{Text: text})
 
 	if text == "" {
-		turnStarted = true
-		msg := "没有听清楚，可以再说一次吗？"
 		if !withVoice {
-			msg = "你好像还没输入内容？"
+			turnStarted = true
+			_ = send.Send(MsgLLMDone, LLMDone{Text: "你好像还没输入内容？"})
+			return
 		}
-		if withVoice {
-			p.speakReply(ctx, sess, send, msg)
-		} else {
-			_ = send.Send(MsgLLMDone, LLMDone{Text: msg})
-		}
+		log.Printf("[realtime] asr empty silent dismiss session=%s audio_bytes=%d", sess.ID, sess.TurnAudioBytes())
+		p.abortTurnSilent(sess, send)
 		return
 	}
 
@@ -493,7 +491,8 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 			close(segCh)
 			<-ttsDone
 		}
-		p.failTurn(ctx, sess, send, "LLM_EMPTY", "没太听清，再说一次好不好~")
+		log.Printf("[realtime] llm empty silent dismiss session=%s", sess.ID)
+		p.abortTurnSilent(sess, send)
 		return false
 	}
 	_ = send.Send(MsgLLMDone, LLMDone{Text: reply})
@@ -641,6 +640,15 @@ func (p *Pipeline) handleCancelled(ctx context.Context, sess *Session, send Send
 func (p *Pipeline) setListening(sess *Session, send Sender) {
 	sess.SetState(StateListening)
 	send.SendAnimation(StateListening)
+}
+
+func (p *Pipeline) abortTurnSilent(sess *Session, send Sender) {
+	if lat := sess.TurnLatency(); lat != nil {
+		lat.LogSummary(sess.ID)
+		sess.ClearTurnLatency()
+	}
+	_ = send.Send(MsgTTSDone, map[string]any{})
+	p.setListening(sess, send)
 }
 
 func (p *Pipeline) failTurn(_ context.Context, sess *Session, send Sender, code, message string) {

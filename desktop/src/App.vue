@@ -113,7 +113,7 @@ function setupWs() {
     })
     wsManager.on('proactive_message', (data: unknown) => {
       const d = data as { message: string; animation: string }
-      handleProactiveMessage({ message: d.message, animation: d.animation })
+      handleProactiveMessage({ message: d.message, animation: d.animation }, { priority: true })
       rt.appendAssistantMessage(d.message)
     })
     wsManager.on('life_stage_changed', (data: unknown) => {

@@ -121,7 +121,7 @@ func (h *Hub) sendProactive(userID uint64, item pendingItem) bool {
 		return true
 	}
 	h.enqueuePending(userID, item)
-	return false
+	return true
 }
 
 func (h *Hub) SendLifeStageChanged(userID uint64, data map[string]interface{}) {

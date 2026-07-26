@@ -387,7 +387,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
       enterResting()
       return
     }
-    if (!force && peakSeen < 0.002) {
+    if (!force && peakSeen < 0.012) {
       enterResting()
       return
     }
@@ -449,6 +449,17 @@ export const useRealtimeStore = defineStore('realtime', () => {
     replyText.value = ''
     realtimeSession.sendInterrupt()
     enterResting()
+  }
+
+  /** Stop TTS so a scheduled reminder can be seen/heard during voice chat. */
+  function interruptForReminder() {
+    ttsPlayer.stop()
+    clearTtsWatchdog()
+    if (phase === 'agent_speaking') {
+      replyText.value = ''
+      realtimeSession.sendInterrupt()
+      enterResting()
+    }
   }
 
   function checkBargeIn(peak: number) {
@@ -522,8 +533,6 @@ export const useRealtimeStore = defineStore('realtime', () => {
       })
       if (reply) {
         commitAssistantMessage(reply)
-      } else {
-        statusText.value = '没太听清，再说一次好不好~'
       }
       finishTextTurn()
     } catch (e) {
@@ -777,8 +786,13 @@ export const useRealtimeStore = defineStore('realtime', () => {
           partialText.value = ''
           break
         }
-        commitUserMessage(ev.text, 'voice')
         partialText.value = ''
+        if (!ev.text.trim()) {
+          // Empty transcript — server may silently dismiss (noise) or prompt retry.
+          startTtsWatchdog()
+          break
+        }
+        commitUserMessage(ev.text, 'voice')
         replyText.value = ''
         setPhase('processing')
         startTtsWatchdog()
@@ -869,6 +883,14 @@ export const useRealtimeStore = defineStore('realtime', () => {
           }
           break
         }
+        if (ev.code === 'LLM_EMPTY') {
+          if (recording) {
+            enterResting()
+          } else {
+            setPhase('idle')
+          }
+          break
+        }
         if (ev.code !== 'ASR_FAILED') {
           commitAssistantMessage(ev.message)
         }
@@ -881,7 +903,11 @@ export const useRealtimeStore = defineStore('realtime', () => {
         }
         break
       case 'proactive_message':
-        handleProactiveMessage({ message: ev.message, animation: ev.animation })
+        interruptForReminder()
+        handleProactiveMessage(
+          { message: ev.message, animation: ev.animation },
+          { priority: true },
+        )
         commitAssistantMessage(ev.message)
         break
       case 'disconnected':
@@ -931,6 +957,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     sendTextMessage,
     loadHistory,
     appendAssistantMessage: commitAssistantMessage,
+    interruptForReminder,
     submitUtterance,
     endConversation,
     stopTalk: submitUtterance,

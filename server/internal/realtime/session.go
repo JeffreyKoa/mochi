@@ -28,7 +28,8 @@ type Session struct {
 	pipelineMu     sync.Mutex
 	pipelineCancel context.CancelFunc
 
-	turnLat *TurnLatency
+	turnLat        *TurnLatency
+	turnAudioBytes int
 
 	onStateChange func(SessionState)
 }
@@ -123,4 +124,16 @@ func (s *Session) ClearTurnLatency() {
 	s.mu.Lock()
 	s.turnLat = nil
 	s.mu.Unlock()
+}
+
+func (s *Session) SetTurnAudioBytes(n int) {
+	s.mu.Lock()
+	s.turnAudioBytes = n
+	s.mu.Unlock()
+}
+
+func (s *Session) TurnAudioBytes() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.turnAudioBytes
 }
