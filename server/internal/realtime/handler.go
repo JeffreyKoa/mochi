@@ -103,13 +103,13 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 	defer conn.Close()
 
 	sessionID := uuid.NewString()
-	out := make(chan []byte, 64)
+	out := make(chan WSMessage, 64)
 	done := make(chan struct{})
 
 	sender := &connSender{
-		send: func(b []byte) error {
+		send: func(msg WSMessage) error {
 			select {
-			case out <- b:
+			case out <- msg:
 				return nil
 			case <-done:
 				return context.Canceled
@@ -130,7 +130,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 	defer close(done)
 
 	startMsg, _ := marshalMsg(MsgSessionStart, SessionStart{SessionID: sessionID}, 0)
-	out <- startMsg
+	out <- WSMessage{IsBinary: false, Data: startMsg}
 	sender.SendAnimation(StateIdle)
 
 	vad := NewEnergyVAD(16000, h.cfg.VAD.SilenceMS, h.cfg.VAD.MinSpeechMS)
@@ -192,7 +192,6 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 		})
 		if err != nil {
 			log.Printf("[realtime] asr session start error session=%s: %v", sessionID, err)
-			streamingASR = false
 			return
 		}
 		asrSess = s
@@ -491,7 +490,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 	}
 }
 
-func (h *Handler) writePump(conn *websocket.Conn, out <-chan []byte, done <-chan struct{}) {
+func (h *Handler) writePump(conn *websocket.Conn, out <-chan WSMessage, done <-chan struct{}) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -503,7 +502,11 @@ func (h *Handler) writePump(conn *websocket.Conn, out <-chan []byte, done <-chan
 				conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
-			if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+			msgType := websocket.TextMessage
+			if msg.IsBinary {
+				msgType = websocket.BinaryMessage
+			}
+			if err := conn.WriteMessage(msgType, msg.Data); err != nil {
 				return
 			}
 		case <-ticker.C:

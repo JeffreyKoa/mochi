@@ -5,7 +5,7 @@ import (
 )
 
 type sessionSender struct {
-	send func([]byte) error
+	send func(WSMessage) error
 }
 
 type Registry struct {
@@ -17,7 +17,7 @@ func NewRegistry() *Registry {
 	return &Registry{sessions: make(map[uint64]map[string]sessionSender)}
 }
 
-func (r *Registry) Register(userID uint64, sessionID string, send func([]byte) error) {
+func (r *Registry) Register(userID uint64, sessionID string, send func(WSMessage) error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.sessions[userID] == nil {
@@ -58,7 +58,7 @@ func (r *Registry) SendToUser(userID uint64, msgType string, data any) int {
 		if s.send == nil {
 			continue
 		}
-		if err := s.send(raw); err == nil {
+		if err := s.send(WSMessage{IsBinary: false, Data: raw}); err == nil {
 			delivered++
 		}
 	}

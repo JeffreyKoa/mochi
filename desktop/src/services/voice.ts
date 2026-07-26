@@ -124,13 +124,10 @@ export function stopAllPlayback() {
   emitLipSync(0)
 }
 
-export function playBase64Audio(base64: string, format = 'mp3', onVolume?: (v: number) => void): Promise<void> {
+export function playAudioBuffer(buffer: ArrayBuffer, format = 'mp3', onVolume?: (v: number) => void): Promise<void> {
   return new Promise((resolve, reject) => {
     const mime = format === 'mp3' ? 'audio/mpeg' : `audio/${format}`
-    const binary = atob(base64)
-    const bytes = new Uint8Array(binary.length)
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-    const blob = new Blob([bytes], { type: mime })
+    const blob = new Blob([buffer], { type: mime })
     const url = URL.createObjectURL(blob)
     const audio = new Audio(url)
     audio.crossOrigin = 'anonymous'
@@ -161,7 +158,7 @@ export function playBase64Audio(base64: string, format = 'mp3', onVolume?: (v: n
         updateVolume()
       }
     } catch {
-      // Fallback if AudioContext CORS or policy restricts element source
+      // Fallback
     }
 
     const cleanup = () => {
@@ -186,4 +183,11 @@ export function playBase64Audio(base64: string, format = 'mp3', onVolume?: (v: n
       reject(e)
     })
   })
+}
+
+export function playBase64Audio(base64: string, format = 'mp3', onVolume?: (v: number) => void): Promise<void> {
+  const binary = atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  return playAudioBuffer(bytes.buffer, format, onVolume)
 }

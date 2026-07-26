@@ -2,18 +2,25 @@ package realtime
 
 import (
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"sync"
 )
 
+type WSMessage struct {
+	IsBinary bool
+	Data     []byte
+}
+
 type Sender interface {
 	Send(msgType string, data any) error
+	SendTTSAudioBinary(audio []byte, format string, seq int64) error
 	SendAnimation(state SessionState)
 }
 
 type connSender struct {
 	mu   sync.Mutex
-	send func([]byte) error
+	send func(WSMessage) error
 }
 
 func (s *connSender) Send(msgType string, data any) error {
@@ -23,7 +30,23 @@ func (s *connSender) Send(msgType string, data any) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.send(b)
+	return s.send(WSMessage{IsBinary: false, Data: b})
+}
+
+func (s *connSender) SendTTSAudioBinary(audio []byte, format string, seq int64) error {
+	buf := make([]byte, 10+len(audio))
+	buf[0] = 0x01 // MsgType: TTS Audio Binary
+	formatByte := byte(0x01) // mp3
+	if format == "pcm" {
+		formatByte = 0x02
+	}
+	buf[1] = formatByte
+	binary.BigEndian.PutUint64(buf[2:10], uint64(seq))
+	copy(buf[10:], audio)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.send(WSMessage{IsBinary: true, Data: buf})
 }
 
 func (s *connSender) SendAnimation(state SessionState) {

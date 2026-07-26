@@ -7,7 +7,7 @@ export type RealtimeEvent =
   | { type: 'asr_final'; text: string }
   | { type: 'llm_token'; token: string }
   | { type: 'llm_done'; text: string }
-  | { type: 'tts_audio'; pcm: string; format: string; seq: number }
+  | { type: 'tts_audio'; pcm: string; audioBuffer?: ArrayBuffer; format: string; seq: number }
   | { type: 'tts_done' }
   | { type: 'interrupted' }
   | { type: 'turn_ack' }
@@ -59,6 +59,7 @@ export class RealtimeSession {
       }
 
       this.ws = new WebSocket(url)
+      this.ws.binaryType = 'arraybuffer'
 
       this.ws.onopen = () => {
         this.startHeartbeat()
@@ -67,8 +68,16 @@ export class RealtimeSession {
       }
 
       this.ws.onmessage = (e) => {
+        if (e.data instanceof ArrayBuffer) {
+          this.handleBinaryMessage(e.data)
+          return
+        }
+        if (e.data instanceof Blob) {
+          void e.data.arrayBuffer().then((buf) => this.handleBinaryMessage(buf))
+          return
+        }
         try {
-          const msg = JSON.parse(e.data)
+          const msg = JSON.parse(e.data as string)
           this.dispatch(msg.type, msg.data)
         } catch {
           // ignore
@@ -214,6 +223,28 @@ export class RealtimeSession {
       case 'error':
         this.emit({ type: 'error', code: String(data.code), message: String(data.message) })
         break
+    }
+  }
+
+  private handleBinaryMessage(buffer: ArrayBuffer) {
+    if (buffer.byteLength < 10) return
+    const view = new DataView(buffer)
+    const msgType = view.getUint8(0)
+    if (msgType === 0x01) {
+      const formatByte = view.getUint8(1)
+      const format = formatByte === 0x02 ? 'pcm' : 'mp3'
+      const high = view.getUint32(2)
+      const low = view.getUint32(6)
+      const seq = high * 4294967296 + low
+      const audioBuffer = buffer.slice(10)
+
+      this.emit({
+        type: 'tts_audio',
+        pcm: '',
+        audioBuffer,
+        format,
+        seq,
+      })
     }
   }
 

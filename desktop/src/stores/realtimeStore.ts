@@ -171,10 +171,12 @@ export const useRealtimeStore = defineStore('realtime', () => {
     textViaRest = false
     if (recording) {
       ttsPlayer.markDone(() => {
+        resetTurnTiming()
         enterResting()
         usePetStore().syncAnimationFromState()
       })
     } else {
+      resetTurnTiming()
       setPhase('idle')
       statusText.value = '输入消息或开始语音对话'
       usePetStore().syncAnimationFromState()
@@ -803,20 +805,24 @@ export const useRealtimeStore = defineStore('realtime', () => {
           statusText.value = 'Mochi 已回复'
         }
         break
-      case 'tts_audio':
+      case 'tts_audio': {
+        const audio =
+          ev.audioBuffer && ev.audioBuffer.byteLength > 0 ? ev.audioBuffer : ev.pcm
+        if (!audio || (typeof audio !== 'string' && audio.byteLength === 0)) break
         setPhase('agent_speaking')
         if (!ttsStartedAt) ttsStartedAt = Date.now()
         statusText.value = 'Mochi 正在说话...（大声说话可打断）'
-        ttsPlayer.enqueue(ev.pcm, ev.format, markPlaybackStart)
+        ttsPlayer.enqueue(audio, ev.format, markPlaybackStart)
         break
+      }
       case 'tts_done':
         if (phase !== 'resting' && phase !== 'idle') {
           finishTextTurn()
         } else {
           clearTtsWatchdog()
           textSending = false
+          resetTurnTiming()
         }
-        resetTurnTiming()
         break
       case 'turn_metrics':
         lastTurnMetrics = ev.metrics

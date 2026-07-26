@@ -164,7 +164,6 @@ export function resolveSttMode(
   cfg: RealtimeClientConfig,
   localSupported: boolean,
 ): 'cloud' | 'local' {
-  if (cfg.sttMode === 'cloud') return 'cloud'
   if (cfg.sttMode === 'local') return localSupported ? 'local' : 'cloud'
-  return localSupported ? 'local' : 'cloud'
+  return 'cloud'
 }

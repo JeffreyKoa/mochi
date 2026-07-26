@@ -2,7 +2,6 @@ package realtime
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
@@ -375,11 +374,7 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 			log.Printf("[realtime] tts first audio session=%s", sess.ID)
 		}
 		seq := sess.NextTTSSeq()
-		_ = send.Send(MsgTTSAudio, TTSAudio{
-			PCM:    base64.StdEncoding.EncodeToString(audio),
-			Format: ttsFormat,
-			Seq:    seq,
-		})
+		_ = send.SendTTSAudioBinary(audio, ttsFormat, seq)
 	}
 
 	var segCh chan string
@@ -573,11 +568,7 @@ func (p *Pipeline) speakAudio(ctx context.Context, sess *Session, send Sender, r
 			lat.MarkTTSFirstByte()
 		}
 		seq := sess.NextTTSSeq()
-		_ = send.Send(MsgTTSAudio, TTSAudio{
-			PCM:    base64.StdEncoding.EncodeToString(audio),
-			Format: p.ttsFormat,
-			Seq:    seq,
-		})
+		_ = send.SendTTSAudioBinary(audio, p.ttsFormat, seq)
 	}); err != nil {
 		if p.handleCancelled(ctx, sess, send, err) {
 			return false
