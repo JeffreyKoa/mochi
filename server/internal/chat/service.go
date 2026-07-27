@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 	"time"
 
@@ -53,10 +54,11 @@ type Service struct {
 	growth       config.GrowthConfig
 	toolsExec    *tools.Executor
 	toolsCfg     config.ToolsConfig
+	aiCfg        config.AIConfig
 	orchestrator *agent.Orchestrator
 }
 
-func NewService(db *gorm.DB, aiProvider ai.AIProvider, memSvc *memory.Service, lifeSvc *life.Service, lifecycleSvc *lifecycle.Service, bondSvc *bond.Service, emotionSvc *emotion.Service, briefSvc *brief.Service, reflectionSvc *reflection.Service, growthCfg config.GrowthConfig, toolsExec *tools.Executor, toolsCfg config.ToolsConfig) *Service {
+func NewService(db *gorm.DB, aiProvider ai.AIProvider, memSvc *memory.Service, lifeSvc *life.Service, lifecycleSvc *lifecycle.Service, bondSvc *bond.Service, emotionSvc *emotion.Service, briefSvc *brief.Service, reflectionSvc *reflection.Service, growthCfg config.GrowthConfig, toolsExec *tools.Executor, toolsCfg config.ToolsConfig, aiCfg config.AIConfig) *Service {
 	return &Service{
 		db:           db,
 		ai:           aiProvider,
@@ -70,8 +72,31 @@ func NewService(db *gorm.DB, aiProvider ai.AIProvider, memSvc *memory.Service, l
 		growth:       growthCfg,
 		toolsExec:    toolsExec,
 		toolsCfg:     toolsCfg,
+		aiCfg:        aiCfg,
 		orchestrator: agent.NewOrchestrator(memSvc, emotionSvc, briefSvc, bondSvc),
 	}
+}
+
+func (s *Service) chatAIRequest(userMsg string, messages []ai.Message, temperature float64) ai.ChatRequest {
+	req := ai.ChatRequest{
+		Messages:    messages,
+		Temperature: temperature,
+	}
+	if !s.aiCfg.EnableSearch || !NeedsWebSearch(userMsg) {
+		return req
+	}
+	enable := true
+	req.EnableSearch = &enable
+	strategy := s.aiCfg.SearchStrategy
+	if strategy == "" {
+		strategy = "turbo"
+	}
+	req.SearchOptions = &ai.SearchOptions{
+		SearchStrategy: strategy,
+		ForcedSearch:   true,
+	}
+	log.Printf("[chat] enable_search user_msg=%q strategy=%s", userMsg, strategy)
+	return req
 }
 
 func (s *Service) GetPetByUser(ctx context.Context, userID uint64) (*models.Pet, error) {
@@ -202,10 +227,7 @@ func (s *Service) StreamMessage(ctx context.Context, userID uint64, message stri
 		return directReply, nil
 	}
 
-	chunkChan, err := s.ai.ChatStream(ctx, ai.ChatRequest{
-		Messages:    streamMsgs,
-		Temperature: built.temperature,
-	})
+	chunkChan, err := s.ai.ChatStream(ctx, s.chatAIRequest(message, streamMsgs, built.temperature))
 	if err != nil {
 		return "", err
 	}
@@ -267,10 +289,7 @@ func (s *Service) SendMessageStream(c *gin.Context, userID uint64, message strin
 		return
 	}
 
-	chunkChan, err := s.ai.ChatStream(ctx, ai.ChatRequest{
-		Messages:    streamMsgs,
-		Temperature: built.temperature,
-	})
+	chunkChan, err := s.ai.ChatStream(ctx, s.chatAIRequest(message, streamMsgs, built.temperature))
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -360,10 +379,7 @@ func (s *Service) CompleteMessage(ctx context.Context, userID uint64, message st
 		return directReply, nil
 	}
 
-	resp, err := s.ai.Chat(ctx, ai.ChatRequest{
-		Messages:    streamMsgs,
-		Temperature: built.temperature,
-	})
+	resp, err := s.ai.Chat(ctx, s.chatAIRequest(message, streamMsgs, built.temperature))
 	if err != nil {
 		return "", err
 	}

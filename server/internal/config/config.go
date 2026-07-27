@@ -56,10 +56,12 @@ type JWTConfig struct {
 }
 
 type AIConfig struct {
-	Name      string `yaml:"name"`
-	APIBase   string `yaml:"api_base"`
-	APIKey    string `yaml:"api_key"`
-	ModelCode string `yaml:"model_code"`
+	Name            string `yaml:"name"`
+	APIBase         string `yaml:"api_base"`
+	APIKey          string `yaml:"api_key"`
+	ModelCode       string `yaml:"model_code"`
+	EnableSearch    bool   `yaml:"enable_search"`
+	SearchStrategy  string `yaml:"search_strategy"` // turbo | max
 }
 
 type ClientConfig struct {
@@ -259,6 +261,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.AI.ModelCode == "" && c.AI.Name != "" {
 		c.AI.ModelCode = c.AI.Name
+	}
+	if c.AI.EnableSearch && c.AI.SearchStrategy == "" {
+		c.AI.SearchStrategy = "turbo"
 	}
 	if c.Client.APIBase == "" {
 		c.Client.APIBase = fmt.Sprintf("http://localhost:%d", c.Server.Port)

@@ -74,8 +74,28 @@ export const usePetStore = defineStore('pet', () => {
   const chatInline = ref(false)
   const bubbleText = ref('')
   const showBubble = ref(false)
+  const bubblePinned = ref(false) // voice-synced: stays until releaseVoiceBubble()
   const bootFailed = ref(false)
   let retryBootFn: (() => void) | null = null
+  let hideTimer: ReturnType<typeof setTimeout> | null = null
+  let reminderBubbleUntil = 0
+
+  function clearBubbleTimer() {
+    if (hideTimer) {
+      clearTimeout(hideTimer)
+      hideTimer = null
+    }
+  }
+
+  function scheduleBubbleHide(ms: number) {
+    clearBubbleTimer()
+    hideTimer = setTimeout(() => {
+      if (!bubblePinned.value) {
+        showBubble.value = false
+      }
+      hideTimer = null
+    }, ms)
+  }
 
   function registerBootRetry(fn: () => void) {
     retryBootFn = fn
@@ -130,30 +150,58 @@ export const usePetStore = defineStore('pet', () => {
   }
 
   function showSpeechBubble(text: string, duration = 4000) {
+    if (bubblePinned.value) return
+    clearBubbleTimer()
     bubbleText.value = bubbleDisplayText(text)
     showBubble.value = true
-    setTimeout(() => {
-      showBubble.value = false
-    }, duration)
+    scheduleBubbleHide(duration)
   }
 
   function showPersistentBubble(text: string) {
+    if (bubblePinned.value) {
+      bubbleText.value = bubbleDisplayText(text)
+      return
+    }
+    clearBubbleTimer()
     bubbleText.value = bubbleDisplayText(text)
     showBubble.value = true
   }
 
-  let reminderBubbleUntil = 0
+  /** Pin bubble until TTS finishes (releaseVoiceBubble). */
+  function showVoiceBubble(text: string) {
+    clearBubbleTimer()
+    bubblePinned.value = true
+    bubbleText.value = bubbleDisplayText(text)
+    showBubble.value = true
+  }
+
+  function updateVoiceBubble(text: string) {
+    if (!bubblePinned.value) return
+    bubbleText.value = bubbleDisplayText(text)
+  }
+
+  function releaseVoiceBubble(graceMs = 800) {
+    if (!bubblePinned.value) return
+    clearBubbleTimer()
+    hideTimer = setTimeout(() => {
+      bubblePinned.value = false
+      showBubble.value = false
+      hideTimer = null
+    }, graceMs)
+  }
+
+  function isVoiceBubbleActive() {
+    return bubblePinned.value
+  }
 
   /** Reminder bubble stays visible and is not overwritten by voice partial/reply text. */
   function showReminderBubble(text: string, duration = 15000) {
+    bubblePinned.value = false
+    clearBubbleTimer()
     bubbleText.value = bubbleDisplayText(text)
     showBubble.value = true
     reminderBubbleUntil = Date.now() + duration
-    setTimeout(() => {
-      if (Date.now() >= reminderBubbleUntil) {
-        showBubble.value = false
-      }
-    }, duration)
+    scheduleBubbleHide(duration)
   }
 
   function isReminderBubbleActive() {
@@ -161,6 +209,8 @@ export const usePetStore = defineStore('pet', () => {
   }
 
   function hideSpeechBubble() {
+    clearBubbleTimer()
+    bubblePinned.value = false
     showBubble.value = false
   }
 
@@ -226,6 +276,10 @@ export const usePetStore = defineStore('pet', () => {
     setRoaming,
     showSpeechBubble,
     showPersistentBubble,
+    showVoiceBubble,
+    updateVoiceBubble,
+    releaseVoiceBubble,
+    isVoiceBubbleActive,
     showReminderBubble,
     isReminderBubbleActive,
     hideSpeechBubble,

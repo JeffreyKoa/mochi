@@ -161,21 +161,37 @@ export const useRealtimeStore = defineStore('realtime', () => {
     turnAckWaiter = null
   }
 
+  function syncReplyBubble(text: string) {
+    const pet = usePetStore()
+    if (pet.isChatOpen || pet.isReminderBubbleActive()) return
+    const trimmed = text.trim()
+    if (!trimmed) return
+    if (recording || talking.value) {
+      if (pet.isVoiceBubbleActive()) pet.updateVoiceBubble(trimmed)
+      else pet.showVoiceBubble(trimmed)
+    }
+  }
+
   function finishTextTurn() {
     clearTtsWatchdog()
     clearTurnAckWait()
-    replyText.value = ''
     partialText.value = ''
     textSending = false
     pendingTextTurn = null
     textViaRest = false
+    const finalReply = replyText.value.trim()
+    if (finalReply) syncReplyBubble(finalReply)
+    replyText.value = ''
     if (recording) {
       ttsPlayer.markDone(() => {
+        if (finalReply) usePetStore().updateVoiceBubble(finalReply)
+        usePetStore().releaseVoiceBubble()
         resetTurnTiming()
         enterResting()
         usePetStore().syncAnimationFromState()
       })
     } else {
+      usePetStore().releaseVoiceBubble()
       resetTurnTiming()
       setPhase('idle')
       statusText.value = '输入消息或开始语音对话'
@@ -447,16 +463,17 @@ export const useRealtimeStore = defineStore('realtime', () => {
     ttsPlayer.stop()
     clearTtsWatchdog()
     replyText.value = ''
+    usePetStore().releaseVoiceBubble(0)
     realtimeSession.sendInterrupt()
     enterResting()
   }
 
-  /** Stop TTS so a scheduled reminder can be seen/heard during voice chat. */
   function interruptForReminder() {
     ttsPlayer.stop()
     clearTtsWatchdog()
     if (phase === 'agent_speaking') {
       replyText.value = ''
+      usePetStore().releaseVoiceBubble(0)
       realtimeSession.sendInterrupt()
       enterResting()
     }
@@ -530,6 +547,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     try {
       const reply = await streamChatMessage(trimmed, (token) => {
         replyText.value += token
+        syncReplyBubble(replyText.value)
       })
       if (reply) {
         commitAssistantMessage(reply)
@@ -804,10 +822,12 @@ export const useRealtimeStore = defineStore('realtime', () => {
           statusText.value = 'Mochi 正在回复...'
         }
         replyText.value += ev.token
+        syncReplyBubble(replyText.value)
         break
       case 'llm_done':
         if (textViaRest) break
         replyText.value = ev.text
+        syncReplyBubble(ev.text)
         commitAssistantMessage(ev.text)
         if (recording) {
           if (phase !== 'agent_speaking') {
@@ -855,6 +875,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
         ttsPlayer.stop()
         clearTtsWatchdog()
         textSending = false
+        pet.releaseVoiceBubble(0)
         enterResting()
         pet.setAnimation('happy')
         break

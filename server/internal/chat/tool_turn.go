@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -30,6 +31,10 @@ func (s *Service) applyToolTurn(
 		return toolTurnResult{messages: messages}, nil
 	}
 	if hint.NeedsEmpathy || hint.Intent == "vent" {
+		return toolTurnResult{messages: messages}, nil
+	}
+	if s.aiCfg.EnableSearch && NeedsWebSearch(userMsg) {
+		log.Printf("[chat] skip tool turn for web search query")
 		return toolTurnResult{messages: messages}, nil
 	}
 

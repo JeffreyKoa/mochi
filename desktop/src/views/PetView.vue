@@ -318,10 +318,25 @@ watch(
   () => rt.messages.length,
   (len) => {
     if (pet.isChatOpen || len === 0 || pet.isReminderBubbleActive()) return
+    if (rt.talking && pet.isVoiceBubbleActive()) return
     const last = rt.messages[len - 1]
     if (last?.role === 'assistant' && len > lastHeadlessBubbleIndex.value) {
       lastHeadlessBubbleIndex.value = len
-      pet.showSpeechBubble(last.content, 8000)
+      pet.showSpeechBubble(last.content, 12000)
+    }
+  },
+)
+
+watch(
+  () => rt.replyText,
+  (text) => {
+    if (pet.isChatOpen || !rt.talking || pet.isReminderBubbleActive()) return
+    const trimmed = text.trim()
+    if (!trimmed) return
+    if (pet.isVoiceBubbleActive()) {
+      pet.updateVoiceBubble(trimmed)
+    } else {
+      pet.showVoiceBubble(trimmed)
     }
   },
 )
@@ -330,17 +345,10 @@ watch(
   () => rt.partialText,
   (text) => {
     if (pet.isChatOpen || !rt.talking || !rt.userSpeaking || pet.isReminderBubbleActive()) return
-    pet.showPersistentBubble(text.trim() || '正在听…')
-  },
-)
-
-watch(
-  () => rt.replyText,
-  (text) => {
-    if (pet.isChatOpen || !rt.talking || pet.isReminderBubbleActive()) return
-    if (rt.processing && text.trim()) {
-      pet.showPersistentBubble(text.trim())
+    if (pet.isVoiceBubbleActive()) {
+      pet.releaseVoiceBubble(0)
     }
+    pet.showPersistentBubble(text.trim() || '正在听…')
   },
 )
 
@@ -349,6 +357,9 @@ watch(
   (speaking) => {
     if (pet.isChatOpen || !rt.talking || pet.isReminderBubbleActive()) return
     if (speaking) {
+      if (pet.isVoiceBubbleActive()) {
+        pet.releaseVoiceBubble(0)
+      }
       pet.showPersistentBubble(rt.partialText.trim() || '正在听…')
     }
   },
@@ -669,15 +680,20 @@ function onDblClick() {
       @contextmenu="onContextMenu"
     >
       <PetCanvas />
-      <div
-        v-if="pet.showBubble"
-        ref="bubbleEl"
-        class="speech-bubble"
-        :class="pet.facing === 'left' ? 'speech-bubble--tr' : 'speech-bubble--tl'"
-        :style="bubbleStyle"
-      >
-        {{ pet.bubbleText }}
-      </div>
+      <Transition name="bubble-pop">
+        <div
+          v-if="pet.showBubble"
+          ref="bubbleEl"
+          class="speech-bubble"
+          :class="[
+            pet.facing === 'left' ? 'speech-bubble--tr' : 'speech-bubble--tl',
+            { 'speech-bubble--voice': pet.isVoiceBubbleActive() },
+          ]"
+          :style="bubbleStyle"
+        >
+          {{ pet.bubbleText }}
+        </div>
+      </Transition>
     </div>
 
     <div
@@ -738,36 +754,80 @@ function onDblClick() {
 
 .speech-bubble {
   position: absolute;
-  top: 8px;
+  top: 4px;
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(255, 255, 255, 0.97);
-  padding: 8px 12px;
-  border-radius: 14px;
-  font-size: 12px;
-  color: #333;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.14);
-  max-width: min(360px, calc(100vw - 24px));
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 255, 0.96) 100%);
+  padding: 10px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  font-size: 13px;
+  font-weight: 500;
+  color: #2c3340;
+  box-shadow:
+    0 4px 20px rgba(88, 120, 180, 0.16),
+    0 1px 3px rgba(0, 0, 0, 0.06);
+  backdrop-filter: blur(8px);
+  max-width: min(380px, calc(100vw - 24px));
   width: max-content;
   min-width: 0;
   box-sizing: border-box;
   overflow-wrap: anywhere;
   word-break: break-word;
-  line-height: 1.45;
+  line-height: 1.55;
+  letter-spacing: 0.01em;
   text-align: left;
   z-index: 30;
   pointer-events: none;
   white-space: pre-wrap;
 }
 
+.speech-bubble--voice {
+  border-color: rgba(120, 160, 255, 0.35);
+  box-shadow:
+    0 6px 24px rgba(88, 120, 220, 0.2),
+    0 0 0 1px rgba(120, 160, 255, 0.12);
+}
+
+.bubble-pop-enter-active {
+  animation: bubble-in 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.bubble-pop-leave-active {
+  animation: bubble-out 0.22s ease-in forwards;
+}
+
+@keyframes bubble-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(6px) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+
+@keyframes bubble-out {
+  from {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-4px) scale(0.96);
+  }
+}
+
 .speech-bubble::after {
   content: '';
   position: absolute;
-  bottom: -6px;
+  bottom: -7px;
   left: var(--tail-x, 50%);
   transform: translateX(-50%);
-  border: 6px solid transparent;
-  border-top-color: rgba(255, 255, 255, 0.97);
+  border: 7px solid transparent;
+  border-top-color: rgba(252, 253, 255, 0.98);
+  filter: drop-shadow(0 2px 2px rgba(88, 120, 180, 0.08));
 }
 
 .speech-bubble--tl::after {

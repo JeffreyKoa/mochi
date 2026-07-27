@@ -20,12 +20,19 @@ type Message struct {
 	Name       string     `json:"name,omitempty"`
 }
 
+type SearchOptions struct {
+	SearchStrategy string `json:"search_strategy,omitempty"`
+	ForcedSearch   bool   `json:"forced_search,omitempty"`
+}
+
 type ChatRequest struct {
-	Messages    []Message `json:"messages"`
-	Model       string    `json:"model"`
-	Temperature float64   `json:"temperature"`
-	MaxTokens   int       `json:"max_tokens,omitempty"`
-	Stream      bool      `json:"stream"`
+	Messages      []Message      `json:"messages"`
+	Model         string         `json:"model"`
+	Temperature   float64        `json:"temperature"`
+	MaxTokens     int            `json:"max_tokens,omitempty"`
+	Stream        bool           `json:"stream"`
+	EnableSearch  *bool          `json:"enable_search,omitempty"`
+	SearchOptions *SearchOptions `json:"search_options,omitempty"`
 }
 
 type ChatResponse struct {

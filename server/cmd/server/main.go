@@ -72,7 +72,7 @@ func main() {
 	})
 	toolsExec := tools.NewExecutor(toolsSvc, cfg.Tools)
 	toolsHandler := tools.NewHandler(db, toolsSvc)
-	chatSvc := chat.NewService(db, aiRouter, memSvc, lifeSvc, lifecycleSvc, bondSvc, emotionSvc, briefSvc, reflectionSvc, cfg.Growth, toolsExec, cfg.Tools)
+	chatSvc := chat.NewService(db, aiRouter, memSvc, lifeSvc, lifecycleSvc, bondSvc, emotionSvc, briefSvc, reflectionSvc, cfg.Growth, toolsExec, cfg.Tools, cfg.AI)
 	chatHandler := chat.NewHandler(chatSvc)
 
 	authSvc := auth.NewService(db, cfg.JWT.Secret)
