@@ -34,7 +34,7 @@ func (s *Service) CharBudget() int {
 }
 
 func (s *Service) GetCompiled(ctx context.Context, petID uint64) (string, error) {
-	if !s.Enabled() {
+	if s == nil || s.db == nil || !s.Enabled() {
 		return "", nil
 	}
 	var brief models.UserBrief

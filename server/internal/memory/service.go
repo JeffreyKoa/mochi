@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -37,6 +38,9 @@ type ExtractedMemory struct {
 }
 
 func (s *Service) GetShortTerm(ctx context.Context, petID uint64) ([]models.ChatMessage, error) {
+	if s == nil || s.rdb == nil {
+		return nil, nil
+	}
 	key := fmt.Sprintf("%s%d", shortTermKeyPrefix, petID)
 	items, err := s.rdb.LRange(ctx, key, 0, shortTermLimit-1).Result()
 	if err != nil {
@@ -55,6 +59,9 @@ func (s *Service) GetShortTerm(ctx context.Context, petID uint64) ([]models.Chat
 }
 
 func (s *Service) AddShortTerm(ctx context.Context, petID uint64, role, content string) error {
+	if s == nil || s.rdb == nil {
+		return nil
+	}
 	key := fmt.Sprintf("%s%d", shortTermKeyPrefix, petID)
 	msg := models.ChatMessage{PetID: petID, Role: role, Content: content, CreatedAt: time.Now()}
 	data, err := json.Marshal(msg)
@@ -71,6 +78,9 @@ func (s *Service) AddShortTerm(ctx context.Context, petID uint64, role, content 
 }
 
 func (s *Service) RetrieveRelevant(ctx context.Context, petID uint64, query string, limit int, userMood string) ([]models.Memory, error) {
+	if s == nil || s.db == nil {
+		return nil, nil
+	}
 	if limit <= 0 {
 		limit = 5
 	}
@@ -228,15 +238,49 @@ func extractKeywords(text string) []string {
 	stopWords := map[string]bool{
 		"的": true, "了": true, "是": true, "我": true, "你": true, "在": true,
 		"吗": true, "呢": true, "吧": true, "啊": true, "哦": true, "嗯": true,
+		"什么": true, "怎么": true, "如何": true, "这样": true, "那个": true,
 		"the": true, "a": true, "is": true, "are": true,
 	}
+	seen := make(map[string]bool)
 	var words []string
-	for _, w := range strings.Fields(text) {
-		w = strings.Trim(w, "，。！？,.!?")
-		if len([]rune(w)) >= 2 && !stopWords[w] {
-			words = append(words, w)
+
+	addWord := func(w string) {
+		w = strings.Trim(w, "，。！？,.!?~～\"' ")
+		if len([]rune(w)) < 2 || stopWords[w] || seen[w] {
+			return
+		}
+		seen[w] = true
+		words = append(words, w)
+	}
+
+	fields := strings.Fields(text)
+	if len(fields) > 1 {
+		for _, f := range fields {
+			addWord(f)
 		}
 	}
+
+	runes := []rune(text)
+	var cleanRunes []rune
+	for _, r := range runes {
+		if unicode.IsPunct(r) || unicode.IsSpace(r) || unicode.IsSymbol(r) {
+			continue
+		}
+		cleanRunes = append(cleanRunes, r)
+	}
+
+	n := len(cleanRunes)
+	if n >= 2 {
+		for i := 0; i <= n-2; i++ {
+			gram2 := string(cleanRunes[i : i+2])
+			addWord(gram2)
+			if i <= n-3 {
+				gram3 := string(cleanRunes[i : i+3])
+				addWord(gram3)
+			}
+		}
+	}
+
 	if len(words) > 5 {
 		words = words[:5]
 	}

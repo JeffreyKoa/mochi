@@ -32,8 +32,6 @@ export interface ChatMessage {
   createdAt?: string | number
 }
 
-const WAKE_PEAK = 0.06
-const SPEECH_PEAK = 0.05
 const WAKE_CONFIRM_MS = 120
 const TTS_WATCHDOG_MS = 45000
 const TEXT_TURN_ACK_MS = 6000
@@ -48,6 +46,8 @@ interface RuntimeParams {
   bargeInPeak: number
   bargeInMs: number
   echoGuardMs: number
+  wakePeak: number
+  speechPeak: number
   endpointDebounceMs: number
   minEndpointChars: number
   endpointingEnabled: boolean
@@ -60,8 +60,10 @@ function defaultRuntimeParams(): RuntimeParams {
     bargeInPeak: rt.bargeIn.peakThreshold,
     bargeInMs: rt.bargeIn.bargeInMs,
     echoGuardMs: rt.bargeIn.echoGuardMs,
-    endpointDebounceMs: 300,
-    minEndpointChars: 3,
+    wakePeak: rt.vad.wakePeak,
+    speechPeak: rt.vad.energyPeak,
+    endpointDebounceMs: 600,
+    minEndpointChars: 6,
     endpointingEnabled: rt.vad.endpointingEnabled,
   }
 }
@@ -641,7 +643,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
 
   async function initVad() {
     speechVad?.destroy()
-    speechVad = new HybridSpeechVad(handleVadEvent)
+    speechVad = new HybridSpeechVad(handleVadEvent, getRealtimeConfig().vad)
     await speechVad.init()
   }
 
@@ -804,7 +806,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
 
         if (phase === 'resting') {
           speechVad?.feed(pcmToFloat(boosted))
-          if (peak >= WAKE_PEAK) {
+          if (peak >= params.wakePeak) {
             wakeAccumMs += 20
             if (wakeAccumMs >= WAKE_CONFIRM_MS) {
               wakeAccumMs = 0
@@ -817,7 +819,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
         }
 
         if (phase === 'user_speaking') {
-          if (peak >= SPEECH_PEAK) {
+          if (peak >= params.speechPeak) {
             heardSpeech = true
             lastSpeechAt = Date.now()
           }

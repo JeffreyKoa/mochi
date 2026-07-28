@@ -102,10 +102,23 @@ type RealtimeDashscope struct {
 }
 
 type RealtimeVAD struct {
-	Model              string `yaml:"model"`
-	SilenceMS          int    `yaml:"silence_ms"`
-	MinSpeechMS        int    `yaml:"min_speech_ms"`
-	EndpointingEnabled bool   `yaml:"endpointing_enabled"`
+	Model              string            `yaml:"model"`
+	SilenceMS          int               `yaml:"silence_ms"`
+	MinSpeechMS        int               `yaml:"min_speech_ms"`
+	EndpointingEnabled bool              `yaml:"endpointing_enabled"`
+	EnergyPeak         float64           `yaml:"energy_peak"`
+	PlaybackPeak       float64           `yaml:"playback_peak"`
+	WakePeak           float64           `yaml:"wake_peak"`
+	Silero             RealtimeSileroVAD `yaml:"silero"`
+}
+
+// RealtimeSileroVAD tunes @ricky0123/vad-web on the desktop client.
+type RealtimeSileroVAD struct {
+	PositiveThreshold float64 `yaml:"positive_threshold"`
+	NegativeThreshold float64 `yaml:"negative_threshold"`
+	RedemptionMS      int     `yaml:"redemption_ms"`
+	MinSpeechMS       int     `yaml:"min_speech_ms"`
+	PreSpeechPadMS    int     `yaml:"pre_speech_pad_ms"`
 }
 
 type RealtimeBargeIn struct {
@@ -119,9 +132,19 @@ type RealtimePublicConfig struct {
 	STTMode       string `json:"stt_mode"`
 	SpeechLocale  string `json:"speech_locale"`
 	VAD           struct {
-		SilenceMS          int  `json:"silence_ms"`
-		MinSpeechMS        int  `json:"min_speech_ms"`
-		EndpointingEnabled bool `json:"endpointing_enabled"`
+		SilenceMS          int     `json:"silence_ms"`
+		MinSpeechMS        int     `json:"min_speech_ms"`
+		EndpointingEnabled bool    `json:"endpointing_enabled"`
+		EnergyPeak         float64 `json:"energy_peak"`
+		PlaybackPeak       float64 `json:"playback_peak"`
+		WakePeak           float64 `json:"wake_peak"`
+		Silero             struct {
+			PositiveThreshold float64 `json:"positive_threshold"`
+			NegativeThreshold float64 `json:"negative_threshold"`
+			RedemptionMS      int     `json:"redemption_ms"`
+			MinSpeechMS       int     `json:"min_speech_ms"`
+			PreSpeechPadMS    int     `json:"pre_speech_pad_ms"`
+		} `json:"silero"`
 	} `json:"vad"`
 	BargeIn struct {
 		EchoGuardMS   int     `json:"echo_guard_ms"`
@@ -394,13 +417,34 @@ func (r *RealtimeConfig) applyDefaults() {
 		r.STTMode = "auto"
 	}
 	if r.VAD.SilenceMS == 0 {
-		r.VAD.SilenceMS = 700
+		r.VAD.SilenceMS = 1200
 	}
 	if r.VAD.MinSpeechMS == 0 {
 		r.VAD.MinSpeechMS = 300
 	}
 	if r.VAD.Model == "" {
 		r.VAD.Model = "energy"
+	}
+	if r.VAD.EnergyPeak == 0 {
+		r.VAD.EnergyPeak = 0.05
+	}
+	if r.VAD.PlaybackPeak == 0 {
+		r.VAD.PlaybackPeak = 0.10
+	}
+	if r.VAD.Silero.PositiveThreshold == 0 {
+		r.VAD.Silero.PositiveThreshold = 0.5
+	}
+	if r.VAD.Silero.NegativeThreshold == 0 {
+		r.VAD.Silero.NegativeThreshold = 0.35
+	}
+	if r.VAD.Silero.RedemptionMS == 0 {
+		r.VAD.Silero.RedemptionMS = 800
+	}
+	if r.VAD.Silero.MinSpeechMS == 0 {
+		r.VAD.Silero.MinSpeechMS = 350
+	}
+	if r.VAD.Silero.PreSpeechPadMS == 0 {
+		r.VAD.Silero.PreSpeechPadMS = 300
 	}
 	if r.BargeIn.EchoGuardMS == 0 {
 		r.BargeIn.EchoGuardMS = 1800
@@ -504,6 +548,18 @@ func (r RealtimeConfig) PublicClient() RealtimePublicConfig {
 	out.VAD.SilenceMS = r.VAD.SilenceMS
 	out.VAD.MinSpeechMS = r.VAD.MinSpeechMS
 	out.VAD.EndpointingEnabled = r.VAD.EndpointingEnabled
+	out.VAD.EnergyPeak = r.VAD.EnergyPeak
+	out.VAD.PlaybackPeak = r.VAD.PlaybackPeak
+	wakePeak := r.VAD.WakePeak
+	if wakePeak == 0 {
+		wakePeak = r.BargeIn.PeakThreshold
+	}
+	out.VAD.WakePeak = wakePeak
+	out.VAD.Silero.PositiveThreshold = r.VAD.Silero.PositiveThreshold
+	out.VAD.Silero.NegativeThreshold = r.VAD.Silero.NegativeThreshold
+	out.VAD.Silero.RedemptionMS = r.VAD.Silero.RedemptionMS
+	out.VAD.Silero.MinSpeechMS = r.VAD.Silero.MinSpeechMS
+	out.VAD.Silero.PreSpeechPadMS = r.VAD.Silero.PreSpeechPadMS
 	out.BargeIn.EchoGuardMS = r.BargeIn.EchoGuardMS
 	out.BargeIn.PeakThreshold = r.BargeIn.PeakThreshold
 	out.BargeIn.BargeInMS = r.BargeIn.BargeInMS

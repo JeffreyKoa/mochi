@@ -10,8 +10,6 @@ import (
 	"github.com/mochi-ai/server/internal/config"
 	"github.com/mochi-ai/server/internal/emotion"
 	"github.com/mochi-ai/server/internal/memory"
-	"gorm.io/driver/mysql"
-	"gorm.io/gorm"
 )
 
 func TestOrchestrator_PrepareChatContext(t *testing.T) {

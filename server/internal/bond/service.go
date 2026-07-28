@@ -19,6 +19,9 @@ func NewService(db *gorm.DB) *Service {
 }
 
 func (s *Service) GetOrCreate(ctx context.Context, petID uint64) (models.BondProfile, error) {
+	if s == nil || s.db == nil {
+		return models.BondProfile{PetID: petID, RapportLevel: 20, TrustLevel: 15}, nil
+	}
 	var bond models.BondProfile
 	err := s.db.WithContext(ctx).First(&bond, "pet_id = ?", petID).Error
 	if err == nil {

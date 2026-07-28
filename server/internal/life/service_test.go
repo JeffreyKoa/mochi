@@ -1,9 +1,7 @@
 package life
 
 import (
-	"context"
 	"testing"
-	"time"
 
 	"github.com/mochi-ai/server/internal/models"
 )

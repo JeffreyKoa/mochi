@@ -49,9 +49,18 @@ realtime:
     ws_url: ""
   vad:
     model: silero
-    silence_ms: 700
+    silence_ms: 1200
     min_speech_ms: 250
     endpointing_enabled: true
+    energy_peak: 0.05
+    playback_peak: 0.10
+    wake_peak: 0
+    silero:
+      positive_threshold: 0.5
+      negative_threshold: 0.35
+      redemption_ms: 800
+      min_speech_ms: 350
+      pre_speech_pad_ms: 300
   barge_in:
     echo_guard_ms: 1800
     peak_threshold: 0.06

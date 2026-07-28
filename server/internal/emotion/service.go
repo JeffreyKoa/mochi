@@ -67,6 +67,9 @@ func QuickDetect(message string) Hint {
 }
 
 func (s *Service) GetCached(ctx context.Context, petID uint64) Hint {
+	if s == nil || s.rdb == nil {
+		return Hint{UserMood: "neutral", Intent: "chat", Temperature: 0.85}
+	}
 	key := fmt.Sprintf("%s%d", contextKeyPrefix, petID)
 	data, err := s.rdb.Get(ctx, key).Bytes()
 	if err != nil {

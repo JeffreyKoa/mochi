@@ -33,6 +33,13 @@ func (m *mockProvider) ChatStream(ctx context.Context, req ChatRequest) (<-chan 
 	return ch, nil
 }
 
+func (m *mockProvider) ChatWithTools(ctx context.Context, req ChatWithToolsRequest) (*ChatWithToolsResponse, error) {
+	if m.failChat {
+		return nil, errors.New("mock tools error")
+	}
+	return &ChatWithToolsResponse{Content: m.chatReply}, nil
+}
+
 func TestRouter_Failover(t *testing.T) {
 	router := NewRouter()
 

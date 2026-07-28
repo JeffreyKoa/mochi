@@ -21,3 +21,4 @@ server/logs/
 #config
 config.yaml
 config/config.yaml
+config/logs/

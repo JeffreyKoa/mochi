@@ -15,16 +15,9 @@ import (
 
 // Setup configures the default logger to write to stdout and a daily file under logs/.
 func Setup(cfg config.LogConfig, configFile string) (io.Closer, error) {
-	dir := cfg.Dir
-	if dir == "" {
-		dir = "logs"
-	}
-	if !filepath.IsAbs(dir) {
-		base := "."
-		if configFile != "" {
-			base = filepath.Dir(configFile)
-		}
-		dir = filepath.Join(base, dir)
+	dir, err := resolveLogDir(cfg.Dir, configFile)
+	if err != nil {
+		return nil, err
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create log dir: %w", err)
@@ -45,4 +38,27 @@ func Setup(cfg config.LogConfig, configFile string) (io.Closer, error) {
 
 	log.Printf("[logging] writing to %s", path)
 	return f, nil
+}
+
+// resolveLogDir maps log.dir (relative to project root) to an absolute path.
+func resolveLogDir(dir, configFile string) (string, error) {
+	if dir == "" {
+		dir = "logs"
+	}
+	if filepath.IsAbs(dir) {
+		return dir, nil
+	}
+	return filepath.Join(projectRoot(configFile), dir), nil
+}
+
+// projectRoot returns the repo root for config/config.yaml or legacy root config.yaml.
+func projectRoot(configFile string) string {
+	if configFile == "" {
+		return "."
+	}
+	cfgDir := filepath.Dir(configFile)
+	if filepath.Base(cfgDir) == "config" {
+		return filepath.Dir(cfgDir)
+	}
+	return cfgDir
 }

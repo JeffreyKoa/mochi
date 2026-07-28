@@ -5,6 +5,7 @@ import fs from 'fs'
 import path from 'path'
 
 function readServerPort(): number {
+  // 仅 Vite dev-server 启动时使用：决定 /api proxy 指向哪个端口，与运行时客户端无关。
   const candidates = [
     path.resolve(__dirname, '../config/config.yaml'),
     path.resolve(__dirname, '../config.yaml'),

@@ -1,9 +1,21 @@
 let _apiBase = ''
 
+export interface RealtimeSileroVadConfig {
+  positiveThreshold: number
+  negativeThreshold: number
+  redemptionMs: number
+  minSpeechMs: number
+  preSpeechPadMs: number
+}
+
 export interface RealtimeVadConfig {
   silenceMs: number
   minSpeechMs: number
   endpointingEnabled: boolean
+  energyPeak: number
+  playbackPeak: number
+  wakePeak: number
+  silero: RealtimeSileroVadConfig
 }
 
 export interface RealtimeBargeInConfig {
@@ -29,13 +41,25 @@ export interface ClientConfig {
   realtime: RealtimeClientConfig
 }
 
+export const DEFAULT_SILERO: RealtimeSileroVadConfig = {
+  positiveThreshold: 0.5,
+  negativeThreshold: 0.35,
+  redemptionMs: 800,
+  minSpeechMs: 350,
+  preSpeechPadMs: 300,
+}
+
 export const DEFAULT_REALTIME: RealtimeClientConfig = {
   sttMode: 'auto',
   speechLocale: 'zh-CN',
   vad: {
-    silenceMs: 700,
-    minSpeechMs: 300,
+    silenceMs: 1200,
+    minSpeechMs: 250,
     endpointingEnabled: true,
+    energyPeak: 0.05,
+    playbackPeak: 0.10,
+    wakePeak: 0.06,
+    silero: { ...DEFAULT_SILERO },
   },
   bargeIn: {
     echoGuardMs: 1800,
@@ -73,8 +97,24 @@ function num(v: unknown, fallback: number): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : fallback
 }
 
+function parseSileroBlock(raw: unknown, base: RealtimeSileroVadConfig): RealtimeSileroVadConfig {
+  if (!raw || typeof raw !== 'object') return base
+  const s = raw as Record<string, unknown>
+  return {
+    positiveThreshold: num(s.positive_threshold ?? s.positiveThreshold, base.positiveThreshold),
+    negativeThreshold: num(s.negative_threshold ?? s.negativeThreshold, base.negativeThreshold),
+    redemptionMs: num(s.redemption_ms ?? s.redemptionMs, base.redemptionMs),
+    minSpeechMs: num(s.min_speech_ms ?? s.minSpeechMs, base.minSpeechMs),
+    preSpeechPadMs: num(s.pre_speech_pad_ms ?? s.preSpeechPadMs, base.preSpeechPadMs),
+  }
+}
+
 function parseRealtimeBlock(raw: unknown): RealtimeClientConfig {
-  const base = { ...DEFAULT_REALTIME, vad: { ...DEFAULT_REALTIME.vad }, bargeIn: { ...DEFAULT_REALTIME.bargeIn } }
+  const base = {
+    ...DEFAULT_REALTIME,
+    vad: { ...DEFAULT_REALTIME.vad, silero: { ...DEFAULT_REALTIME.vad.silero } },
+    bargeIn: { ...DEFAULT_REALTIME.bargeIn },
+  }
   if (!raw || typeof raw !== 'object') return base
 
   const r = raw as Record<string, unknown>
@@ -96,6 +136,10 @@ function parseRealtimeBlock(raw: unknown): RealtimeClientConfig {
       silenceMs: num(v.silence_ms ?? v.silenceMs, base.vad.silenceMs),
       minSpeechMs: num(v.min_speech_ms ?? v.minSpeechMs, base.vad.minSpeechMs),
       endpointingEnabled: v.endpointing_enabled !== false && v.endpointingEnabled !== false,
+      energyPeak: num(v.energy_peak ?? v.energyPeak, base.vad.energyPeak),
+      playbackPeak: num(v.playback_peak ?? v.playbackPeak, base.vad.playbackPeak),
+      wakePeak: num(v.wake_peak ?? v.wakePeak, 0),
+      silero: parseSileroBlock(v.silero, base.vad.silero),
     }
   }
 
@@ -107,6 +151,10 @@ function parseRealtimeBlock(raw: unknown): RealtimeClientConfig {
       peakThreshold: num(b.peak_threshold ?? b.peakThreshold, base.bargeIn.peakThreshold),
       bargeInMs: num(b.barge_in_ms ?? b.bargeInMs, base.bargeIn.bargeInMs),
     }
+  }
+
+  if (base.vad.wakePeak <= 0) {
+    base.vad.wakePeak = base.bargeIn.peakThreshold
   }
 
   return base
@@ -128,7 +176,7 @@ function applyPublicConfig(base: string, data: Record<string, unknown>) {
   return _clientConfig
 }
 
-/** 初始化 API 地址：Vite 开发走代理（相对路径），Tauri/生产读 config.yaml */
+/** 运行时从服务端 GET /api/v1/public/config 拉取客户端配置（不读本地 yaml）。 */
 export async function initClientConfig(): Promise<ClientConfig> {
   if (typeof window !== 'undefined' && window.location.port === '1420') {
     setApiBase('')

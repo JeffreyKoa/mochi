@@ -9,6 +9,7 @@ import {
 } from '@ricky0123/vad-web'
 import { SileroV5 } from '@ricky0123/vad-web/dist/models/v5'
 import * as ort from 'onnxruntime-web/wasm'
+import type { RealtimeVadConfig } from '@/config'
 
 const VAD_VER = '0.0.30'
 const VAD_BASE = `https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@${VAD_VER}/dist/`
@@ -24,15 +25,19 @@ export class HybridSpeechVad {
   private energy: EnergySpeechVad
   private silero: SileroSpeechVad | null = null
   private playbackMode = false
+  private readonly playbackPeak: number
+  private readonly idlePeak: number
 
-  constructor(onEvent: (ev: VADEvent) => void) {
-    this.energy = new EnergySpeechVad(onEvent, 800, 300, 0.05)
+  constructor(onEvent: (ev: VADEvent) => void, cfg: RealtimeVadConfig) {
+    this.idlePeak = cfg.energyPeak
+    this.playbackPeak = cfg.playbackPeak
+    this.energy = new EnergySpeechVad(onEvent, cfg.silenceMs, cfg.minSpeechMs, cfg.energyPeak)
     this.silero = new SileroSpeechVad(onEvent, {
-      positiveSpeechThreshold: 0.5,
-      negativeSpeechThreshold: 0.35,
-      redemptionMs: 500,
-      minSpeechMs: 350,
-      preSpeechPadMs: 200,
+      positiveSpeechThreshold: cfg.silero.positiveThreshold,
+      negativeSpeechThreshold: cfg.silero.negativeThreshold,
+      redemptionMs: cfg.silero.redemptionMs,
+      minSpeechMs: cfg.silero.minSpeechMs,
+      preSpeechPadMs: cfg.silero.preSpeechPadMs,
     })
   }
 
@@ -44,7 +49,7 @@ export class HybridSpeechVad {
   /** During TTS playback: disable Silero and raise energy threshold to reduce echo false triggers. */
   setPlaybackMode(playing: boolean) {
     this.playbackMode = playing
-    this.energy.setPeakThreshold(playing ? 0.1 : 0.05)
+    this.energy.setPeakThreshold(playing ? this.playbackPeak : this.idlePeak)
     if (playing) {
       this.silero?.reset()
     }
@@ -154,9 +159,9 @@ export class EnergySpeechVad {
 
   constructor(
     private onEvent: (ev: VADEvent) => void,
-    private silenceThresholdMs = 800,
+    private silenceThresholdMs = 700,
     private minSpeechMs = 250,
-    private peakThreshold = 0.008,
+    private peakThreshold = 0.05,
   ) {}
 
   setPeakThreshold(threshold: number) {
