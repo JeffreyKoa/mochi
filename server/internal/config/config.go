@@ -22,6 +22,12 @@ type Config struct {
 	Growth    GrowthConfig    `yaml:"growth"`
 	Tools     ToolsConfig     `yaml:"tools"`
 	Wellness  WellnessConfig  `yaml:"wellness"`
+
+	// Loaded from config/data/* (not in main yaml).
+	configDir        string
+	GateFastpath     GateFastpath
+	GateSystemPrompt string
+	NoiseFillers     map[rune]bool
 }
 
 type ServerConfig struct {
@@ -126,9 +132,10 @@ type RealtimePublicConfig struct {
 }
 
 type RealtimeASR struct {
-	Provider   string `yaml:"provider"`
-	Model      string `yaml:"model"`
-	SampleRate int    `yaml:"sample_rate"`
+	Provider         string `yaml:"provider"`
+	Model            string `yaml:"model"`
+	SampleRate       int    `yaml:"sample_rate"`
+	NoiseFillersFile string `yaml:"noise_fillers_file"`
 }
 
 type RealtimeTTS struct {
@@ -149,8 +156,13 @@ type RealtimeOpusConfig struct {
 }
 
 type RealtimePipeline struct {
-	TTSMinChars     int    `yaml:"tts_min_chars"`
-	TTSPunctuation  string `yaml:"tts_punctuation"`
+	TTSMinChars            int    `yaml:"tts_min_chars"`
+	TTSFirstMinChars       int    `yaml:"tts_first_min_chars"`
+	TTSWeakPunctMinChars   int    `yaml:"tts_weak_punct_min_chars"`
+	TTSForceFlushChars     int    `yaml:"tts_force_flush_chars"`
+	TTSPunctuation         string `yaml:"tts_punctuation"`
+	TTSStrongPunctuation   string `yaml:"tts_strong_punctuation"`
+	TTSWeakPunctuation     string `yaml:"tts_weak_punctuation"`
 }
 
 type RealtimeThinkingFiller struct {
@@ -162,10 +174,13 @@ type RealtimeThinkingFiller struct {
 // RealtimeGate configures the lightweight LLM response gate that filters
 // ASR transcripts before they reach the chat LLM (voice turns only).
 type RealtimeGate struct {
-	Enabled   bool   `yaml:"enabled"`
-	Model     string `yaml:"model"`
-	TimeoutMS int    `yaml:"timeout_ms"`
-	MaxChars  int    `yaml:"max_chars"`
+	Enabled          bool   `yaml:"enabled"`
+	Model            string `yaml:"model"`
+	TimeoutMS        int    `yaml:"timeout_ms"`
+	MaxChars         int    `yaml:"max_chars"`
+	MaxTokens        int    `yaml:"max_tokens"`
+	FastpathFile     string `yaml:"fastpath_file"`
+	SystemPromptFile string `yaml:"system_prompt_file"`
 }
 
 type CompanionConfig struct {
@@ -258,6 +273,9 @@ func Load() (*Config, error) {
 	}
 
 	cfg.applyDefaults()
+	if err := cfg.loadDataFiles(filepath.Dir(path)); err != nil {
+		return nil, err
+	}
 	return &cfg, nil
 }
 
@@ -437,12 +455,7 @@ func (r *RealtimeConfig) applyDefaults() {
 	if r.TTS.Opus.Application == "" {
 		r.TTS.Opus.Application = "voip"
 	}
-	if r.Pipeline.TTSMinChars == 0 {
-		r.Pipeline.TTSMinChars = 5
-	}
-	if r.Pipeline.TTSPunctuation == "" {
-		r.Pipeline.TTSPunctuation = "。！？，、~.!?,;"
-	}
+	r.Pipeline.applyDefaults()
 	if r.Gate.Model == "" {
 		r.Gate.Model = "qwen-turbo"
 	}
@@ -451,6 +464,33 @@ func (r *RealtimeConfig) applyDefaults() {
 	}
 	if r.Gate.MaxChars == 0 {
 		r.Gate.MaxChars = 200
+	}
+	if r.Gate.MaxTokens == 0 {
+		r.Gate.MaxTokens = 20
+	}
+}
+
+func (p *RealtimePipeline) applyDefaults() {
+	if p.TTSMinChars == 0 {
+		p.TTSMinChars = 8
+	}
+	if p.TTSFirstMinChars == 0 {
+		p.TTSFirstMinChars = 3
+	}
+	if p.TTSWeakPunctMinChars == 0 {
+		p.TTSWeakPunctMinChars = 8
+	}
+	if p.TTSForceFlushChars == 0 {
+		p.TTSForceFlushChars = 24
+	}
+	if p.TTSPunctuation == "" {
+		p.TTSPunctuation = "。！？，、~.!?,;"
+	}
+	if p.TTSStrongPunctuation == "" {
+		p.TTSStrongPunctuation = "。！？~!?.\n"
+	}
+	if p.TTSWeakPunctuation == "" {
+		p.TTSWeakPunctuation = "，、,"
 	}
 }
 
@@ -479,6 +519,9 @@ func findConfigPath() (string, error) {
 	}
 
 	candidates := []string{
+		filepath.Join("config", "config.yaml"),
+		filepath.Join("..", "config", "config.yaml"),
+		filepath.Join("..", "..", "config", "config.yaml"),
 		"config.yaml",
 		filepath.Join("..", "config.yaml"),
 		filepath.Join("..", "..", "config.yaml"),
@@ -489,7 +532,7 @@ func findConfigPath() (string, error) {
 			return abs, nil
 		}
 	}
-	return "", fmt.Errorf("config.yaml not found (set CONFIG_PATH or place at project root)")
+	return "", fmt.Errorf("config not found (set CONFIG_PATH or use config/config.yaml)")
 }
 
 // ParseDuration helper for jwt expire etc.

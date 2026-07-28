@@ -7,11 +7,16 @@ import (
 	"github.com/mochi-ai/server/internal/config"
 )
 
-const strongPunctuation = "。！？~!?.;\n"
-const weakPunctuation = "，、,"
+func isStrongPunctuation(r rune, cfg config.RealtimePipeline) bool {
+	return strings.ContainsRune(cfg.TTSStrongPunctuation, r)
+}
 
-func isStrongPunctuation(r rune) bool {
-	return strings.ContainsRune(strongPunctuation, r)
+func isWeakPunctuation(r rune, cfg config.RealtimePipeline) bool {
+	return strings.ContainsRune(cfg.TTSWeakPunctuation, r)
+}
+
+func isConfiguredPunctuation(r rune, cfg config.RealtimePipeline) bool {
+	return strings.ContainsRune(cfg.TTSPunctuation, r)
 }
 
 func shouldFlushTTS(buf string, cfg config.RealtimePipeline) bool {
@@ -23,36 +28,32 @@ func shouldFlushTTSEx(buf string, cfg config.RealtimePipeline, isFirstSegment bo
 		return false
 	}
 	n := utf8.RuneCountInString(buf)
-	min := cfg.TTSMinChars
-	if min <= 0 {
-		min = 5
-	}
 
-	// For first segment: flush quickly (4+ chars) on any punctuation for fast TTFT
 	if isFirstSegment {
-		if n < 4 {
+		if n < cfg.TTSFirstMinChars {
 			return false
 		}
-		last, _ := utf8.DecodeLastRuneInString(buf)
-		for _, p := range cfg.TTSPunctuation {
-			if last == p {
+		runes := []rune(buf)
+		for _, r := range runes {
+			if isConfiguredPunctuation(r, cfg) {
 				return true
 			}
 		}
-		return n >= min*2
+		return n >= cfg.TTSMinChars*2
 	}
 
-	// For continuation segments: prevent choppy breaks on weak punctuation
-	last, _ := utf8.DecodeLastRuneInString(buf)
-	if isStrongPunctuation(last) && n >= min {
-		return true
-	}
-	// Weak punctuation (e.g. comma) requires larger character buffer before flush
-	if strings.ContainsRune(weakPunctuation, last) && n >= 14 {
-		return true
+	runes := []rune(buf)
+	for i, r := range runes {
+		count := i + 1
+		if isStrongPunctuation(r, cfg) && count >= cfg.TTSMinChars {
+			return true
+		}
+		if isWeakPunctuation(r, cfg) && count >= cfg.TTSWeakPunctMinChars {
+			return true
+		}
 	}
 
-	return n >= min*3
+	return n >= cfg.TTSForceFlushChars
 }
 
 func takeFlushSegment(buf *strings.Builder, cfg config.RealtimePipeline) string {
@@ -66,11 +67,40 @@ func takeFlushSegmentEx(buf *strings.Builder, cfg config.RealtimePipeline, isFir
 	}
 
 	runes := []rune(text)
+	min := cfg.TTSMinChars
+	if isFirstSegment {
+		min = cfg.TTSFirstMinChars
+	}
 
-	// For continuation segments: prioritize cutting at strong punctuation
-	if !isFirstSegment {
+	for i, r := range runes {
+		count := i + 1
+		if count < min {
+			continue
+		}
+		if isFirstSegment {
+			if isConfiguredPunctuation(r, cfg) {
+				cut := count
+				chunk := string(runes[:cut])
+				remaining := string(runes[cut:])
+				buf.Reset()
+				buf.WriteString(remaining)
+				return chunk
+			}
+		} else {
+			if isStrongPunctuation(r, cfg) || (isWeakPunctuation(r, cfg) && count >= cfg.TTSWeakPunctMinChars) {
+				cut := count
+				chunk := string(runes[:cut])
+				remaining := string(runes[cut:])
+				buf.Reset()
+				buf.WriteString(remaining)
+				return chunk
+			}
+		}
+	}
+
+	if len(runes) >= cfg.TTSForceFlushChars {
 		for i := len(runes) - 1; i >= 0; i-- {
-			if isStrongPunctuation(runes[i]) {
+			if isConfiguredPunctuation(runes[i], cfg) {
 				cut := i + 1
 				chunk := string(runes[:cut])
 				remaining := string(runes[cut:])
@@ -79,24 +109,10 @@ func takeFlushSegmentEx(buf *strings.Builder, cfg config.RealtimePipeline, isFir
 				return chunk
 			}
 		}
+		chunk := text
+		buf.Reset()
+		return chunk
 	}
 
-	// Cut at any configured punctuation
-	for i := len(runes) - 1; i >= 0; i-- {
-		r := runes[i]
-		for _, p := range cfg.TTSPunctuation {
-			if r == p {
-				cut := i + 1
-				chunk := string(runes[:cut])
-				remaining := string(runes[cut:])
-				buf.Reset()
-				buf.WriteString(remaining)
-				return chunk
-			}
-		}
-	}
-
-	chunk := text
-	buf.Reset()
-	return chunk
+	return ""
 }

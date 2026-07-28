@@ -8,7 +8,9 @@
 
 ```
 Mochi/
-├── config.yaml      # 统一配置（MySQL/Redis/AI/ASR/TTS）
+├── config/          # 主配置 + data/ 词表与 prompt
+│   ├── config.yaml
+│   └── data/
 ├── server/          # Go 单体后端
 ├── desktop/         # Tauri 2 + Vue3 桌宠客户端
 ├── deployments/     # 部署说明（不使用 Docker）
@@ -19,13 +21,16 @@ Mochi/
 
 ### 1. 编辑配置
 
-所有配置在项目根目录 `config.yaml`：
+所有配置在 `config/config.yaml`（词表/prompt 在 `config/data/`）：
 
 - `database.*` — MySQL 连接
 - `redis.*` — Redis 连接
 - `ai.*` — 大模型 API（通义千问等）
-- `asr.*` / `tts.*` — 腾讯云语音识别与合成
+- `realtime.pipeline.*` — 流式 TTS 分句参数
+- `realtime.gate.*` — 回应门控；词表见 `config/data/gate_fastpath.yaml`
 - `client.api_base` — 桌面端 API 地址
+
+复制示例：`cp config/config.example.yaml config/config.yaml`
 
 ### 2. 启动后端
 
@@ -34,7 +39,7 @@ cd server
 go run ./cmd/server
 ```
 
-也可通过环境变量指定配置路径：`CONFIG_PATH=/path/to/config.yaml`
+也可通过环境变量指定配置路径：`CONFIG_PATH=/path/to/config/config.yaml`
 
 ### 3. 启动桌面客户端
 

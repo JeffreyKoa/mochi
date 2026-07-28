@@ -6,7 +6,9 @@ import path from 'path'
 
 function readServerPort(): number {
   const candidates = [
+    path.resolve(__dirname, '../config/config.yaml'),
     path.resolve(__dirname, '../config.yaml'),
+    path.resolve(__dirname, '../../config/config.yaml'),
     path.resolve(__dirname, '../../config.yaml'),
   ]
   for (const file of candidates) {

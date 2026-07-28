@@ -27,6 +27,7 @@ type Pipeline struct {
 	apiKey    string
 	ep        dashscope.EndpointConfig
 	gate      *ResponseGate
+	noiseFillers map[rune]bool
 }
 
 func NewPipeline(chatSvc *chat.Service, cfg config.RealtimeConfig, appCfg *config.Config) *Pipeline {
@@ -43,7 +44,8 @@ func NewPipeline(chatSvc *chat.Service, cfg config.RealtimeConfig, appCfg *confi
 	}
 
 	p.tts, p.ttsFormat = buildTTSSynth(cfg, apiKey, ep, ttsPreferMP3(cfg, false))
-	p.gate = NewResponseGate(cfg.Gate, apiKey, appCfg.AI.APIBase)
+	p.gate = NewResponseGate(cfg.Gate, appCfg.GateFastpath, appCfg.GateSystemPrompt, apiKey, appCfg.AI.APIBase)
+	p.noiseFillers = appCfg.NoiseFillers
 	return p
 }
 
@@ -196,7 +198,7 @@ func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text
 
 	// Noise gate: silently dismiss false-trigger ASR results (voice turns only)
 	// before they reach the chat history or the LLM.
-	if withVoice && isNoiseTranscript(text) {
+	if withVoice && p.isNoiseTranscript(text) {
 		log.Printf("[realtime] asr noise dismiss session=%s text=%q audio_bytes=%d", sess.ID, text, sess.TurnAudioBytes())
 		p.abortTurnSilent(sess, send)
 		return
@@ -729,17 +731,9 @@ func (p *Pipeline) failTurn(_ context.Context, sess *Session, send Sender, code,
 	p.setListening(sess, send)
 }
 
-// fillerRunes are standalone filler/exclamation characters. An ASR transcript
-// consisting only of these is treated as noise (coughs, sighs, background talk).
-var fillerRunes = map[rune]bool{
-	'嗯': true, '啊': true, '呃': true, '哦': true, '唉': true, '哎': true,
-	'哼': true, '咳': true, '额': true, '噢': true, '喔': true, '呀': true,
-	'哈': true, '嘿': true, '唔': true, '喂': true, '呐': true, '嗐': true,
-}
-
 // isNoiseTranscript reports whether an ASR transcript is a likely false
-// trigger: empty, shorter than 2 meaningful characters, or filler-only.
-func isNoiseTranscript(text string) bool {
+// trigger: empty or consisting solely of modal filler runes from config.
+func (p *Pipeline) isNoiseTranscript(text string) bool {
 	t := strings.TrimSpace(text)
 	if t == "" {
 		return true
@@ -751,15 +745,17 @@ func isNoiseTranscript(text string) bool {
 		}
 		rs = append(rs, r)
 	}
-	if len(rs) < 2 {
+	if len(rs) == 0 {
 		return true
 	}
+	allFiller := true
 	for _, r := range rs {
-		if !fillerRunes[r] {
-			return false
+		if !p.noiseFillers[r] {
+			allFiller = false
+			break
 		}
 	}
-	return true
+	return allFiller
 }
 
 func (p *Pipeline) Interrupt(sess *Session, send Sender) {

@@ -34,3 +34,39 @@ func TestStreamSanitizer(t *testing.T) {
 		t.Fatalf("flush should be empty, got %q", tail)
 	}
 }
+
+func TestSanitizeSpokenReply_EmDash(t *testing.T) {
+	in := "主人，我好想你——今天我们去散步吧！"
+	want := "主人，我好想你——今天我们去散步吧！"
+	if got := SanitizeSpokenReply(in); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestStreamSanitizer_FlushUnclosed(t *testing.T) {
+	tests := []struct {
+		feeds []string
+		want  string
+	}{
+		{[]string{"（未闭合动作"}, "未闭合动作"},
+		{[]string{"*歪着头"}, "歪着头"},
+		{[]string{"(微笑"}, "微笑"},
+	}
+	for _, tt := range tests {
+		var ss StreamSanitizer
+		for _, chunk := range tt.feeds {
+			ss.Feed(chunk)
+		}
+		if got := ss.Flush(); got != tt.want {
+			t.Fatalf("feeds=%v flush got %q, want %q", tt.feeds, got, tt.want)
+		}
+	}
+}
+
+func TestSanitizeSpokenReply_CJKSpaces(t *testing.T) {
+	in := "你 好 呀 世 界"
+	want := "你好呀世界"
+	if got := SanitizeSpokenReply(in); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}

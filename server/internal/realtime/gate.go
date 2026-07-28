@@ -16,56 +16,50 @@ import (
 // ResponseGate decides whether an ASR transcript deserves an LLM response.
 // It is fail-open: any error/timeout/parse failure lets the turn through.
 type ResponseGate struct {
-	apiKey   string
-	apiBase  string
-	model    string
-	timeout  time.Duration
-	maxChars int
-	client   *http.Client
+	apiKey        string
+	apiBase       string
+	model         string
+	timeout       time.Duration
+	maxChars      int
+	maxTokens     int
+	client        *http.Client
+	questionWords []string
+	addressWords  []string
+	shareWords    []string
+	systemPrompt  string
 }
 
 // NewResponseGate returns nil when the gate should be inactive
 // (disabled in config or no API key available).
-func NewResponseGate(cfg config.RealtimeGate, apiKey, apiBase string) *ResponseGate {
+func NewResponseGate(
+	cfg config.RealtimeGate,
+	fastpath config.GateFastpath,
+	systemPrompt, apiKey, apiBase string,
+) *ResponseGate {
 	if !cfg.Enabled || apiKey == "" {
 		return nil
 	}
 	model := cfg.Model
-	if model == "" {
-		model = "qwen-turbo"
-	}
 	timeoutMS := cfg.TimeoutMS
-	if timeoutMS <= 0 {
-		timeoutMS = 800
-	}
 	maxChars := cfg.MaxChars
-	if maxChars <= 0 {
-		maxChars = 200
-	}
+	maxTokens := cfg.MaxTokens
 	base := strings.TrimRight(apiBase, "/")
 	if base == "" {
 		base = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 	}
 	return &ResponseGate{
-		apiKey:   apiKey,
-		apiBase:  base,
-		model:    model,
-		timeout:  time.Duration(timeoutMS) * time.Millisecond,
-		maxChars: maxChars,
-		client:   &http.Client{Timeout: time.Duration(timeoutMS) * time.Millisecond},
+		apiKey:        apiKey,
+		apiBase:       base,
+		model:         model,
+		timeout:       time.Duration(timeoutMS) * time.Millisecond,
+		maxChars:      maxChars,
+		maxTokens:     maxTokens,
+		client:        &http.Client{Timeout: time.Duration(timeoutMS) * time.Millisecond},
+		questionWords: fastpath.QuestionWords,
+		addressWords:  fastpath.AddressWords,
+		shareWords:    fastpath.ShareWords,
+		systemPrompt:  systemPrompt,
 	}
-}
-
-// gateQuestionWords are Chinese interrogative words that strongly imply the
-// user is asking something — fast-path pass without an LLM call.
-var gateQuestionWords = []string{
-	"吗", "呢", "什么", "为什么", "怎么", "怎样", "哪", "谁", "多少", "几",
-}
-
-// gateAddressWords pass without LLM when user clearly addresses the pet.
-var gateAddressWords = []string{
-	"你好", "在吗", "在不在", "喂", "嗨", "hello", "hi",
-	"过来", "说话", "回答", "帮我", "请你", "麻烦",
 }
 
 // Decide reports whether the turn should proceed to the LLM, plus a short
@@ -76,11 +70,10 @@ func (g *ResponseGate) Decide(ctx context.Context, text, petName string) (bool, 
 		return false, "empty"
 	}
 
-	// Fast path: questions and direct address pass with zero latency.
 	if strings.ContainsAny(t, "?？") {
 		return true, "fastpath:question_mark"
 	}
-	for _, w := range gateQuestionWords {
+	for _, w := range g.questionWords {
 		if strings.Contains(t, w) {
 			return true, "fastpath:question_word:" + w
 		}
@@ -88,13 +81,17 @@ func (g *ResponseGate) Decide(ctx context.Context, text, petName string) (bool, 
 	if petName != "" && strings.Contains(t, petName) {
 		return true, "fastpath:pet_name"
 	}
-	for _, w := range gateAddressWords {
+	for _, w := range g.shareWords {
+		if strings.Contains(t, w) {
+			return true, "fastpath:share:" + w
+		}
+	}
+	for _, w := range g.addressWords {
 		if strings.Contains(t, w) {
 			return true, "fastpath:address:" + w
 		}
 	}
 
-	// Truncate overly long transcripts to keep the gate cheap.
 	runes := []rune(t)
 	if len(runes) > g.maxChars {
 		t = string(runes[:g.maxChars])
@@ -109,11 +106,6 @@ func (g *ResponseGate) Decide(ctx context.Context, text, petName string) (bool, 
 	}
 	return true, "llm:respond=true"
 }
-
-const gateSystemPrompt = `你是语音助手的回应判断器。判断用户这句话是否在对桌面宠物说话且需要回应。
-自言自语、对别人说话、无意义碎片、背景对话 → respond=false；
-提问、指令、问候、分享、闲聊 → respond=true。
-只输出JSON {"respond":true} 或 {"respond":false}，不要输出任何其他内容。`
 
 type gateChatMessage struct {
 	Role    string `json:"role"`
@@ -141,11 +133,11 @@ func (g *ResponseGate) askModel(ctx context.Context, text, petName string) (bool
 	reqBody := gateChatRequest{
 		Model: g.model,
 		Messages: []gateChatMessage{
-			{Role: "system", Content: gateSystemPrompt},
+			{Role: "system", Content: g.systemPrompt},
 			{Role: "user", Content: userMsg},
 		},
 		Temperature: 0,
-		MaxTokens:   20,
+		MaxTokens:   g.maxTokens,
 	}
 	body, err := json.Marshal(reqBody)
 	if err != nil {
@@ -190,7 +182,6 @@ func (g *ResponseGate) askModel(ctx context.Context, text, petName string) (bool
 // Fail-open: unparseable output yields respond=true.
 func parseGateAnswer(content string) (bool, error) {
 	c := strings.TrimSpace(content)
-	// Strip markdown code fences if present.
 	c = strings.TrimPrefix(c, "```json")
 	c = strings.TrimPrefix(c, "```")
 	c = strings.TrimSuffix(c, "```")

@@ -13,14 +13,11 @@ var (
 	emojiRE          = regexp.MustCompile(`[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}]`)
 )
 
-// SanitizeSpokenReply strips stage directions, emojis, and poetic narrative tails.
+// SanitizeSpokenReply strips stage directions, emojis, and unwanted formatting.
 func SanitizeSpokenReply(s string) string {
 	s = StripActionParentheticals(s)
 	s = emojiRE.ReplaceAllString(s, "")
 	s = strings.ReplaceAll(s, "光粒", "Mochi")
-	if idx := strings.Index(s, "——"); idx > 0 {
-		s = s[:idx]
-	}
 	return collapseSpaces(strings.TrimSpace(s))
 }
 
@@ -57,8 +54,8 @@ func (ss *StreamSanitizer) Flush() string {
 	if held == "" {
 		return ""
 	}
-	// Drop an unfinished action block rather than speaking/displaying it.
-	return collapseSpaces(strings.TrimSpace(stripCompleteParentheticals(held, &ss.hold)))
+	h := strings.TrimLeft(held, "（(*")
+	return collapseSpaces(strings.TrimSpace(h))
 }
 
 func stripCompleteParentheticals(s string, hold *strings.Builder) string {
@@ -100,6 +97,29 @@ func collapseSpaces(s string) string {
 	if s == "" {
 		return ""
 	}
-	fields := strings.Fields(s)
-	return strings.Join(fields, " ")
+	var buf strings.Builder
+	inSpace := false
+	var prevRune rune
+	for _, r := range s {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			inSpace = true
+			continue
+		}
+		if inSpace {
+			if buf.Len() > 0 && !isCJK(prevRune) && !isCJK(r) {
+				buf.WriteByte(' ')
+			}
+			inSpace = false
+		}
+		buf.WriteRune(r)
+		prevRune = r
+	}
+	return buf.String()
 }
+
+func isCJK(r rune) bool {
+	return (r >= 0x4E00 && r <= 0x9FFF) ||
+		(r >= 0x3000 && r <= 0x303F) ||
+		(r >= 0xFF00 && r <= 0xFFEF)
+}
+

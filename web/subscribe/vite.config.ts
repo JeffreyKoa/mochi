@@ -5,10 +5,16 @@ import fs from 'fs'
 import path from 'path'
 
 function readServerPort(): number {
-  const cfg = path.resolve(__dirname, '../../config.yaml')
-  if (!fs.existsSync(cfg)) return 8081
-  const m = fs.readFileSync(cfg, 'utf-8').match(/^server:\s*\n(?:.*\n)*?\s*port:\s*(\d+)/m)
-  return m ? parseInt(m[1], 10) : 8081
+  const candidates = [
+    path.resolve(__dirname, '../../config/config.yaml'),
+    path.resolve(__dirname, '../../config.yaml'),
+  ]
+  for (const cfg of candidates) {
+    if (!fs.existsSync(cfg)) continue
+    const m = fs.readFileSync(cfg, 'utf-8').match(/^server:\s*\n(?:.*\n)*?\s*port:\s*(\d+)/m)
+    if (m) return parseInt(m[1], 10)
+  }
+  return 8081
 }
 
 const backend = `http://localhost:${readServerPort()}`

@@ -1,0 +1,130 @@
+# Mochi 主配置示例 — 复制为 config/config.yaml 并填写密钥
+# cp config/config.example.yaml config/config.yaml
+
+server:
+  port: 8081
+  mode: release
+
+log:
+  dir: logs
+
+database:
+  host: 127.0.0.1
+  port: 3306
+  name: mochi
+  user: root
+  password: "CHANGE_ME"
+  max_open_conns: 50
+  max_idle_conns: 10
+  conn_max_lifetime: 5m
+  auto_migrate: false
+
+redis:
+  host: 127.0.0.1
+  port: 6379
+  db: 0
+  password: ""
+
+jwt:
+  secret: "CHANGE_ME"
+
+ai:
+  name: "qwen-plus"
+  api_base: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  api_key: "CHANGE_ME"
+  model_code: "qwen-plus"
+  enable_search: true
+  search_strategy: turbo
+
+client:
+  api_base: "http://localhost:8081"
+
+realtime:
+  enabled: true
+  stt_mode: cloud
+  prewarm_enabled: true
+  dashscope:
+    workspace_id: ""
+    region: cn-beijing
+    ws_url: ""
+  vad:
+    model: silero
+    silence_ms: 700
+    min_speech_ms: 250
+    endpointing_enabled: true
+  barge_in:
+    echo_guard_ms: 1800
+    peak_threshold: 0.06
+    barge_in_ms: 800
+  asr:
+    provider: dashscope
+    model: paraformer-realtime-v2
+    sample_rate: 16000
+    noise_fillers_file: data/asr_noise_fillers.yaml
+  tts:
+    provider: dashscope
+    model: cosyvoice-v2
+    voice: longxiaochun_v2
+    sample_rate: 22050
+    transport: opus
+    opus:
+      sample_rate: 48000
+      bitrate: 24000
+      frame_ms: 20
+      application: voip
+  pipeline:
+    tts_min_chars: 8
+    tts_first_min_chars: 3
+    tts_weak_punct_min_chars: 8
+    tts_force_flush_chars: 24
+    tts_punctuation: "。！？，、~.!?,;"
+    tts_strong_punctuation: "。！？~!?.\n"
+    tts_weak_punctuation: "，、,"
+  gate:
+    enabled: true
+    model: qwen-turbo
+    timeout_ms: 800
+    max_chars: 200
+    max_tokens: 20
+    fastpath_file: data/gate_fastpath.yaml
+    system_prompt_file: data/gate_system_prompt.txt
+
+growth:
+  enabled: true
+  user_brief_char_budget: 1400
+  memory_prompt_char_budget: 400
+  reflection_enabled: true
+  reflection_min_turn_chars: 4
+  write_approval: false
+  style_evolution_enabled: true
+  style_evolution_threshold: 3
+
+companion:
+  proactive_enabled: true
+  max_daily_proactive: 3
+  quiet_hours: [23, 8]
+  follow_up_enabled: true
+  morning_greeting: true
+  evening_greeting: false
+
+tools:
+  enabled: true
+  mode: tool_calling
+  min_rapport_for_suggest: 60
+  min_trust_for_auto_create: 30
+  reminder_tick_seconds: 5
+  max_pending_reminders: 50
+  tool_turn_max_tokens: 256
+
+wellness:
+  enabled: true
+  tick_minutes: 10
+  max_daily_nudges: 2
+  activity_idle_break_minutes: 5
+  drink_active_minutes: 90
+  rest_active_minutes: 120
+  overwork_active_minutes: 180
+  meal_windows:
+    lunch: ["12:00", "13:00"]
+    dinner: ["18:00", "19:00"]
+  evening_rest_hour: 22
