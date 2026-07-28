@@ -3,6 +3,21 @@
  * Supports sub-10ms decoding latency, smooth queueing, and instant barge-in stop.
  */
 
+export function isOpusDecodeSupported(): boolean {
+  if (typeof AudioDecoder === 'undefined') return false
+  try {
+    const probe = new AudioDecoder({
+      output: () => {},
+      error: () => {},
+    })
+    probe.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1 })
+    probe.close()
+    return true
+  } catch {
+    return false
+  }
+}
+
 export class OpusStreamPlayer {
   private audioCtx: AudioContext | null = null
   private decoder: AudioDecoder | null = null
@@ -16,6 +31,12 @@ export class OpusStreamPlayer {
 
   constructor() {
     this.initDecoder()
+  }
+
+  private droppedFrames = 0
+
+  get droppedFrameCount(): number {
+    return this.droppedFrames
   }
 
   private initDecoder() {
@@ -69,6 +90,7 @@ export class OpusStreamPlayer {
     }
 
     if (!this.decoder || this.decoder.state !== 'configured') {
+      this.droppedFrames++
       if (import.meta.env.DEV) {
         console.warn('[OpusStreamPlayer] AudioDecoder not ready, dropping frame')
       }
@@ -138,6 +160,7 @@ export class OpusStreamPlayer {
   }
 
   stop() {
+    this.droppedFrames = 0
     this.activeSources.forEach((src) => {
       try {
         src.stop()

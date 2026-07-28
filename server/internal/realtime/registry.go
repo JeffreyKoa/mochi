@@ -5,7 +5,8 @@ import (
 )
 
 type sessionSender struct {
-	send func(WSMessage) error
+	send    func(WSMessage) error
+	onEvict func()
 }
 
 type Registry struct {
@@ -17,13 +18,19 @@ func NewRegistry() *Registry {
 	return &Registry{sessions: make(map[uint64]map[string]sessionSender)}
 }
 
-func (r *Registry) Register(userID uint64, sessionID string, send func(WSMessage) error) {
+func (r *Registry) Register(userID uint64, sessionID string, send func(WSMessage) error, onEvict func()) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.sessions[userID] == nil {
 		r.sessions[userID] = make(map[string]sessionSender)
+	} else {
+		for id, s := range r.sessions[userID] {
+			if id != sessionID && s.onEvict != nil {
+				s.onEvict()
+			}
+		}
 	}
-	r.sessions[userID][sessionID] = sessionSender{send: send}
+	r.sessions[userID][sessionID] = sessionSender{send: send, onEvict: onEvict}
 }
 
 func (r *Registry) Unregister(userID uint64, sessionID string) {

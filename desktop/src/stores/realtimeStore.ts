@@ -3,12 +3,19 @@ import { computed, ref } from 'vue'
 import { PCMCapture, arrayBufferToBase64, pcmPeakLevel, amplifyPCM } from '@/services/pcmCapture'
 import { realtimeSession, type RealtimeEvent } from '@/services/realtimeSession'
 import { usePetStore } from '@/stores/petStore'
-import { TTSAudioQueue } from '@/services/ttsAudioPlayer'
+import { TTSAudioQueue, isOpusDecodeSupported } from '@/services/ttsAudioPlayer'
 import { HybridSpeechVad, pcmToFloat, type VADEvent } from '@/services/sileroSpeechVad'
 import { LocalSTT, isLocalSttSupported } from '@/services/localStt'
+import { SpeakerVerifier } from '@/services/speakerVerifier'
 import { getRealtimeConfig, initClientConfig, resolveSttMode } from '@/config'
 import { handleProactiveMessage } from '@/services/proactiveHandler'
-import { streamChatMessage } from '@/services/api'
+import { streamChatMessage, getVoiceprintStatus } from '@/services/api'
+import {
+  type VoiceOwner,
+  getStoredVoiceOwner,
+  isChatWindowVisible,
+} from '@/services/voiceSessionOwner'
+import { isTauri } from '@/services/chatWindow'
 
 /**
  * Turn phases — like talking to a person:
@@ -25,11 +32,16 @@ export interface ChatMessage {
   createdAt?: string | number
 }
 
-const WAKE_PEAK = 0.022
-const SPEECH_PEAK = 0.025
+const WAKE_PEAK = 0.06
+const SPEECH_PEAK = 0.05
+const WAKE_CONFIRM_MS = 120
 const TTS_WATCHDOG_MS = 45000
 const TEXT_TURN_ACK_MS = 6000
 const MAX_UTTERANCE_MS = 25000
+const PCM_RING_CHUNKS = 200 // ~4 s @ 20 ms/chunk
+const PCM_RING_SAMPLES = PCM_RING_CHUNKS * 320 // 16 kHz mono
+const VOICEPRINT_THRESHOLD = 0.40
+const VOICEPRINT_VERIFY_SEC = 2.5
 
 interface RuntimeParams {
   silenceMs: number
@@ -91,6 +103,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
   let submitLock = false
   let ttsStartedAt = 0
   let bargeAccumMs = 0
+  let wakeAccumMs = 0
   let textSending = false
   let pendingTextTurn: string | null = null
   let textViaRest = false
@@ -100,6 +113,83 @@ export const useRealtimeStore = defineStore('realtime', () => {
   let playbackMarked = false
   let lastEndpointAt = 0
   let lastTurnMetrics: import('@/services/realtimeSession').TurnMetrics | null = null
+  /** Which window may hold /ws/voice: pet | chat | inline (browser single-window). */
+  let voiceWindow: VoiceOwner | 'inline' = 'inline'
+
+  function setVoiceWindow(window: VoiceOwner | 'inline') {
+    voiceWindow = window
+  }
+
+  async function shouldOwnVoice(): Promise<boolean> {
+    if (voiceWindow === 'inline') return true
+    if (!isTauri()) return true
+    const owner = getStoredVoiceOwner()
+    if (voiceWindow === 'chat') return owner === 'chat'
+    if (voiceWindow === 'pet') {
+      if (await isChatWindowVisible()) return false
+      return owner === null || owner === 'pet'
+    }
+    return false
+  }
+
+  async function yieldVoiceConnection() {
+    ttsPlayer.stop()
+    if (recording || talking.value) {
+      await endConversation()
+    } else {
+      disconnect()
+    }
+  }
+
+  async function connectIfOwner() {
+    if (!(await shouldOwnVoice())) return
+    await connect()
+  }
+
+  const speakerVerifier = new SpeakerVerifier()
+  let ownerEmbedding: Float32Array | null = null
+  const pcmRing = new Float32Array(PCM_RING_SAMPLES)
+  let pcmRingWrite = 0
+
+  function pushPcmRing(samples: Float32Array) {
+    for (let i = 0; i < samples.length; i++) {
+      pcmRing[pcmRingWrite] = samples[i]
+      pcmRingWrite = (pcmRingWrite + 1) % PCM_RING_SAMPLES
+    }
+  }
+
+  function snapshotPcmRing(): Float32Array {
+    const out = new Float32Array(PCM_RING_SAMPLES)
+    const tail = pcmRing.subarray(pcmRingWrite)
+    const head = pcmRing.subarray(0, pcmRingWrite)
+    out.set(tail, 0)
+    out.set(head, tail.length)
+    return out
+  }
+
+  function resetPcmRing() {
+    pcmRing.fill(0)
+    pcmRingWrite = 0
+  }
+
+  async function loadOwnerVoiceprint() {
+    ownerEmbedding = null
+    try {
+      const status = await getVoiceprintStatus()
+      if (status.enrolled && status.embedding?.length) {
+        ownerEmbedding = new Float32Array(status.embedding)
+      }
+    } catch {
+      ownerEmbedding = null
+    }
+  }
+
+  function snapshotRecentPcm(maxSeconds = VOICEPRINT_VERIFY_SEC): Float32Array {
+    const maxSamples = Math.floor(maxSeconds * 16000)
+    const full = snapshotPcmRing()
+    if (full.length <= maxSamples) return full
+    return full.subarray(full.length - maxSamples)
+  }
 
   function resetTurnTiming() {
     turnStartAt = 0
@@ -180,6 +270,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     pendingTextTurn = null
     textViaRest = false
     const finalReply = replyText.value.trim()
+    const hadVoice = ttsPlayer.hadPlayback
     if (finalReply) syncReplyBubble(finalReply)
     replyText.value = ''
     if (recording) {
@@ -187,7 +278,16 @@ export const useRealtimeStore = defineStore('realtime', () => {
         if (finalReply) usePetStore().updateVoiceBubble(finalReply)
         usePetStore().releaseVoiceBubble()
         resetTurnTiming()
-        enterResting()
+        ttsPlayer.resetTurn()
+        let hint: string | undefined
+        if (!finalReply) {
+          hint = '没听清或不需要回应，请再说一次'
+        } else if (!hadVoice && finalReply) {
+          hint = isOpusDecodeSupported()
+            ? '文字已回复，语音播放失败，请检查音量'
+            : '文字已回复（当前环境不支持 Opus，已请求 MP3）'
+        }
+        enterResting(hint)
         usePetStore().syncAnimationFromState()
       })
     } else {
@@ -318,7 +418,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
   }
 
   /** Mochi goes back to sleep — mic stays open but nothing is uploaded. */
-  function enterResting() {
+  function enterResting(hint?: string) {
     clearTtsWatchdog()
     setPhase('resting')
     submitLock = false
@@ -329,12 +429,14 @@ export const useRealtimeStore = defineStore('realtime', () => {
     lastSpeechAt = 0
     utteranceStartedAt = 0
     bargeAccumMs = 0
+    wakeAccumMs = 0
     ttsStartedAt = 0
     resetTurnTiming()
     chunksSent.value = 0
+    resetPcmRing()
     speechVad?.reset()
     if (recording) {
-      statusText.value = 'Mochi 在休息... 说话我就听'
+      statusText.value = hint ?? 'Mochi 在休息... 说话我就听'
       usePetStore().setAnimation('idle')
       if (effectiveSttMode === 'local') {
         startLocalListening()
@@ -403,7 +505,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
       enterResting()
       return
     }
-    if (!force && peakSeen < 0.012) {
+    if (!force && peakSeen < 0.03) {
       enterResting()
       return
     }
@@ -424,17 +526,42 @@ export const useRealtimeStore = defineStore('realtime', () => {
     statusText.value = '处理中...'
     turnStartAt = Date.now()
     playbackMarked = false
+    ttsPlayer.resetTurn()
 
-    const sent = realtimeSession.sendAudioEnd()
-    if (!sent) {
-      enterResting()
-      statusText.value = '连接断开，请关闭面板重新打开'
-      return
-    }
+    void (async () => {
+      if (
+        speakerVerifier.available &&
+        ownerEmbedding &&
+        ownerEmbedding.length > 0
+      ) {
+        try {
+          const pcm = snapshotRecentPcm()
+          const result = await speakerVerifier.verify(pcm, ownerEmbedding, VOICEPRINT_THRESHOLD)
+          if (import.meta.env.DEV && result) {
+            console.debug('[voiceprint] verify score=%s match=%s', result.score.toFixed(3), result.match)
+          }
+          if (result && !result.match) {
+            submitLock = false
+            enterResting(`不是主人的声音（${result.score.toFixed(2)}），已忽略`)
+            return
+          }
+        } catch (e) {
+          if (import.meta.env.DEV) console.warn('[voiceprint] verify fail-open', e)
+        }
+      }
 
-    setTimeout(() => {
-      submitLock = false
-    }, 800)
+      const sent = realtimeSession.sendAudioEnd()
+      if (!sent) {
+        submitLock = false
+        enterResting()
+        statusText.value = '连接断开，请关闭面板重新打开'
+        return
+      }
+
+      setTimeout(() => {
+        submitLock = false
+      }, 800)
+    })()
   }
 
   function handleVadEvent(ev: VADEvent) {
@@ -613,6 +740,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
   }
 
   async function connect() {
+    if (!(await shouldOwnVoice())) return
     if (connected.value && realtimeSession.isOpen()) return
 
     if (connected.value && !realtimeSession.isOpen()) {
@@ -627,6 +755,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     unsub = realtimeSession.on(handleEvent)
     try {
       await realtimeSession.connect()
+      realtimeSession.sendClientCaps()
     } catch {
       connected.value = false
       unsub?.()
@@ -639,8 +768,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
     statusText.value = recording ? '点击开始对话' : '输入消息或开始语音对话'
   }
 
-  /** Keep /ws/voice open for push reminders (no mic). */
+  /** Keep /ws/voice open for push reminders (pet window only, chat closed). */
   async function ensurePushConnected() {
+    if (!(await shouldOwnVoice())) return
     if (connected.value) return
     try {
       await connect()
@@ -663,6 +793,11 @@ export const useRealtimeStore = defineStore('realtime', () => {
 
     try {
       await capture.start((pcm, _seq) => {
+        const rawFloat = pcmToFloat(pcm)
+        if (phase === 'resting' || phase === 'user_speaking') {
+          pushPcmRing(rawFloat)
+        }
+
         const boosted = amplifyPCM(pcm)
         const peak = pcmPeakLevel(boosted)
         micLevel.value = peak
@@ -670,7 +805,13 @@ export const useRealtimeStore = defineStore('realtime', () => {
         if (phase === 'resting') {
           speechVad?.feed(pcmToFloat(boosted))
           if (peak >= WAKE_PEAK) {
-            wakeOnSpeech()
+            wakeAccumMs += 20
+            if (wakeAccumMs >= WAKE_CONFIRM_MS) {
+              wakeAccumMs = 0
+              wakeOnSpeech()
+            }
+          } else {
+            wakeAccumMs = 0
           }
           return
         }
@@ -748,6 +889,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
     realtimeSession.sendPrewarm()
 
     effectiveSttMode = resolveSttMode(getRealtimeConfig(), isLocalSttSupported())
+
+    await speakerVerifier.init().catch(() => {})
+    await loadOwnerVoiceprint()
 
     partialText.value = ''
     replyText.value = ''
@@ -846,9 +990,12 @@ export const useRealtimeStore = defineStore('realtime', () => {
         setPhase('agent_speaking')
         if (!ttsStartedAt) ttsStartedAt = Date.now()
         statusText.value = 'Mochi 正在说话...（大声说话可打断）'
-        ttsPlayer.enqueue(audio, ev.format, markPlaybackStart)
+        ttsPlayer.enqueue(audio, ev.format, markPlaybackStart, ev.seq)
         break
       }
+      case 'tts_segment_done':
+        ttsPlayer.flushSegment()
+        break
       case 'tts_done':
         if (phase !== 'resting' && phase !== 'idle') {
           finishTextTurn()
@@ -941,7 +1088,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
           clearTtsWatchdog()
           void sendTextViaRest(pendingTextTurn)
           statusText.value = '连接断开，改用文字通道...'
-          void connect().catch(() => {})
+          void connectIfOwner().catch(() => {})
           break
         }
         clearTtsWatchdog()
@@ -950,7 +1097,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
         setPhase('idle')
         resting.value = false
         statusText.value = '连接断开，正在重连...'
-        void connect().catch(() => {
+        void connectIfOwner().catch(() => {
           statusText.value = '连接断开，请关闭面板重新打开'
         })
         break
@@ -971,6 +1118,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
     processing: processingRef,
     userSpeaking,
     connect,
+    connectIfOwner,
+    setVoiceWindow,
+    yieldVoiceConnection,
     ensurePushConnected,
     disconnect,
     startTalk,

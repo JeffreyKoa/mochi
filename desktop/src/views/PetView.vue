@@ -25,6 +25,12 @@ import {
 import { getClientConfig, initClientConfig } from '@/config'
 import PetCanvas from '@/components/pet/PetCanvas.vue'
 import { onLipSync } from '@/services/voice'
+import {
+  claimVoiceOwner,
+  setupVoiceOwnerListener,
+  isChatWindowVisible,
+} from '@/services/voiceSessionOwner'
+import type { UnlistenFn } from '@tauri-apps/api/event'
 
 const { sidePanelOpen = false } = defineProps<{ sidePanelOpen?: boolean }>()
 
@@ -54,6 +60,7 @@ let clickTimer: ReturnType<typeof setTimeout> | null = null
 let suppressClick = false
 let roamer: PetRoamer | null = null
 let unlistenPetMoved: (() => void) | null = null
+let unlistenVoiceOwner: UnlistenFn | null = null
 
 let dragPointerId = -1
 let dragWindowBase = { x: 0, y: 0 }
@@ -237,25 +244,46 @@ onMounted(async () => {
 
   if (auth.isLoggedIn) {
     await initClientConfig().catch(() => {})
-    rt.connect().catch(() => {})
+    if (isTauri()) {
+      rt.setVoiceWindow('pet')
+      unlistenVoiceOwner = await setupVoiceOwnerListener('pet', {
+        onAcquire: () => rt.connectIfOwner(),
+        onYield: () => rt.yieldVoiceConnection(),
+      })
+      if (!(await isChatWindowVisible())) {
+        await claimVoiceOwner('pet')
+        await rt.connectIfOwner()
+      }
+    } else {
+      rt.setVoiceWindow('inline')
+      await rt.connectIfOwner()
+    }
   }
 
   try {
     const { listen } = await import('@tauri-apps/api/event')
-    await listen('chat-closed', () => {
+    await listen('chat-closed', async () => {
       pet.isChatOpen = false
       chatExternal.value = false
       pet.chatInline = false
       setPopupChatFollowsPet(false)
+      if (auth.isLoggedIn && isTauri()) {
+        await claimVoiceOwner('pet')
+        await rt.connectIfOwner()
+      }
       if (!rt.talking && !rt.processing) roamer?.resume()
     })
-    await listen('side-panel-closed', (event) => {
+    await listen('side-panel-closed', async (event) => {
       const mode = (event.payload as { mode?: string } | undefined)?.mode
       if (mode === 'settings') growth.closeSettings()
       if (mode === 'chat' || !mode) {
         pet.isChatOpen = false
         pet.chatInline = false
         chatExternal.value = false
+        if (auth.isLoggedIn && isTauri()) {
+          await claimVoiceOwner('pet')
+          await rt.connectIfOwner()
+        }
       }
       setPopupChatFollowsPet(false)
       if (!rt.talking && !rt.processing) roamer?.resume()
@@ -272,6 +300,8 @@ onUnmounted(() => {
   window.removeEventListener('resize', layoutSpeechBubble)
   unlistenLipSync?.()
   unlistenLipSync = null
+  unlistenVoiceOwner?.()
+  unlistenVoiceOwner = null
   roamer?.stop()
   unlistenPetMoved?.()
   unlistenPetMoved = null

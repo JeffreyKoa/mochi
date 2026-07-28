@@ -257,7 +257,9 @@ async function loadUserData() {
     }
 
     setupWs()
-    void rt.ensurePushConnected()
+    if (!isChatWindow.value) {
+      void rt.ensurePushConnected()
+    }
     startActivityHeartbeat()
     healthMonitor.stop()
     loadError.value = ''

@@ -30,6 +30,7 @@ type Session struct {
 
 	turnLat        *TurnLatency
 	turnAudioBytes int
+	preferMP3      bool
 
 	onStateChange func(SessionState)
 }
@@ -136,4 +137,16 @@ func (s *Session) TurnAudioBytes() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.turnAudioBytes
+}
+
+func (s *Session) SetPreferMP3(v bool) {
+	s.mu.Lock()
+	s.preferMP3 = v
+	s.mu.Unlock()
+}
+
+func (s *Session) PreferMP3() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.preferMP3
 }

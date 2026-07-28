@@ -6,6 +6,9 @@ import { closeChatPanel, isTauri } from '@/services/chatWindow'
 import { getChatHistory } from '@/services/api'
 import { getClientConfig, initClientConfig } from '@/config'
 import { listenProactive } from '@/services/proactiveSync'
+import { claimVoiceOwner, releaseVoiceOwner } from '@/services/voiceSessionOwner'
+
+const props = defineProps<{ floating?: boolean; compact?: boolean; docked?: boolean }>()
 
 type HistoryRow = { role: string; content: string; created_at?: string }
 
@@ -22,8 +25,6 @@ function formatMessageTime(ts?: string | number): string {
   if (d.toDateString() === yesterday.toDateString()) return `昨天 ${time}`
   return `${d.getMonth() + 1}/${d.getDate()} ${time}`
 }
-
-defineProps<{ floating?: boolean; compact?: boolean; docked?: boolean }>()
 
 const pet = usePetStore()
 const rt = useRealtimeStore()
@@ -49,11 +50,27 @@ watch(
   () => void scrollToBottom(),
 )
 
+async function acquireChatVoice() {
+  if (props.floating && isTauri()) {
+    rt.setVoiceWindow('chat')
+    await claimVoiceOwner('chat')
+    await rt.connectIfOwner()
+  } else {
+    rt.setVoiceWindow('inline')
+    await rt.connectIfOwner()
+  }
+}
+
+async function releaseChatVoice() {
+  if (props.floating && isTauri()) {
+    await rt.yieldVoiceConnection()
+    await releaseVoiceOwner('chat')
+  }
+}
+
 async function close() {
   pet.isChatOpen = false
-  if (!rt.talking) {
-    rt.disconnect()
-  }
+  await releaseChatVoice()
   if (isTauri()) {
     await closeChatPanel()
     try {
@@ -104,12 +121,13 @@ onMounted(async () => {
     // history optional
   }
 
-  rt.connect().catch(() => {
+  await acquireChatVoice().catch(() => {
     rt.statusText = realtimeEnabled.value ? '连接失败' : '文字模式'
   })
 })
 
 onUnmounted(() => {
+  void releaseChatVoice()
   unlistenProactive?.()
   unlistenProactive = null
 })

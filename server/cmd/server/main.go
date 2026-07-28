@@ -14,6 +14,7 @@ import (
 	"github.com/mochi-ai/server/internal/emotion"
 	"github.com/mochi-ai/server/internal/life"
 	"github.com/mochi-ai/server/internal/lifecycle"
+	"github.com/mochi-ai/server/internal/logging"
 	"github.com/mochi-ai/server/internal/memory"
 	"github.com/mochi-ai/server/internal/onboarding"
 	"github.com/mochi-ai/server/internal/catalog"
@@ -24,6 +25,7 @@ import (
 	"github.com/mochi-ai/server/internal/reflection"
 	"github.com/mochi-ai/server/internal/router"
 	"github.com/mochi-ai/server/internal/voice"
+	"github.com/mochi-ai/server/internal/voiceprint"
 	"github.com/mochi-ai/server/internal/wellness"
 	"github.com/mochi-ai/server/internal/ws"
 	"github.com/mochi-ai/server/pkg/ai"
@@ -34,6 +36,12 @@ func main() {
 	if err != nil {
 		log.Fatal("load config:", err)
 	}
+
+	logCloser, err := logging.Setup(cfg.Log, config.LoadedPath())
+	if err != nil {
+		log.Fatal("setup logging:", err)
+	}
+	defer logCloser.Close()
 
 	db, err := database.NewMySQL(cfg.MySQLDSN(), cfg.Database)
 	if err != nil {
@@ -82,6 +90,9 @@ func main() {
 	wellnessSvc.Start()
 	wellnessHandler := wellness.NewHandler(wellnessSvc)
 
+	voiceprintSvc := voiceprint.NewService(db)
+	voiceprintHandler := voiceprint.NewHandler(voiceprintSvc)
+
 	companionScheduler := companion.NewScheduler(db, rdb, aiRouter, bondSvc, cfg.Companion, hub, toolsSvc, cfg.Tools, realtimeHandler)
 	companionScheduler.Start()
 
@@ -106,6 +117,7 @@ func main() {
 		Realtime:        realtimeHandler,
 		Tools:           toolsHandler,
 		Wellness:        wellnessHandler,
+		Voiceprint:      voiceprintHandler,
 		Hub:             hub,
 		AuthSvc:         authSvc,
 		ClientAPIBase:    cfg.Client.APIBase,

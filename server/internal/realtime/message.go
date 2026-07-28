@@ -12,6 +12,7 @@ const (
 	MsgInterrupt    = "interrupt"
 	MsgPrewarm      = "prewarm"
 	MsgPlaybackMark = "playback_mark"
+	MsgClientCaps   = "client_caps"
 )
 
 // Server → Client message types
@@ -23,6 +24,7 @@ const (
 	MsgLLMToken     = "llm_token"
 	MsgLLMDone      = "llm_done"
 	MsgTTSAudio     = "tts_audio"
+	MsgTTSSegmentDone = "tts_segment_done"
 	MsgTTSDone      = "tts_done"
 	MsgInterrupted  = "interrupted"
 	MsgTurnAck      = "turn_ack"
@@ -57,6 +59,11 @@ type AudioIn struct {
 type TextInput struct {
 	Text       string `json:"text"`
 	VoiceReply bool   `json:"voice_reply,omitempty"`
+}
+
+// ClientCaps advertises playback capabilities so the server can pick a compatible TTS transport.
+type ClientCaps struct {
+	OpusDecode bool `json:"opus_decode"`
 }
 
 type VADEvent struct {

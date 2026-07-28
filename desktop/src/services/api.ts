@@ -397,6 +397,39 @@ export async function completeTodo(id: number) {
   return data
 }
 
+export interface VoiceprintStatus {
+  enrolled: boolean
+  dim?: number
+  samples?: number
+  embedding?: number[]
+  updated_at?: string
+}
+
+export async function getVoiceprintStatus() {
+  const { data } = await request<VoiceprintStatus>(
+    `${getApiBase()}/api/v1/voiceprint/status`,
+    { headers: authHeaders() },
+  )
+  return data
+}
+
+export async function enrollVoiceprint(body: { embedding: number[]; samples: number }) {
+  const { data } = await request<VoiceprintStatus>(`${getApiBase()}/api/v1/voiceprint/enroll`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(body),
+  })
+  return data
+}
+
+export async function deleteVoiceprint() {
+  const { data } = await request(`${getApiBase()}/api/v1/voiceprint`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  })
+  return data
+}
+
 export function getWSUrl(): string {
   const token = getToken()
   const base = getApiBase()

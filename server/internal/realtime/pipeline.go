@@ -9,10 +9,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/mochi-ai/server/internal/chat"
 	"github.com/mochi-ai/server/internal/config"
 	"github.com/mochi-ai/server/pkg/dashscope"
+	"github.com/mochi-ai/server/pkg/opus"
 )
 
 // Pipeline orchestrates ASR → LLM → TTS (turn-based, half-duplex).
@@ -24,6 +26,7 @@ type Pipeline struct {
 	ttsFormat string
 	apiKey    string
 	ep        dashscope.EndpointConfig
+	gate      *ResponseGate
 }
 
 func NewPipeline(chatSvc *chat.Service, cfg config.RealtimeConfig, appCfg *config.Config) *Pipeline {
@@ -39,18 +42,30 @@ func NewPipeline(chatSvc *chat.Service, cfg config.RealtimeConfig, appCfg *confi
 		p.asr = newDashscopeASR(dashscope.NewASRClient(apiKey, cfg.ASR.Model, cfg.ASR.SampleRate, asrEp))
 	}
 
-	p.tts, p.ttsFormat = buildTTSSynth(cfg, apiKey, ep)
+	p.tts, p.ttsFormat = buildTTSSynth(cfg, apiKey, ep, ttsPreferMP3(cfg, false))
+	p.gate = NewResponseGate(cfg.Gate, apiKey, appCfg.AI.APIBase)
 	return p
 }
 
-func (p *Pipeline) getTTSForPet(ctx context.Context, userID uint64) (TTSSynthesizer, string) {
+func ttsPreferMP3(cfg config.RealtimeConfig, clientPreferMP3 bool) bool {
+	if clientPreferMP3 {
+		return true
+	}
+	if strings.ToLower(cfg.TTS.Transport) != "opus" {
+		return true
+	}
+	return !opus.Available()
+}
+
+func (p *Pipeline) getTTSForSession(ctx context.Context, sess *Session) (TTSSynthesizer, string) {
+	preferMP3 := ttsPreferMP3(p.cfg, sess.PreferMP3())
 	if p.tts == nil {
-		return nil, p.ttsFormat
+		return nil, "mp3"
 	}
 	if p.chat == nil {
 		return p.tts, p.ttsFormat
 	}
-	pet, err := p.chat.GetPetByUser(ctx, userID)
+	pet, err := p.chat.GetPetByUser(ctx, sess.UserID)
 	if err != nil || pet == nil {
 		return p.tts, p.ttsFormat
 	}
@@ -61,24 +76,28 @@ func (p *Pipeline) getTTSForPet(ctx context.Context, userID uint64) (TTSSynthesi
 		cfg.TTS.Voice = profile.DashscopeVoice
 	}
 
-	synth, fmtStr := buildTTSSynth(cfg, p.apiKey, p.ep)
+	synth, fmtStr := buildTTSSynth(cfg, p.apiKey, p.ep, preferMP3)
 	if synth != nil {
 		return synth, fmtStr
 	}
 	return p.tts, p.ttsFormat
 }
 
-func buildTTSSynth(cfg config.RealtimeConfig, apiKey string, ep dashscope.EndpointConfig) (TTSSynthesizer, string) {
+func buildTTSSynth(cfg config.RealtimeConfig, apiKey string, ep dashscope.EndpointConfig, preferMP3 bool) (TTSSynthesizer, string) {
 	format := "mp3"
 	if apiKey == "" {
 		return nil, format
 	}
 
 	client := dashscope.NewTTSClient(apiKey, cfg.TTS.Model, cfg.TTS.Voice, cfg.TTS.SampleRate, ep)
-	if strings.ToLower(cfg.TTS.Transport) == "opus" {
+	useOpusPath := strings.ToLower(cfg.TTS.Transport) == "opus" && !preferMP3 && opus.Available()
+	if useOpusPath {
 		client.SetAudioFormat("pcm")
 		format = "pcm"
 	} else {
+		if strings.ToLower(cfg.TTS.Transport) == "opus" && !opus.Available() {
+			log.Printf("[realtime] opus encoder unavailable, tts will use mp3")
+		}
 		format = client.AudioFormat()
 	}
 	return newDashscopeTTSSynth(client), format
@@ -175,6 +194,30 @@ func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text
 		}
 	}()
 
+	// Noise gate: silently dismiss false-trigger ASR results (voice turns only)
+	// before they reach the chat history or the LLM.
+	if withVoice && isNoiseTranscript(text) {
+		log.Printf("[realtime] asr noise dismiss session=%s text=%q audio_bytes=%d", sess.ID, text, sess.TurnAudioBytes())
+		p.abortTurnSilent(sess, send)
+		return
+	}
+
+	// Response gate: decide whether this utterance needs a reply at all
+	// (self-talk, background conversation, etc. are silently ignored).
+	if withVoice && p.gate != nil {
+		petName := ""
+		if p.chat != nil {
+			if pet, err := p.chat.GetPetByUser(ctx, sess.UserID); err == nil && pet != nil {
+				petName = pet.Name
+			}
+		}
+		if ok, reason := p.gate.Decide(ctx, text, petName); !ok {
+			log.Printf("[realtime] gate dismiss session=%s text=%q reason=%s", sess.ID, text, reason)
+			p.abortTurnSilent(sess, send)
+			return
+		}
+	}
+
 	_ = send.Send(MsgASRFinal, ASRText{Text: text})
 
 	if text == "" {
@@ -225,20 +268,27 @@ func (p *Pipeline) asyncSynthSegmentWithSynth(ctx context.Context, synth TTSSynt
 }
 
 // runPrefetchSegmentTTS synthesizes segments with one-ahead prefetch to hide inter-sentence gaps.
-func (p *Pipeline) runPrefetchSegmentTTS(ctx context.Context, synth TTSSynthesizer, segCh <-chan string, onChunk func([]byte)) error {
+func (p *Pipeline) runPrefetchSegmentTTS(ctx context.Context, synth TTSSynthesizer, segCh <-chan string, onChunk func([]byte), onSegmentDone func()) error {
 	var ttsErr error
 
 	var ahead <-chan segmentSynthResult
+
+	flushSegment := func(res segmentSynthResult) {
+		res = p.playSegmentResult(res, onChunk)
+		if res.err != nil && ttsErr == nil {
+			ttsErr = res.err
+		}
+		if onSegmentDone != nil && len(res.chunks) > 0 {
+			onSegmentDone()
+		}
+	}
 
 	for {
 		var seg string
 		var ok bool
 
 		if ahead != nil {
-			res := p.playSegmentResult(<-ahead, onChunk)
-			if res.err != nil && ttsErr == nil {
-				ttsErr = res.err
-			}
+			flushSegment(<-ahead)
 			ahead = nil
 
 			select {
@@ -264,19 +314,13 @@ func (p *Pipeline) runPrefetchSegmentTTS(ctx context.Context, synth TTSSynthesiz
 			if nextOK {
 				ahead = p.asyncSynthSegmentWithSynth(ctx, synth, nextSeg)
 			} else {
-				res := p.playSegmentResult(<-cur, onChunk)
-				if res.err != nil && ttsErr == nil {
-					ttsErr = res.err
-				}
+				flushSegment(<-cur)
 				return ttsErr
 			}
 		default:
 		}
 
-		res := p.playSegmentResult(<-cur, onChunk)
-		if res.err != nil && ttsErr == nil {
-			ttsErr = res.err
-		}
+		flushSegment(<-cur)
 	}
 }
 
@@ -301,7 +345,7 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 	fillerPlayed := false
 	isFirstSegment := true
 
-	ttsSynth, ttsFormat := p.getTTSForPet(ctx, sess.UserID)
+	ttsSynth, ttsFormat := p.getTTSForSession(ctx, sess)
 	if ttsSynth == nil {
 		ttsSynth = p.tts
 		ttsFormat = p.ttsFormat
@@ -309,12 +353,16 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 
 	var opusBridge *OpusBridge
 	var streamStartSent bool
-	if strings.ToLower(p.cfg.TTS.Transport) == "opus" {
+	useOpus := ttsFormat == "pcm"
+	if useOpus {
 		var err error
 		opusBridge, err = NewOpusBridge(p.cfg.TTS.SampleRate, p.cfg.TTS.Opus.Bitrate)
 		if err != nil {
-			log.Printf("[realtime] opus unavailable, fallback to %s: %v", ttsFormat, err)
+			log.Printf("[realtime] opus bridge failed, fallback to %s: %v", ttsFormat, err)
+			useOpus = false
 		}
+	} else if sess.PreferMP3() || ttsFormat == "mp3" {
+		log.Printf("[realtime] tts transport=%s session=%s", ttsFormat, sess.ID)
 	}
 
 	onAudio := func(audio []byte) {
@@ -351,6 +399,10 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 				_ = send.SendTTSAudioBinary(frame, "opus", seq)
 			}
 		} else {
+			if ttsFormat == "pcm" {
+				log.Printf("[realtime] skip pcm chunk: opus bridge unavailable session=%s", sess.ID)
+				return
+			}
 			seq := sess.NextTTSSeq()
 			_ = send.SendTTSAudioBinary(audio, ttsFormat, seq)
 		}
@@ -363,7 +415,10 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		ttsDone = make(chan struct{})
 		go func() {
 			defer close(ttsDone)
-			err := p.runPrefetchSegmentTTS(ctx, ttsSynth, segCh, onAudio)
+			onSegmentDone := func() {
+				_ = send.Send(MsgTTSSegmentDone, map[string]any{})
+			}
+			err := p.runPrefetchSegmentTTS(ctx, ttsSynth, segCh, onAudio, onSegmentDone)
 			if opusBridge != nil {
 				if frames, errFl := opusBridge.Flush(); errFl == nil {
 					for _, frame := range frames {
@@ -544,15 +599,23 @@ func (p *Pipeline) speakAudio(ctx context.Context, sess *Session, send Sender, r
 	var chunks int
 	var opusBridge *OpusBridge
 	var streamStartSent bool
-	if strings.ToLower(p.cfg.TTS.Transport) == "opus" {
+	ttsSynth, ttsFormat := p.getTTSForSession(ctx, sess)
+	if ttsSynth == nil {
+		ttsSynth = p.tts
+		ttsFormat = p.ttsFormat
+	}
+
+	useOpus := ttsFormat == "pcm"
+	if useOpus {
 		var err error
 		opusBridge, err = NewOpusBridge(p.cfg.TTS.SampleRate, p.cfg.TTS.Opus.Bitrate)
 		if err != nil {
-			log.Printf("[realtime] opus unavailable in speakAudio, fallback to %s: %v", p.ttsFormat, err)
+			log.Printf("[realtime] opus bridge failed in speakAudio, fallback to %s: %v", ttsFormat, err)
+			useOpus = false
 		}
 	}
 
-	err := p.tts.Synthesize(ctx, reply, func(audio []byte) {
+	err := ttsSynth.Synthesize(ctx, reply, func(audio []byte) {
 		select {
 		case <-ctx.Done():
 			return
@@ -578,12 +641,16 @@ func (p *Pipeline) speakAudio(ctx context.Context, sess *Session, send Sender, r
 				}
 			}
 		} else {
+			if ttsFormat == "pcm" {
+				log.Printf("[realtime] skip pcm chunk in speakAudio: opus bridge unavailable session=%s", sess.ID)
+				return
+			}
 			seq := sess.NextTTSSeq()
-			_ = send.SendTTSAudioBinary(audio, p.ttsFormat, seq)
+			_ = send.SendTTSAudioBinary(audio, ttsFormat, seq)
 		}
 	})
 
-	if opusBridge != nil {
+	if opusBridge != nil && useOpus {
 		if frames, errFl := opusBridge.Flush(); errFl == nil {
 			for _, frame := range frames {
 				seq := sess.NextTTSSeq()
@@ -660,6 +727,39 @@ func (p *Pipeline) failTurn(_ context.Context, sess *Session, send Sender, code,
 	_ = send.Send(MsgError, ErrorData{Code: code, Message: message})
 	_ = send.Send(MsgTTSDone, map[string]any{})
 	p.setListening(sess, send)
+}
+
+// fillerRunes are standalone filler/exclamation characters. An ASR transcript
+// consisting only of these is treated as noise (coughs, sighs, background talk).
+var fillerRunes = map[rune]bool{
+	'嗯': true, '啊': true, '呃': true, '哦': true, '唉': true, '哎': true,
+	'哼': true, '咳': true, '额': true, '噢': true, '喔': true, '呀': true,
+	'哈': true, '嘿': true, '唔': true, '喂': true, '呐': true, '嗐': true,
+}
+
+// isNoiseTranscript reports whether an ASR transcript is a likely false
+// trigger: empty, shorter than 2 meaningful characters, or filler-only.
+func isNoiseTranscript(text string) bool {
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return true
+	}
+	rs := make([]rune, 0, len(t))
+	for _, r := range t {
+		if unicode.IsPunct(r) || unicode.IsSpace(r) || unicode.IsSymbol(r) {
+			continue
+		}
+		rs = append(rs, r)
+	}
+	if len(rs) < 2 {
+		return true
+	}
+	for _, r := range rs {
+		if !fillerRunes[r] {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *Pipeline) Interrupt(sess *Session, send Sender) {

@@ -1,4 +1,5 @@
 import { getApiBase, getToken } from './api'
+import { isOpusDecodeSupported } from './ttsAudioPlayer'
 
 export type RealtimeEvent =
   | { type: 'session_start'; sessionId: string }
@@ -8,6 +9,7 @@ export type RealtimeEvent =
   | { type: 'llm_token'; token: string }
   | { type: 'llm_done'; text: string }
   | { type: 'tts_audio'; pcm: string; audioBuffer?: ArrayBuffer; format: string; seq: number }
+  | { type: 'tts_segment_done' }
   | { type: 'tts_stream_start'; codec: string; sampleRate: number; channels: number; frameMs: number; bitrate: number }
   | { type: 'tts_done' }
   | { type: 'interrupted' }
@@ -126,6 +128,10 @@ export class RealtimeSession {
     return this.send('text_input', data)
   }
 
+  sendClientCaps(): boolean {
+    return this.send('client_caps', { opus_decode: isOpusDecodeSupported() })
+  }
+
   sendPrewarm(): boolean {
     return this.send('prewarm', {})
   }
@@ -186,6 +192,9 @@ export class RealtimeSession {
           format: String(data.format || 'mp3'),
           seq: Number(data.seq),
         })
+        break
+      case 'tts_segment_done':
+        this.emit({ type: 'tts_segment_done' })
         break
       case 'tts_stream_start':
         this.emit({

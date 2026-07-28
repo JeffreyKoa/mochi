@@ -14,6 +14,7 @@ import (
 	"github.com/mochi-ai/server/internal/subscribe"
 	"github.com/mochi-ai/server/internal/tools"
 	"github.com/mochi-ai/server/internal/voice"
+	"github.com/mochi-ai/server/internal/voiceprint"
 	"github.com/mochi-ai/server/internal/wellness"
 	"github.com/mochi-ai/server/internal/ws"
 )
@@ -27,6 +28,7 @@ type Handlers struct {
 	Realtime        *realtime.Handler
 	Tools           *tools.Handler
 	Wellness        *wellness.Handler
+	Voiceprint      *voiceprint.Handler
 	Hub             *ws.Hub
 	AuthSvc       *auth.Service
 	ClientAPIBase      string
@@ -96,6 +98,11 @@ func Setup(mode string, h Handlers) *gin.Engine {
 			}
 			if h.Wellness != nil {
 				protected.POST("/activity/heartbeat", h.Wellness.Heartbeat)
+			}
+			if h.Voiceprint != nil {
+				protected.POST("/voiceprint/enroll", h.Voiceprint.Enroll)
+				protected.GET("/voiceprint/status", h.Voiceprint.Status)
+				protected.DELETE("/voiceprint", h.Voiceprint.Delete)
 			}
 			protected.POST("/pet/onboarding", h.Pet.Onboarding)
 			protected.POST("/subscribe/adopt", h.Subscribe.Adopt)

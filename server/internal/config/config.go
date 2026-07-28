@@ -11,6 +11,7 @@ import (
 
 type Config struct {
 	Server   ServerConfig   `yaml:"server"`
+	Log      LogConfig      `yaml:"log"`
 	Database DatabaseConfig `yaml:"database"`
 	Redis    RedisConfig    `yaml:"redis"`
 	JWT      JWTConfig      `yaml:"jwt"`
@@ -28,6 +29,11 @@ type ServerConfig struct {
 	Mode         string `yaml:"mode"`
 	ReadTimeout  string `yaml:"read_timeout"`
 	WriteTimeout string `yaml:"write_timeout"`
+}
+
+// LogConfig controls daily log file output (logs/mochi-YYYYMMDD.log).
+type LogConfig struct {
+	Dir string `yaml:"dir"`
 }
 
 type DatabaseConfig struct {
@@ -79,6 +85,7 @@ type RealtimeConfig struct {
 	TTS            RealtimeTTS            `yaml:"tts"`
 	Pipeline       RealtimePipeline       `yaml:"pipeline"`
 	ThinkingFiller RealtimeThinkingFiller `yaml:"thinking_filler"`
+	Gate           RealtimeGate           `yaml:"gate"`
 }
 
 type RealtimeDashscope struct {
@@ -152,6 +159,15 @@ type RealtimeThinkingFiller struct {
 	Phrases     []string `yaml:"phrases"`
 }
 
+// RealtimeGate configures the lightweight LLM response gate that filters
+// ASR transcripts before they reach the chat LLM (voice turns only).
+type RealtimeGate struct {
+	Enabled   bool   `yaml:"enabled"`
+	Model     string `yaml:"model"`
+	TimeoutMS int    `yaml:"timeout_ms"`
+	MaxChars  int    `yaml:"max_chars"`
+}
+
 type CompanionConfig struct {
 	ProactiveEnabled   bool  `yaml:"proactive_enabled"`
 	MaxDailyProactive  int   `yaml:"max_daily_proactive"`
@@ -217,11 +233,19 @@ func (c *Config) ServerMode() string {
 	return c.Server.Mode
 }
 
+var loadedConfigPath string
+
+// LoadedPath returns the absolute path of the config file used by Load().
+func LoadedPath() string {
+	return loadedConfigPath
+}
+
 func Load() (*Config, error) {
 	path, err := findConfigPath()
 	if err != nil {
 		return nil, err
 	}
+	loadedConfigPath = path
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -267,6 +291,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Client.APIBase == "" {
 		c.Client.APIBase = fmt.Sprintf("http://localhost:%d", c.Server.Port)
+	}
+	if c.Log.Dir == "" {
+		c.Log.Dir = "logs"
 	}
 	c.Realtime.applyDefaults()
 	c.Companion.applyDefaults()
@@ -415,6 +442,15 @@ func (r *RealtimeConfig) applyDefaults() {
 	}
 	if r.Pipeline.TTSPunctuation == "" {
 		r.Pipeline.TTSPunctuation = "。！？，、~.!?,;"
+	}
+	if r.Gate.Model == "" {
+		r.Gate.Model = "qwen-turbo"
+	}
+	if r.Gate.TimeoutMS == 0 {
+		r.Gate.TimeoutMS = 800
+	}
+	if r.Gate.MaxChars == 0 {
+		r.Gate.MaxChars = 200
 	}
 }
 

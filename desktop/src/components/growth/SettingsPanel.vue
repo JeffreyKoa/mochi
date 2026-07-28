@@ -13,10 +13,17 @@ import {
   getTodos,
   cancelReminder,
   completeTodo,
+  getVoiceprintStatus,
+  enrollVoiceprint,
+  deleteVoiceprint,
   type ReminderItem,
   type TodoItem,
   type LearningPreferences,
+  type VoiceprintStatus,
 } from '@/services/api'
+import { PCMCapture } from '@/services/pcmCapture'
+import { pcmToFloat } from '@/services/sileroSpeechVad'
+import { SpeakerVerifier } from '@/services/speakerVerifier'
 import {
   CATEGORY_LABELS,
   parseInsideJokes,
@@ -75,6 +82,20 @@ const noUnsolicitedAdvice = ref(true)
 const savingLearning = ref(false)
 const learningError = ref('')
 const showTaskHistory = ref(false)
+
+const voiceprintStatus = ref<VoiceprintStatus | null>(null)
+const voiceprintLoading = ref(false)
+const voiceprintError = ref('')
+const enrollingVoice = ref(false)
+const enrollProgress = ref('')
+const enrollCapture = new PCMCapture()
+const enrollVerifier = new SpeakerVerifier()
+const ENROLL_PROMPTS = [
+  '你好 Mochi，我是你的主人。',
+  '今天天气不错，我想和你聊聊天。',
+  '记住我的声音，只回应我说的话。',
+]
+const ENROLL_MS = 3000
 
 const nicknames = computed(() => parseNicknames(growth.bond?.nicknames))
 const jokes = computed(() => parseInsideJokes(growth.bond?.inside_jokes))
@@ -343,6 +364,103 @@ function openPetTab() {
 function openVoiceTab() {
   tab.value = 'voice'
   void loadPreferences()
+  void loadVoiceprintStatus()
+}
+
+async function loadVoiceprintStatus() {
+  voiceprintLoading.value = true
+  voiceprintError.value = ''
+  try {
+    voiceprintStatus.value = await getVoiceprintStatus()
+  } catch (e) {
+    voiceprintStatus.value = null
+    voiceprintError.value = e instanceof Error ? e.message : '加载失败'
+  } finally {
+    voiceprintLoading.value = false
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms))
+}
+
+async function recordEnrollSegment(prompt: string): Promise<Float32Array | null> {
+  enrollProgress.value = `请朗读：${prompt}`
+  const chunks: Float32Array[] = []
+  await enrollCapture.start((pcm) => {
+    chunks.push(pcmToFloat(pcm))
+  })
+  await sleep(ENROLL_MS)
+  await enrollCapture.stop()
+  const total = chunks.reduce((n, c) => n + c.length, 0)
+  if (total < 8000) return null
+  const merged = new Float32Array(total)
+  let off = 0
+  for (const c of chunks) {
+    merged.set(c, off)
+    off += c.length
+  }
+  return merged
+}
+
+async function startVoiceprintEnroll() {
+  if (enrollingVoice.value) return
+  enrollingVoice.value = true
+  voiceprintError.value = ''
+  enrollProgress.value = '初始化声纹模型…'
+  try {
+    await enrollVerifier.init()
+    if (!enrollVerifier.available) {
+      voiceprintError.value =
+        '声纹模型未就绪。请将 CAM++ ONNX 放到 public/models/speaker/campp.onnx'
+      return
+    }
+    const embs: Float32Array[] = []
+    for (let i = 0; i < ENROLL_PROMPTS.length; i++) {
+      const pcm = await recordEnrollSegment(ENROLL_PROMPTS[i])
+      if (!pcm) {
+        voiceprintError.value = `第 ${i + 1} 段录音太短，请靠近麦克风再试`
+        return
+      }
+      enrollProgress.value = `分析第 ${i + 1} 段…`
+      const emb = await enrollVerifier.extract(pcm)
+      if (!emb) {
+        voiceprintError.value = `第 ${i + 1} 段分析失败，请重试`
+        return
+      }
+      embs.push(emb)
+      if (i < ENROLL_PROMPTS.length - 1) {
+        enrollProgress.value = '准备下一段…'
+        await sleep(600)
+      }
+    }
+    const avg = SpeakerVerifier.averageEmbeddings(embs)
+    enrollProgress.value = '上传声纹…'
+    const status = await enrollVoiceprint({
+      embedding: Array.from(avg),
+      samples: embs.length,
+    })
+    voiceprintStatus.value = status
+    enrollProgress.value = '录入成功'
+    localStorage.setItem('mochi_owner_embedding', JSON.stringify(Array.from(avg)))
+  } catch (e) {
+    voiceprintError.value = e instanceof Error ? e.message : '录入失败'
+  } finally {
+    enrollingVoice.value = false
+    enrollProgress.value = ''
+  }
+}
+
+async function onDeleteVoiceprint() {
+  if (!confirm('确定删除已录入的主人声纹吗？')) return
+  voiceprintError.value = ''
+  try {
+    await deleteVoiceprint()
+    voiceprintStatus.value = { enrolled: false }
+    localStorage.removeItem('mochi_owner_embedding')
+  } catch (e) {
+    voiceprintError.value = e instanceof Error ? e.message : '删除失败'
+  }
 }
 
 function openAccountTab() {
@@ -733,6 +851,40 @@ onUnmounted(() => {
             </select>
             <p class="hint">自动：设备支持时用本地识别，否则走云端。</p>
             <p v-if="prefsError" class="error">{{ prefsError }}</p>
+          </section>
+          <section class="block">
+            <h3>主人声纹</h3>
+            <p class="hint">
+              录入后 Mochi 只认你的声音。需自行下载 3D-Speaker CAM++ ONNX 放到
+              <code>public/models/speaker/campp.onnx</code>（ModelScope:
+              iic/speech_campplus_sv_zh-cn_16k-common）。
+            </p>
+            <p v-if="voiceprintLoading" class="hint">加载声纹状态…</p>
+            <p v-else-if="voiceprintStatus?.enrolled" class="hint">
+              已录入 · {{ voiceprintStatus.samples ?? 0 }} 段样本 · 维度
+              {{ voiceprintStatus.dim ?? 192 }}
+            </p>
+            <p v-else class="hint">尚未录入，任何人说话都可能唤醒 Mochi。</p>
+            <p v-if="enrollProgress" class="hint">{{ enrollProgress }}</p>
+            <button
+              type="button"
+              class="primary-sm full"
+              :disabled="enrollingVoice"
+              @click="startVoiceprintEnroll"
+            >
+              {{ enrollingVoice ? '录入中…' : voiceprintStatus?.enrolled ? '重新录入' : '录入主人声纹' }}
+            </button>
+            <button
+              v-if="voiceprintStatus?.enrolled"
+              type="button"
+              class="reject-btn full"
+              style="margin-top: 8px; width: 100%"
+              :disabled="enrollingVoice"
+              @click="onDeleteVoiceprint"
+            >
+              删除声纹
+            </button>
+            <p v-if="voiceprintError" class="error">{{ voiceprintError }}</p>
           </section>
         </template>
 

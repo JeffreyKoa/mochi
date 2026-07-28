@@ -103,8 +103,12 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 	defer conn.Close()
 
 	sessionID := uuid.NewString()
-	out := make(chan WSMessage, 64)
+	out := make(chan WSMessage, 256)
 	done := make(chan struct{})
+	var closeOnce sync.Once
+	closeConn := func() {
+		closeOnce.Do(func() { close(done) })
+	}
 
 	sender := &connSender{
 		send: func(msg WSMessage) error {
@@ -118,7 +122,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 	}
 
 	if h.sessions != nil {
-		h.sessions.Register(userID, sessionID, sender.send)
+		h.sessions.Register(userID, sessionID, sender.send, closeConn)
 		defer h.sessions.Unregister(userID, sessionID)
 	}
 
@@ -127,7 +131,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 	})
 
 	go h.writePump(conn, out, done)
-	defer close(done)
+	defer closeConn()
 
 	startMsg, _ := marshalMsg(MsgSessionStart, SessionStart{SessionID: sessionID}, 0)
 	out <- WSMessage{IsBinary: false, Data: startMsg}
@@ -362,6 +366,15 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 		switch msgType {
 		case MsgHeartbeat:
 			conn.SetReadDeadline(time.Now().Add(120 * time.Second))
+
+		case MsgClientCaps:
+			var in ClientCaps
+			if err := json.Unmarshal(data, &in); err == nil {
+				sess.SetPreferMP3(!in.OpusDecode)
+				if !in.OpusDecode {
+					log.Printf("[realtime] client_caps session=%s opus_decode=false → mp3 transport", sessionID)
+				}
+			}
 
 		case MsgPrewarm:
 			ensureASR()

@@ -26,12 +26,12 @@ export class HybridSpeechVad {
   private playbackMode = false
 
   constructor(onEvent: (ev: VADEvent) => void) {
-    this.energy = new EnergySpeechVad(onEvent, 800, 250, 0.025)
+    this.energy = new EnergySpeechVad(onEvent, 800, 300, 0.05)
     this.silero = new SileroSpeechVad(onEvent, {
-      positiveSpeechThreshold: 0.35,
-      negativeSpeechThreshold: 0.25,
+      positiveSpeechThreshold: 0.5,
+      negativeSpeechThreshold: 0.35,
       redemptionMs: 500,
-      minSpeechMs: 250,
+      minSpeechMs: 350,
       preSpeechPadMs: 200,
     })
   }
@@ -44,7 +44,7 @@ export class HybridSpeechVad {
   /** During TTS playback: disable Silero and raise energy threshold to reduce echo false triggers. */
   setPlaybackMode(playing: boolean) {
     this.playbackMode = playing
-    this.energy.setPeakThreshold(playing ? 0.08 : 0.025)
+    this.energy.setPeakThreshold(playing ? 0.1 : 0.05)
     if (playing) {
       this.silero?.reset()
     }

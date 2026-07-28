@@ -208,3 +208,14 @@ type Todo struct {
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
 }
+
+// Voiceprint stores the owner's averaged speaker embedding for client-side verification.
+type Voiceprint struct {
+	ID        uint64    `gorm:"primaryKey" json:"id"`
+	UserID    uint64    `gorm:"uniqueIndex" json:"user_id"`
+	Embedding string    `gorm:"type:text" json:"-"`
+	Dim       int       `json:"dim"`
+	Samples   int       `json:"samples"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}

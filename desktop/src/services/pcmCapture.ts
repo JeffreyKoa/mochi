@@ -170,16 +170,19 @@ export function pcmPeakLevel(pcm: ArrayBuffer): number {
   return peak / 32768
 }
 
-/** Boost quiet mic input so server VAD can detect speech */
+const NOISE_FLOOR = 0.02 * 32768
+
+/** Boost quiet mic input; noise-floor audio is left untouched so ambient noise is not amplified into a false wake */
 export function amplifyPCM(pcm: ArrayBuffer, targetPeak = 0.3): ArrayBuffer {
   const view = new DataView(pcm)
   let peak = 0
   for (let i = 0; i < view.byteLength; i += 2) {
     peak = Math.max(peak, Math.abs(view.getInt16(i, true)))
   }
+  if (peak < NOISE_FLOOR) return pcm
   if (peak >= targetPeak * 32768 * 0.5) return pcm
 
-  const gain = Math.min(6, (targetPeak * 32768) / Math.max(peak, 80))
+  const gain = Math.min(3, (targetPeak * 32768) / Math.max(peak, 80))
   const out = new ArrayBuffer(pcm.byteLength)
   const outView = new DataView(out)
   for (let i = 0; i < view.byteLength; i += 2) {
