@@ -70,7 +70,7 @@ func main() {
 	lifeSvc := life.NewService(db, hub)
 	lifeSvc.StartTicker()
 
-	lifecycleSvc := lifecycle.NewService(db, hub)
+	lifecycleSvc := lifecycle.NewService(db, hub, lifeSvc)
 	lifecycleSvc.StartTicker()
 
 	reflectionSvc := reflection.NewService(db, aiRouter, briefSvc, bondSvc, cfg.Growth)
@@ -86,14 +86,15 @@ func main() {
 	authSvc := auth.NewService(db, cfg.JWT.Secret)
 	realtimeHandler := realtime.NewHandler(authSvc, chatSvc, cfg)
 
-	wellnessSvc := wellness.NewService(db, rdb, aiRouter, cfg.Wellness, hub, realtimeHandler.WellnessDeferred)
+	wellnessSvc := wellness.NewService(db, rdb, chatSvc.Runtime(), cfg.Wellness, hub, realtimeHandler.WellnessDeferred)
+	chatSvc.SetActivityReader(wellnessSvc)
 	wellnessSvc.Start()
 	wellnessHandler := wellness.NewHandler(wellnessSvc)
 
 	voiceprintSvc := voiceprint.NewService(db)
 	voiceprintHandler := voiceprint.NewHandler(voiceprintSvc)
 
-	companionScheduler := companion.NewScheduler(db, rdb, aiRouter, bondSvc, cfg.Companion, hub, toolsSvc, cfg.Tools, realtimeHandler)
+	companionScheduler := companion.NewScheduler(db, rdb, chatSvc.Runtime(), wellnessSvc, aiRouter, bondSvc, cfg.Companion, hub, toolsSvc, cfg.Tools, realtimeHandler)
 	companionScheduler.Start()
 
 	authHandler := auth.NewHandler(authSvc)

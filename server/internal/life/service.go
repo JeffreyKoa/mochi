@@ -84,6 +84,47 @@ func (s *Service) Interact(ctx context.Context, petID uint64, eventType string) 
 	return state, animation, nil
 }
 
+const neglectThreshold = 7 * 24 * time.Hour
+
+// IsNeglected reports whether the pet has had no interaction for 7+ days.
+func IsNeglected(lastInteraction time.Time) bool {
+	return !lastInteraction.IsZero() && time.Since(lastInteraction) > neglectThreshold
+}
+
+// ApplyNeglectIfNeeded persists lonely/sad FSM when the owner has been away 7+ days.
+func (s *Service) ApplyNeglectIfNeeded(ctx context.Context, petID uint64) bool {
+	if s == nil || s.db == nil {
+		return false
+	}
+	state, err := s.GetState(ctx, petID)
+	if err != nil {
+		return false
+	}
+	if !IsNeglected(state.LastInteraction) {
+		return false
+	}
+	if state.EmotionState == "sad" && state.Mood <= 20 {
+		return false
+	}
+	state.EmotionState = "sad"
+	state.Mood = 20
+	state.UpdatedAt = time.Now()
+	if err := s.db.WithContext(ctx).Save(&state).Error; err != nil {
+		return false
+	}
+	s.BroadcastStateDirect(petID, state, "sad")
+	return true
+}
+
+func (s *Service) BroadcastStateDirect(petID uint64, state models.LifeState, animation string) {
+	if s.hub != nil {
+		var pet models.Pet
+		if s.db.First(&pet, petID).Error == nil {
+			s.hub.BroadcastState(pet.UserID, state, animation)
+		}
+	}
+}
+
 func (s *Service) animationForState(state models.LifeState, eventType string) string {
 	switch eventType {
 	case "touch", "play":

@@ -31,14 +31,19 @@ type StageBroadcaster interface {
 	SendLifeStageChanged(userID uint64, data map[string]interface{})
 }
 
+type NeglectApplier interface {
+	ApplyNeglectIfNeeded(ctx context.Context, petID uint64) bool
+}
+
 type Service struct {
 	db   *gorm.DB
 	hub  StageBroadcaster
+	life NeglectApplier
 	done chan struct{}
 }
 
-func NewService(db *gorm.DB, hub StageBroadcaster) *Service {
-	return &Service{db: db, hub: hub, done: make(chan struct{})}
+func NewService(db *gorm.DB, hub StageBroadcaster, life NeglectApplier) *Service {
+	return &Service{db: db, hub: hub, life: life, done: make(chan struct{})}
 }
 
 func DefaultMaxAgeYears(species string) float32 {
@@ -220,6 +225,11 @@ func NormalizeGender(g string) string {
 
 func (s *Service) SyncPet(ctx context.Context, pet *models.Pet) (AgeInfo, bool, error) {
 	info := ComputeAgeInfo(*pet, time.Now())
+
+	if s.life != nil {
+		s.life.ApplyNeglectIfNeeded(ctx, pet.ID)
+	}
+
 	changed := info.Stage != pet.LifeStage || info.IsAlive != pet.IsAlive
 
 	if !changed {

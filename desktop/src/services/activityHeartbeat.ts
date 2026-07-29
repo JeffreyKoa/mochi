@@ -8,6 +8,7 @@ interface ActivitySnapshot {
   idle_seconds: number
   continuous_active_minutes: number
   session_active_minutes_today: number
+  active_app: string
 }
 
 let timer: ReturnType<typeof setInterval> | null = null

@@ -501,7 +501,7 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		}()
 	}
 
-	reply, err := p.chat.StreamMessage(ctx, sess.UserID, userText, func(token string) {
+	reply, err := p.chat.StreamMessageVoice(ctx, sess.UserID, userText, func(token string) {
 		llmTokenMu.Lock()
 		if !llmTokenSeen {
 			llmTokenSeen = true

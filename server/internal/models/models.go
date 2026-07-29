@@ -58,6 +58,26 @@ type Personality struct {
 	Traits      string   `json:"traits"`
 	SpeechStyle string   `json:"speech_style"`
 	StyleNotes  []string `json:"style_notes,omitempty"`
+
+	// 0-100 Personality Vector dimensions
+	Warmth     int `json:"warmth,omitempty"`     // 温暖度：控制安慰方式与关心程度
+	Humor      int `json:"humor,omitempty"`      // 幽默度：控制打趣与彩蛋内容
+	Strictness int `json:"strictness,omitempty"` // 严格度：控制对任务/拖延的监督力度
+	Curiosity  int `json:"curiosity,omitempty"`  // 好奇心：控制反问与引导探索倾向
+	Confidence int `json:"confidence,omitempty"` // 自信度：控制语气的果断/谦虚度
+	Empathy    int `json:"empathy,omitempty"`    // 共情力：对负面情绪的容受与理解
+	Energy     int `json:"energy,omitempty"`     // 活跃度：控制主动说话的频率（低/中/高）
+	Logic      int `json:"logic,omitempty"`      // 理性/智慧：回答的深度与结构条理性
+	Sarcasm    int `json:"sarcasm,omitempty"`    // 毒舌/傲娇度：反讽与口是心非程度
+}
+
+type StyleConfig struct {
+	SentenceLength string   `json:"sentence_length"` // "short" | "medium" | "long"
+	EmojiRate      float64  `json:"emoji_rate"`      // 0.0 ~ 1.0
+	Punctuation    string   `json:"punctuation"`     // "cute" | "standard" | "minimal"
+	Nickname       string   `json:"nickname"`        // "主人" | 自定义称呼
+	HumorLevel     int      `json:"humor_level"`     // 幽默感强度 0-100
+	ToneModifiers  []string `json:"tone_modifiers"`   // 语气词提示如 ["温柔", "傲娇", "稳重"]
 }
 
 type ChatMessage struct {
@@ -106,6 +126,7 @@ type BondInsideJoke struct {
 type LifeState struct {
 	PetID           uint64    `gorm:"primaryKey" json:"pet_id"`
 	Mood            uint8     `gorm:"default:70" json:"mood"`
+	EmotionState    string    `gorm:"type:varchar(16);default:calm" json:"emotion_state"` // 心境状态 FSM: calm|happy|worried|sad|excited
 	Love            uint8     `gorm:"default:60" json:"love"`
 	Hungry          uint8     `gorm:"default:30" json:"hungry"`
 	Energy          uint8     `gorm:"default:80" json:"energy"`

@@ -2,7 +2,6 @@ package companion
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -11,13 +10,14 @@ import (
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 
+	"github.com/mochi-ai/server/internal/agent"
 	"github.com/mochi-ai/server/internal/bond"
 	"github.com/mochi-ai/server/internal/config"
 	"github.com/mochi-ai/server/internal/emotion"
 	"github.com/mochi-ai/server/internal/life"
-	"github.com/mochi-ai/server/internal/lifecycle"
 	"github.com/mochi-ai/server/internal/models"
 	"github.com/mochi-ai/server/internal/tools"
+	"github.com/mochi-ai/server/internal/wellness"
 	"github.com/mochi-ai/server/pkg/ai"
 )
 
@@ -26,6 +26,8 @@ const proactiveCountPrefix = "mochi:proactive:count:"
 type Scheduler struct {
 	db          *gorm.DB
 	rdb         *redis.Client
+	runtime     *agent.Runtime
+	activity    wellness.ActivityReader
 	ai          ai.AIProvider
 	bond        *bond.Service
 	cfg         config.CompanionConfig
@@ -40,10 +42,12 @@ type realtimeReminderDeliverer interface {
 	SendProactiveReminder(userID, reminderID uint64, message, animation string) bool
 }
 
-func NewScheduler(db *gorm.DB, rdb *redis.Client, aiProvider ai.AIProvider, bondSvc *bond.Service, cfg config.CompanionConfig, broadcaster life.StateBroadcaster, toolsSvc *tools.Service, toolsCfg config.ToolsConfig, rtReminders realtimeReminderDeliverer) *Scheduler {
+func NewScheduler(db *gorm.DB, rdb *redis.Client, runtime *agent.Runtime, activity wellness.ActivityReader, aiProvider ai.AIProvider, bondSvc *bond.Service, cfg config.CompanionConfig, broadcaster life.StateBroadcaster, toolsSvc *tools.Service, toolsCfg config.ToolsConfig, rtReminders realtimeReminderDeliverer) *Scheduler {
 	return &Scheduler{
 		db:          db,
 		rdb:         rdb,
+		runtime:     runtime,
+		activity:    activity,
 		ai:          aiProvider,
 		bond:        bondSvc,
 		cfg:         cfg,
@@ -136,11 +140,19 @@ func (s *Scheduler) scanPet(ctx context.Context, pet models.Pet) {
 	if trigger == "" {
 		return
 	}
+	if s.shouldSkipForFocusMode(ctx, pet.UserID, trigger) {
+		return
+	}
 	if !user.ProactiveEnabled && !s.isFollowUpTrigger(trigger) {
 		return
 	}
 
-	msg, err := s.generateMessage(ctx, pet, bondProfile, state, trigger, memorySnippet)
+	var act *wellness.OwnerActivity
+	if s.activity != nil {
+		act, _ = s.activity.GetActivity(ctx, pet.UserID)
+	}
+
+	msg, err := s.generateMessage(ctx, pet, bondProfile, state, trigger, memorySnippet, act)
 	if err != nil || msg == "" {
 		return
 	}
@@ -207,36 +219,49 @@ func (s *Scheduler) pickTrigger(ctx context.Context, pet models.Pet, state model
 	return "", "", ""
 }
 
-func (s *Scheduler) generateMessage(ctx context.Context, pet models.Pet, bondProfile models.BondProfile, state models.LifeState, trigger triggerKind, snippet string) (string, error) {
-	if s.ai == nil {
+func (s *Scheduler) shouldSkipForFocusMode(ctx context.Context, userID uint64, trigger triggerKind) bool {
+	if s.isFollowUpTrigger(trigger) || s.activity == nil {
+		return false
+	}
+	act, err := s.activity.GetActivity(ctx, userID)
+	if err != nil || !wellness.IsActivityFresh(act) {
+		return false
+	}
+	return agent.IsFocusWorkMode(act.ActiveApp, act.ContinuousActiveMinutes)
+}
+
+func (s *Scheduler) generateMessage(ctx context.Context, pet models.Pet, bondProfile models.BondProfile, state models.LifeState, trigger triggerKind, snippet string, act *wellness.OwnerActivity) (string, error) {
+	if s.runtime == nil {
 		return s.fallbackMessage(trigger, pet.Name, bondProfile), nil
 	}
 
-	var personality models.Personality
-	_ = json.Unmarshal(pet.PersonalityJSON, &personality)
-
-	prompt := fmt.Sprintf(`你是桌宠 %s，给主人写一条主动消息（50字以内，口语，第一人称，适合语音朗读）。
-性格：%s，说话风格：%s
-投缘度：%d/100
-触发原因：%s
-相关记忆：%s
-自身状态：心情%d 饥饿%d 精力%d
-
-要求：自然、像伙伴关心主人，不要像通知推送；禁止散文/隐喻/诗意写法；禁止用括号描述动作，只输出对话。只输出消息正文。`,
-		pet.Name, personality.Traits, lifecycle.DefaultSpeechStyle(pet.LifeStage, pet.Species),
-		bondProfile.RapportLevel, trigger, orDefault(snippet, "无"),
-		state.Mood, state.Hungry, state.Energy,
+	systemInstruction := fmt.Sprintf("[SYSTEM_TRIGGER: scheduler_nudge] 主动触发类型: %s, 上下文: %s",
+		trigger,
+		orDefault(snippet, "无"),
 	)
 
-	resp, err := s.ai.Chat(ctx, ai.ChatRequest{
-		Messages:    []ai.Message{{Role: "user", Content: prompt}},
-		Temperature: 0.85,
-		MaxTokens:   100,
+	out, err := s.runtime.Turn(ctx, agent.TurnInput{
+		UserID:          pet.UserID,
+		PetID:           pet.ID,
+		Message:         systemInstruction,
+		TriggerType:     "system_proactive",
+		ActivityContext: wellness.ToActivityContext(act),
 	})
 	if err != nil {
 		return s.fallbackMessage(trigger, pet.Name, bondProfile), nil
 	}
-	return strings.TrimSpace(resp.Content), nil
+
+	var replyBuilder strings.Builder
+	for chunk := range out.ReplyStream {
+		if chunk.Content != "" {
+			replyBuilder.WriteString(chunk.Content)
+		}
+	}
+	res := strings.TrimSpace(replyBuilder.String())
+	if res == "" {
+		return s.fallbackMessage(trigger, pet.Name, bondProfile), nil
+	}
+	return res, nil
 }
 
 func (s *Scheduler) fallbackMessage(trigger triggerKind, petName string, bond models.BondProfile) string {

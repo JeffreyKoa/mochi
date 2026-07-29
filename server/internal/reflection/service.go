@@ -52,7 +52,7 @@ func (s *Service) ReflectAsync(ctx context.Context, petID uint64, userMsg, petRe
 			log.Printf("[reflection] pet=%d err=%v", petID, err)
 			return
 		}
-		if err := s.apply(refCtx, petID, ref, needsEmpathy); err != nil {
+		if err := s.apply(refCtx, petID, ref, needsEmpathy, userMsg); err != nil {
 			log.Printf("[reflection] apply pet=%d err=%v", petID, err)
 		}
 	}()
@@ -130,7 +130,7 @@ func parseImportance(v interface{}) float32 {
 	return 0.5
 }
 
-func (s *Service) apply(ctx context.Context, petID uint64, ref TurnReflection, needsEmpathy bool) error {
+func (s *Service) apply(ctx context.Context, petID uint64, ref TurnReflection, needsEmpathy bool, userMsg string) error {
 	changed := false
 
 	for _, delta := range ref.BriefUpdates {
@@ -183,10 +183,101 @@ func (s *Service) apply(ctx context.Context, petID uint64, ref TurnReflection, n
 		_ = s.bond.AddInsideJoke(ctx, petID, ref.InsideJoke)
 	}
 
+	// Evolve personality vector based on reflection feedback and userMsg
+	s.evolvePersonality(ctx, petID, ref, userMsg)
+
 	if changed {
 		s.brief.RecompileAsync(petID)
 	}
 	return nil
+}
+
+// EvolvePersonalityVector calculates personality adjustments based on reflection and user message keywords.
+func EvolvePersonalityVector(p models.Personality, ref TurnReflection, userMsg string) (models.Personality, bool) {
+	changed := false
+
+	// Define evolution logic!
+	if ref.EmpathyWorked {
+		p.Empathy = clampInt(p.Empathy + 1)
+		p.Warmth = clampInt(p.Warmth + 1)
+		changed = true
+	}
+
+	if ref.StyleNote != "" {
+		note := strings.ToLower(ref.StyleNote)
+		if strings.Contains(note, "太长") || strings.Contains(note, "小作文") || strings.Contains(note, "啰嗦") {
+			p.Energy = clampInt(p.Energy - 2)
+			p.Warmth = clampInt(p.Warmth - 1)
+			changed = true
+		}
+		if strings.Contains(note, "太冷") || strings.Contains(note, "冷漠") || strings.Contains(note, "太短") {
+			p.Warmth = clampInt(p.Warmth + 2)
+			p.Sarcasm = clampInt(p.Sarcasm - 2)
+			changed = true
+		}
+		if strings.Contains(note, "说教") {
+			p.Strictness = clampInt(p.Strictness - 2)
+			changed = true
+		}
+	}
+
+	userMsgLower := strings.ToLower(userMsg)
+	if strings.Contains(userMsgLower, "哈哈") || strings.Contains(userMsgLower, "有趣") || strings.Contains(userMsgLower, "搞笑") {
+		p.Humor = clampInt(p.Humor + 1)
+		p.Confidence = clampInt(p.Confidence + 1)
+		changed = true
+	}
+	if strings.Contains(userMsgLower, "为什么") || strings.Contains(userMsgLower, "原理") || strings.Contains(userMsgLower, "写代码") || strings.Contains(userMsgLower, "逻辑") {
+		p.Logic = clampInt(p.Logic + 1)
+		p.Curiosity = clampInt(p.Curiosity + 1)
+		changed = true
+	}
+	if strings.Contains(userMsgLower, "笨蛋") || strings.Contains(userMsgLower, "闭嘴") || strings.Contains(userMsgLower, "别烦我") || strings.Contains(userMsgLower, "别烦") || strings.Contains(userMsgLower, "讨厌") {
+		p.Warmth = clampInt(p.Warmth - 2)
+		p.Sarcasm = clampInt(p.Sarcasm + 2)
+		changed = true
+	}
+
+	return p, changed
+}
+
+func (s *Service) evolvePersonality(ctx context.Context, petID uint64, ref TurnReflection, userMsg string) {
+	var pet models.Pet
+	if err := s.db.WithContext(ctx).First(&pet, petID).Error; err != nil {
+		return
+	}
+	var p models.Personality
+	_ = json.Unmarshal(pet.PersonalityJSON, &p)
+
+	// Ensure fields are initialized (for legacy pets)
+	if p.Warmth == 0 && p.Humor == 0 && p.Sarcasm == 0 {
+		p.Warmth = 70
+		p.Humor = 60
+		p.Confidence = 70
+		p.Logic = 50
+		p.Energy = 60
+		p.Curiosity = 70
+		p.Strictness = 30
+		p.Empathy = 80
+		p.Sarcasm = 10
+	}
+
+	updated, changed := EvolvePersonalityVector(p, ref, userMsg)
+	if changed {
+		newJSON, _ := json.Marshal(updated)
+		s.db.WithContext(ctx).Model(&pet).Update("personality_json", newJSON)
+		log.Printf("[reflection] pet=%d personality evolved: %+v", petID, updated)
+	}
+}
+
+func clampInt(v int) int {
+	if v < 0 {
+		return 0
+	}
+	if v > 100 {
+		return 100
+	}
+	return v
 }
 
 // isActionableStyleFeedback returns true only for explicit user complaints about reply style.

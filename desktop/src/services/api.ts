@@ -315,6 +315,7 @@ export async function postActivityHeartbeat(body: {
   idle_seconds: number
   continuous_active_minutes: number
   session_active_minutes_today: number
+  active_app?: string
 }) {
   const { data } = await request(`${getApiBase()}/api/v1/activity/heartbeat`, {
     method: 'POST',

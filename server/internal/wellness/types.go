@@ -15,11 +15,13 @@ type OwnerActivity struct {
 	IdleSeconds               int       `json:"idle_seconds"`
 	ContinuousActiveMinutes   int       `json:"continuous_active_minutes"`
 	SessionActiveMinutesToday int       `json:"session_active_minutes_today"`
+	ActiveApp                 string    `json:"active_app"`
 	UpdatedAt                 time.Time `json:"updated_at"`
 }
 
 type HeartbeatInput struct {
-	IdleSeconds               int `json:"idle_seconds"`
-	ContinuousActiveMinutes   int `json:"continuous_active_minutes"`
-	SessionActiveMinutesToday int `json:"session_active_minutes_today"`
+	IdleSeconds               int    `json:"idle_seconds"`
+	ContinuousActiveMinutes   int    `json:"continuous_active_minutes"`
+	SessionActiveMinutesToday int    `json:"session_active_minutes_today"`
+	ActiveApp                 string `json:"active_app"`
 }

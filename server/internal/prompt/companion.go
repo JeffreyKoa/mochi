@@ -24,6 +24,8 @@ type CompanionContext struct {
 	AgeDays            int
 	RemainingDays      int
 	Species            string
+	StyleConfig        models.StyleConfig
+	IsFocusWorkMode    bool
 }
 
 func BuildCompanionPrompt(ctx CompanionContext) []ai.Message {

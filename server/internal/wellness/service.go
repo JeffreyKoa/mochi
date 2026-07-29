@@ -12,11 +12,10 @@ import (
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 
+	"github.com/mochi-ai/server/internal/agent"
 	"github.com/mochi-ai/server/internal/config"
 	"github.com/mochi-ai/server/internal/life"
-	"github.com/mochi-ai/server/internal/lifecycle"
 	"github.com/mochi-ai/server/internal/models"
-	"github.com/mochi-ai/server/pkg/ai"
 )
 
 const (
@@ -31,18 +30,18 @@ type deferChecker func(userID uint64) bool
 type Service struct {
 	db      *gorm.DB
 	rdb     *redis.Client
-	ai      ai.AIProvider
+	runtime *agent.Runtime
 	cfg     config.WellnessConfig
 	hub     life.StateBroadcaster
 	deferFn deferChecker
 	done    chan struct{}
 }
 
-func NewService(db *gorm.DB, rdb *redis.Client, aiProvider ai.AIProvider, cfg config.WellnessConfig, hub life.StateBroadcaster, deferFn deferChecker) *Service {
+func NewService(db *gorm.DB, rdb *redis.Client, runtime *agent.Runtime, cfg config.WellnessConfig, hub life.StateBroadcaster, deferFn deferChecker) *Service {
 	return &Service{
 		db:      db,
 		rdb:     rdb,
-		ai:      aiProvider,
+		runtime: runtime,
 		cfg:     cfg,
 		hub:     hub,
 		deferFn: deferFn,
@@ -86,6 +85,7 @@ func (s *Service) SaveActivity(ctx context.Context, userID uint64, in HeartbeatI
 		IdleSeconds:               in.IdleSeconds,
 		ContinuousActiveMinutes:   in.ContinuousActiveMinutes,
 		SessionActiveMinutesToday: in.SessionActiveMinutesToday,
+		ActiveApp:                 in.ActiveApp,
 		UpdatedAt:                 time.Now(),
 	}
 	raw, err := json.Marshal(act)
@@ -183,7 +183,7 @@ func (s *Service) scanPet(ctx context.Context, pet models.Pet) {
 		return
 	}
 
-	s.recordSent(ctx, user.ID, pet.ID, kind, msg)
+	s.recordSent(ctx, user.ID, pet.ID, kind, msg, act)
 	log.Printf("[Wellness] nudge sent user=%d pet=%d kind=%s", user.ID, pet.ID, kind)
 }
 
@@ -359,13 +359,16 @@ func (s *Service) mealSentToday(ctx context.Context, userID uint64, meal string)
 	return s.rdb.Exists(ctx, key).Val() > 0
 }
 
-func (s *Service) recordSent(ctx context.Context, userID, petID uint64, kind NudgeKind, msg string) {
+func (s *Service) recordSent(ctx context.Context, userID, petID uint64, kind NudgeKind, msg string, act *OwnerActivity) {
 	today := time.Now().Format("2006-01-02")
 	dailyKey := wellnessDailyPrefix + fmt.Sprintf("%d:%s", userID, today)
 	s.rdb.Incr(ctx, dailyKey)
 	s.rdb.Expire(ctx, dailyKey, 48*time.Hour)
 
 	cooldown := 2 * time.Hour
+	if act != nil && agent.IsFocusWorkMode(act.ActiveApp, act.ContinuousActiveMinutes) {
+		cooldown = 4 * time.Hour
+	}
 	if kind == NudgeMeal {
 		meal := "lunch"
 		if time.Now().Hour() >= 17 {
@@ -429,31 +432,36 @@ func (s *Service) animationFor(kind NudgeKind) string {
 }
 
 func (s *Service) generateMessage(ctx context.Context, pet models.Pet, user models.User, bond models.BondProfile, kind NudgeKind, act *OwnerActivity) (string, error) {
-	if s.ai != nil && bond.RapportLevel >= 40 {
-		var personality models.Personality
-		_ = json.Unmarshal(pet.PersonalityJSON, &personality)
+	if s.runtime == nil {
+		return s.fallbackMessage(kind, pet), nil
+	}
 
-		prompt := fmt.Sprintf(`你是桌宠 %s，给主人写一条生活照护消息（50字以内，口语，第一人称，适合语音朗读）。
-性格：%s，说话风格：%s
-生命阶段：%s，投缘度：%d/100
-照护类型：%s
-主人已连续活跃约 %d 分钟
+	activityContext := ToActivityContext(act)
 
-要求：像朋友轻轻关心，点明照护意图但不要说「健康提醒」；禁止散文/隐喻写法；禁止用括号描述动作，只输出对话。只输出正文。`,
-			pet.Name, personality.Traits, lifecycle.DefaultSpeechStyle(pet.LifeStage, pet.Species),
-			pet.LifeStage, bond.RapportLevel, kind,
-			act.ContinuousActiveMinutes,
-		)
-		resp, err := s.ai.Chat(ctx, ai.ChatRequest{
-			Messages:    []ai.Message{{Role: "user", Content: prompt}},
-			Temperature: 0.85,
-			MaxTokens:   100,
-		})
-		if err == nil && strings.TrimSpace(resp.Content) != "" {
-			return strings.TrimSpace(resp.Content), nil
+	systemInstruction := fmt.Sprintf("[SYSTEM_TRIGGER: wellness_nudge] 照护类型: %s", kind)
+
+	out, err := s.runtime.Turn(ctx, agent.TurnInput{
+		UserID:          user.ID,
+		PetID:           pet.ID,
+		Message:         systemInstruction,
+		TriggerType:     "system_proactive",
+		ActivityContext: activityContext,
+	})
+	if err != nil {
+		return s.fallbackMessage(kind, pet), nil
+	}
+
+	var replyBuilder strings.Builder
+	for chunk := range out.ReplyStream {
+		if chunk.Content != "" {
+			replyBuilder.WriteString(chunk.Content)
 		}
 	}
-	return s.fallbackMessage(kind, pet), nil
+	res := strings.TrimSpace(replyBuilder.String())
+	if res == "" {
+		return s.fallbackMessage(kind, pet), nil
+	}
+	return res, nil
 }
 
 func (s *Service) fallbackMessage(kind NudgeKind, pet models.Pet) string {

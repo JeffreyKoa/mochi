@@ -3,12 +3,9 @@ package chat
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"log"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -22,24 +19,11 @@ import (
 	"github.com/mochi-ai/server/internal/lifecycle"
 	"github.com/mochi-ai/server/internal/memory"
 	"github.com/mochi-ai/server/internal/models"
-	"github.com/mochi-ai/server/internal/prompt"
 	"github.com/mochi-ai/server/internal/reflection"
-	"github.com/mochi-ai/server/internal/text"
 	"github.com/mochi-ai/server/internal/tools"
+	"github.com/mochi-ai/server/internal/wellness"
 	"github.com/mochi-ai/server/pkg/ai"
 )
-
-func finalizeReply(reply string) string {
-	return text.SanitizeSpokenReply(text.StripActionParentheticals(strings.TrimSpace(reply)))
-}
-
-type chatBuildResult struct {
-	pet         *models.Pet
-	messages    []ai.Message
-	temperature float64
-	emotionHint emotion.Hint
-	bond        models.BondProfile
-}
 
 type Service struct {
 	db           *gorm.DB
@@ -55,7 +39,8 @@ type Service struct {
 	toolsExec    *tools.Executor
 	toolsCfg     config.ToolsConfig
 	aiCfg        config.AIConfig
-	orchestrator *agent.Orchestrator
+	runtime      *agent.Runtime
+	activity     wellness.ActivityReader
 }
 
 func NewService(db *gorm.DB, aiProvider ai.AIProvider, memSvc *memory.Service, lifeSvc *life.Service, lifecycleSvc *lifecycle.Service, bondSvc *bond.Service, emotionSvc *emotion.Service, briefSvc *brief.Service, reflectionSvc *reflection.Service, growthCfg config.GrowthConfig, toolsExec *tools.Executor, toolsCfg config.ToolsConfig, aiCfg config.AIConfig) *Service {
@@ -73,39 +58,15 @@ func NewService(db *gorm.DB, aiProvider ai.AIProvider, memSvc *memory.Service, l
 		toolsExec:    toolsExec,
 		toolsCfg:     toolsCfg,
 		aiCfg:        aiCfg,
-		orchestrator: agent.NewOrchestrator(memSvc, emotionSvc, briefSvc, bondSvc),
+		runtime:      agent.NewRuntime(db, aiProvider, memSvc, lifeSvc, lifecycleSvc, bondSvc, emotionSvc, briefSvc, reflectionSvc, growthCfg, toolsExec, toolsCfg, aiCfg),
 	}
-}
-
-func (s *Service) chatAIRequest(userMsg string, messages []ai.Message, temperature float64) ai.ChatRequest {
-	req := ai.ChatRequest{
-		Messages:    messages,
-		Temperature: temperature,
-	}
-	if !s.aiCfg.EnableSearch || !NeedsWebSearch(userMsg) {
-		return req
-	}
-	enable := true
-	req.EnableSearch = &enable
-	strategy := s.aiCfg.SearchStrategy
-	if strategy == "" {
-		strategy = "turbo"
-	}
-	req.SearchOptions = &ai.SearchOptions{
-		SearchStrategy: strategy,
-		ForcedSearch:   true,
-	}
-	log.Printf("[chat] enable_search user_msg=%q strategy=%s", userMsg, strategy)
-	return req
 }
 
 func (s *Service) GetPetByUser(ctx context.Context, userID uint64) (*models.Pet, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	dbCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	return s.getPetByUser(dbCtx, userID)
+	return s.getPetByUser(ctx, userID)
 }
 
 func (s *Service) getPetByUser(ctx context.Context, userID uint64) (*models.Pet, error) {
@@ -132,189 +93,109 @@ func (s *Service) GetHistory(ctx context.Context, petID uint64, limit int) ([]mo
 	return messages, nil
 }
 
-func (s *Service) buildChatMessages(ctx context.Context, userID uint64, message string) (*chatBuildResult, error) {
-	dbCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
+// buildChatMessages, messagesForReply, postProcess and applyBondFromMessage
+// have been consolidated into agent.Runtime.Turn.
 
-	var pet *models.Pet
-	var err error
-	for attempt := 0; attempt < 2; attempt++ {
-		pet, err = s.getPetByUser(dbCtx, userID)
-		if err == nil {
-			break
-		}
-		if attempt == 0 {
-			time.Sleep(300 * time.Millisecond)
-		}
-	}
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("pet not found")
-		}
-		return nil, fmt.Errorf("load pet: %w", err)
-	}
-
-	ageInfo, _, _ := s.lifecycle.SyncPet(dbCtx, pet)
-	if !ageInfo.IsAlive || ageInfo.Stage == "departed" {
-		return nil, fmt.Errorf("pet has departed")
-	}
-
-	// 使用 Multi-Agent Orchestrator 并行准备情绪、记忆与上下文
-	agentCtx := s.orchestrator.PrepareChatContext(dbCtx, pet.ID, message)
-
-	var personality models.Personality
-	_ = json.Unmarshal(pet.PersonalityJSON, &personality)
-
-	state := models.LifeState{Mood: 70, Love: 60, Hungry: 30, Energy: 80, Health: 90, Sleep: 20, Curiosity: 50, Knowledge: 40}
-	if pet.LifeState != nil {
-		state = *pet.LifeState
-	}
-
-	memBudget := s.growth.MemoryPromptCharBudget
-	if memBudget <= 0 {
-		memBudget = 400
-	}
-
-	messages := prompt.BuildCompanionPrompt(prompt.CompanionContext{
-		PetName:            pet.Name,
-		Personality:        personality,
-		State:              state,
-		Bond:               agentCtx.BondProfile,
-		UserBrief:          agentCtx.UserBrief,
-		Memories:           agentCtx.Memories,
-		ShortHistory:       agentCtx.ShortHistory,
-		Emotion:            agentCtx.EmotionHint,
-		Now:                time.Now(),
-		MemoryPromptBudget: memBudget,
-		LifeStage:          ageInfo.Stage,
-		AgeDays:            ageInfo.AgeDays,
-		RemainingDays:      ageInfo.RemainingDays,
-		Species:            pet.Species,
-	})
-	messages = append(messages, ai.Message{Role: "user", Content: message})
-
-	return &chatBuildResult{
-		pet:         pet,
-		messages:    messages,
-		temperature: agentCtx.EmotionHint.Temperature,
-		emotionHint: agentCtx.EmotionHint,
-		bond:        agentCtx.BondProfile,
-	}, nil
+func (s *Service) SetActivityReader(reader wellness.ActivityReader) {
+	s.activity = reader
 }
 
-func (s *Service) messagesForReply(ctx context.Context, built *chatBuildResult, userID uint64, userMsg string) ([]ai.Message, string, error) {
-	turn, err := s.applyToolTurn(ctx, built.messages, userMsg, built.pet, userID, built.bond, built.emotionHint)
-	if err != nil {
-		return built.messages, "", nil
+func (s *Service) activityContextForUser(ctx context.Context, userID uint64) map[string]interface{} {
+	if s.activity == nil {
+		return nil
 	}
-	if turn.directReply != "" {
-		return built.messages, turn.directReply, nil
+	act, err := s.activity.GetActivity(ctx, userID)
+	if err != nil || !wellness.IsActivityFresh(act) {
+		return nil
 	}
-	return turn.messages, "", nil
+	return wellness.ToActivityContext(act)
 }
 
-func (s *Service) StreamMessage(ctx context.Context, userID uint64, message string, onToken func(token string)) (string, error) {
-	built, err := s.buildChatMessages(ctx, userID, message)
+func (s *Service) turnMessage(ctx context.Context, userID uint64, message, triggerType string, onToken func(token string)) (string, error) {
+	pet, err := s.getPetByUser(ctx, userID)
 	if err != nil {
 		return "", err
 	}
 
-	streamMsgs, directReply, _ := s.messagesForReply(ctx, built, userID, message)
-	if directReply != "" {
-		directReply = finalizeReply(directReply)
-		streamText(ctx, directReply, onToken)
-		go s.postProcess(context.Background(), built.pet.ID, message, directReply, built.emotionHint)
-		return directReply, nil
+	input := agent.TurnInput{
+		UserID:          userID,
+		PetID:           pet.ID,
+		Message:         message,
+		TriggerType:     triggerType,
+		ActivityContext: s.activityContextForUser(ctx, userID),
 	}
 
-	chunkChan, err := s.ai.ChatStream(ctx, s.chatAIRequest(message, streamMsgs, built.temperature))
+	out, err := s.runtime.Turn(ctx, input)
 	if err != nil {
 		return "", err
 	}
 
 	var fullResponse strings.Builder
-	var sanitizer text.StreamSanitizer
 	for {
 		select {
 		case <-ctx.Done():
-			reply := finalizeReply(fullResponse.String() + sanitizer.Flush())
-			return reply, ctx.Err()
-		case chunk, ok := <-chunkChan:
+			return fullResponse.String(), ctx.Err()
+		case chunk, ok := <-out.ReplyStream:
 			if !ok {
-				reply := finalizeReply(fullResponse.String() + sanitizer.Flush())
-				return reply, nil
+				return fullResponse.String(), nil
 			}
 			if chunk.Done {
-				reply := finalizeReply(fullResponse.String() + sanitizer.Flush())
-				go s.postProcess(context.Background(), built.pet.ID, message, reply, built.emotionHint)
-				return reply, nil
+				return fullResponse.String(), nil
 			}
-			if chunk.Content == "" {
-				continue
-			}
-			cleaned := sanitizer.Feed(chunk.Content)
-			if cleaned == "" {
-				continue
-			}
-			fullResponse.WriteString(cleaned)
+			fullResponse.WriteString(chunk.Content)
 			if onToken != nil {
-				onToken(cleaned)
+				onToken(chunk.Content)
 			}
 		}
 	}
 }
 
+func (s *Service) StreamMessage(ctx context.Context, userID uint64, message string, onToken func(token string)) (string, error) {
+	return s.turnMessage(ctx, userID, message, "user_chat", onToken)
+}
+
+func (s *Service) StreamMessageVoice(ctx context.Context, userID uint64, message string, onToken func(token string)) (string, error) {
+	return s.turnMessage(ctx, userID, message, "user_voice", onToken)
+}
+
 func (s *Service) SendMessageStream(c *gin.Context, userID uint64, message string) {
-	built, err := s.buildChatMessages(c.Request.Context(), userID, message)
+	ctx := c.Request.Context()
+	pet, err := s.getPetByUser(ctx, userID)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "pet not found"})
 		return
 	}
-
-	ctx := c.Request.Context()
 
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 
-	streamMsgs, directReply, _ := s.messagesForReply(ctx, built, userID, message)
-	if directReply != "" {
-		directReply = finalizeReply(directReply)
-		for _, ch := range directReply {
-			fmt.Fprintf(c.Writer, "data: %s\n\n", mustJSON(map[string]interface{}{"content": string(ch), "done": false}))
-		}
-		go s.postProcess(context.Background(), built.pet.ID, message, directReply, built.emotionHint)
-		fmt.Fprintf(c.Writer, "data: %s\n\n", mustJSON(map[string]interface{}{"content": "", "done": true}))
-		return
+	input := agent.TurnInput{
+		UserID:          userID,
+		PetID:           pet.ID,
+		Message:         message,
+		TriggerType:     "user_chat",
+		ActivityContext: s.activityContextForUser(ctx, userID),
 	}
 
-	chunkChan, err := s.ai.ChatStream(ctx, s.chatAIRequest(message, streamMsgs, built.temperature))
+	out, err := s.runtime.Turn(ctx, input)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
 
-	var fullResponse strings.Builder
-	var sanitizer text.StreamSanitizer
 	c.Stream(func(w io.Writer) bool {
 		select {
-		case chunk, ok := <-chunkChan:
+		case chunk, ok := <-out.ReplyStream:
 			if !ok {
 				return false
 			}
 			if chunk.Done {
-				reply := finalizeReply(fullResponse.String() + sanitizer.Flush())
-				go s.postProcess(context.Background(), built.pet.ID, message, reply, built.emotionHint)
 				fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]interface{}{"content": "", "done": true}))
 				return false
 			}
-			cleaned := sanitizer.Feed(chunk.Content)
-			if cleaned == "" {
-				return true
-			}
-			fullResponse.WriteString(cleaned)
-			fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]interface{}{"content": cleaned, "done": false}))
+			fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]interface{}{"content": chunk.Content, "done": false}))
 			return true
 		case <-ctx.Done():
 			return false
@@ -322,71 +203,12 @@ func (s *Service) SendMessageStream(c *gin.Context, userID uint64, message strin
 	})
 }
 
-func (s *Service) postProcess(ctx context.Context, petID uint64, userMsg, petReply string, quickHint emotion.Hint) {
-	s.db.Create(&models.ChatMessage{PetID: petID, Role: "user", Content: userMsg})
-	s.db.Create(&models.ChatMessage{PetID: petID, Role: "assistant", Content: petReply})
-
-	_ = s.memory.AddShortTerm(ctx, petID, "user", userMsg)
-	_ = s.memory.AddShortTerm(ctx, petID, "assistant", petReply)
-
-	extractPrompt := prompt.MemoryExtractPrompt(userMsg, petReply)
-	go s.memory.ExtractAndStore(ctx, petID, userMsg, petReply, extractPrompt)
-
-	_ = s.bond.RecordChatTurn(ctx, petID, quickHint.NeedsEmpathy)
-	_ = s.bond.UpdateMood(ctx, petID, quickHint.UserMood, quickHint.Intent)
-
-	shortHistory, _ := s.memory.GetShortTerm(ctx, petID)
-	s.emotion.ClassifyAsync(ctx, petID, userMsg, petReply, shortHistory)
-
-	s.applyBondFromMessage(ctx, petID, userMsg, petReply)
-
-	bondProfile, _ := s.bond.GetOrCreate(ctx, petID)
-	if s.reflection != nil {
-		s.reflection.ReflectAsync(ctx, petID, userMsg, petReply, bondProfile, quickHint.NeedsEmpathy)
-	}
-
-	s.life.Interact(ctx, petID, "chat")
-}
-
-func (s *Service) applyBondFromMessage(ctx context.Context, petID uint64, userMsg, petReply string) {
-	if strings.Contains(userMsg, "叫你") || strings.Contains(userMsg, "称呼") {
-		for _, part := range []string{"叫你", "称呼你"} {
-			if idx := strings.Index(userMsg, part); idx >= 0 {
-				rest := strings.TrimSpace(userMsg[idx+len(part):])
-				rest = strings.Trim(rest, "「」\"'吧了。！")
-				if rest != "" && len([]rune(rest)) <= 8 {
-					_ = s.bond.MergeNicknames(ctx, petID, rest, "")
-				}
-			}
-		}
-	}
-	if strings.Contains(userMsg, "哈哈") && len([]rune(userMsg)) < 30 {
-		_ = s.bond.AddInsideJoke(ctx, petID, userMsg)
-	}
-	_ = petReply
-}
-
 func (s *Service) CompleteMessage(ctx context.Context, userID uint64, message string) (string, error) {
-	built, err := s.buildChatMessages(ctx, userID, message)
-	if err != nil {
-		return "", err
-	}
+	return s.turnMessage(ctx, userID, message, "user_chat", nil)
+}
 
-	streamMsgs, directReply, _ := s.messagesForReply(ctx, built, userID, message)
-	if directReply != "" {
-		directReply = finalizeReply(directReply)
-		go s.postProcess(context.Background(), built.pet.ID, message, directReply, built.emotionHint)
-		return directReply, nil
-	}
-
-	resp, err := s.ai.Chat(ctx, s.chatAIRequest(message, streamMsgs, built.temperature))
-	if err != nil {
-		return "", err
-	}
-
-	reply := finalizeReply(resp.Content)
-	go s.postProcess(context.Background(), built.pet.ID, message, reply, built.emotionHint)
-	return reply, nil
+func (s *Service) Runtime() *agent.Runtime {
+	return s.runtime
 }
 
 func mustJSON(v interface{}) string {

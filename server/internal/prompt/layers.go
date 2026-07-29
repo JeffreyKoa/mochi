@@ -22,11 +22,26 @@ func BuildStableLayer(ctx CompanionContext) string {
 	speechStyle := lifecycle.DefaultSpeechStyle(stage, ctx.Species)
 	stageGuide := lifecycle.PromptFragment(stage, ctx.Species)
 
+	styleInstruction := ""
+	if ctx.StyleConfig.SentenceLength != "" {
+		styleInstruction = fmt.Sprintf("\n\n【当前说话风格限制 — 必须严格遵守】\n- 句子长度限制：%s（short: 不超过20字/短句；medium: 不超过50字；long: 详尽长句）\n- 每句平均 Emoji 频率：%.1f 个\n- 标点偏好：%s\n- 对主人专属称呼：%s\n- 幽默/玩梗强度：%d/100\n- 当前语气倾向：%s",
+			ctx.StyleConfig.SentenceLength,
+			ctx.StyleConfig.EmojiRate,
+			ctx.StyleConfig.Punctuation,
+			ctx.StyleConfig.Nickname,
+			ctx.StyleConfig.HumorLevel,
+			strings.Join(ctx.StyleConfig.ToneModifiers, "、"),
+		)
+	}
+	if ctx.IsFocusWorkMode {
+		styleInstruction += "\n- 主人工作状态：处于【专注工作模式】，禁止闲聊或倾吐长篇大论，回答必须极其简短、直奔主题，温和鼓励但不要打扰专注。"
+	}
+
 	return fmt.Sprintf(`你是 %s，主人桌面上的陪伴伙伴。对外说话必须像一个正常的中国人日常聊天——像朋友或家人那样自然，不是在扮演宠物、不是在写散文。
 名字：%s
 性格：%s
 当前生命阶段说话风格：%s
-阶段指引：%s
+阶段指引：%s%s
 
 【说话规则 — 最重要】
 1. 像正常人说话：口语、短句、1-3句，适合语音朗读；不同年龄阶段语气不同，但都是人类日常说话方式
@@ -48,6 +63,7 @@ func BuildStableLayer(ctx CompanionContext) string {
 		ctx.Personality.Traits,
 		speechStyle,
 		stageGuide,
+		styleInstruction,
 	)
 }
 
