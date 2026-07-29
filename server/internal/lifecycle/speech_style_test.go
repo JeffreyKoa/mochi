@@ -10,7 +10,7 @@ func TestDefaultSpeechStyle_byStage(t *testing.T) {
 		stage string
 		want  string
 	}{
-		{"newborn", "像普通年轻人"},
+		{"newborn", "像刚出生的小孩"},
 		{"child", "像小孩一样口语化"},
 		{"prime", "像三十岁左右"},
 		{"elder", "像长辈"},

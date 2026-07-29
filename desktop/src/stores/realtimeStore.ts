@@ -41,6 +41,26 @@ const PCM_RING_SAMPLES = PCM_RING_CHUNKS * 320 // 16 kHz mono
 const VOICEPRINT_THRESHOLD = 0.40
 const VOICEPRINT_VERIFY_SEC = 2.5
 
+const UNFINISHED_CONNECTIVES = [
+  '但是', '但是呢', '因为', '所以', '然后', '而且', '如果', '不过',
+  '虽然', '觉得', '特别是', '比如', '并且', '另外', '还有', '其实',
+  '或者', '结果', '就是', '就是说', '意思是', '也就是说', '然后呢', '所以说',
+  '……', '...', '---', '、'
+]
+
+function isUnfinishedSpeech(text: string): boolean {
+  const trimmed = text.trim()
+  if (!trimmed) return false
+  for (const conn of UNFINISHED_CONNECTIVES) {
+    if (trimmed.endsWith(conn)) return true
+  }
+  const lastChar = trimmed.slice(-1)
+  if (lastChar === '，' || lastChar === ',' || lastChar === '：' || lastChar === ':') {
+    return true
+  }
+  return false
+}
+
 interface RuntimeParams {
   silenceMs: number
   bargeInPeak: number
@@ -48,6 +68,7 @@ interface RuntimeParams {
   echoGuardMs: number
   wakePeak: number
   speechPeak: number
+  tailSpeechPeak: number
   endpointDebounceMs: number
   minEndpointChars: number
   endpointingEnabled: boolean
@@ -62,6 +83,7 @@ function defaultRuntimeParams(): RuntimeParams {
     echoGuardMs: rt.bargeIn.echoGuardMs,
     wakePeak: rt.vad.wakePeak,
     speechPeak: rt.vad.energyPeak,
+    tailSpeechPeak: rt.vad.tailSpeechPeak,
     endpointDebounceMs: 600,
     minEndpointChars: 6,
     endpointingEnabled: rt.vad.endpointingEnabled,
@@ -267,6 +289,14 @@ export const useRealtimeStore = defineStore('realtime', () => {
   function finishTextTurn() {
     clearTtsWatchdog()
     clearTurnAckWait()
+    // 门控静默丢弃时 asr_final 可能未到，保留 partial 供聊天框展示
+    const pendingPartial = partialText.value.trim()
+    if (pendingPartial) {
+      const last = messages.value[messages.value.length - 1]
+      if (!(last?.role === 'user' && last.content === pendingPartial)) {
+        commitUserMessage(pendingPartial, 'voice')
+      }
+    }
     partialText.value = ''
     textSending = false
     pendingTextTurn = null
@@ -406,7 +436,11 @@ export const useRealtimeStore = defineStore('realtime', () => {
     clearSilenceWatch()
     silenceTimer = setInterval(() => {
       if (!recording || phase !== 'user_speaking' || !heardSpeech || lastSpeechAt <= 0) return
-      if (Date.now() - lastSpeechAt >= params.silenceMs) {
+      const text = partialText.value.trim()
+      const unfinished = isUnfinishedSpeech(text) || text.length < 8
+      const requiredSilence = unfinished ? 2600 : Math.max(params.silenceMs, 1800)
+
+      if (Date.now() - lastSpeechAt >= requiredSilence) {
         void submitUtterance()
       }
       if (utteranceStartedAt > 0 && Date.now() - utteranceStartedAt >= MAX_UTTERANCE_MS) {
@@ -742,7 +776,17 @@ export const useRealtimeStore = defineStore('realtime', () => {
   }
 
   async function connect() {
-    if (!(await shouldOwnVoice())) return
+    if (!(await shouldOwnVoice())) {
+      const owner = getStoredVoiceOwner()
+      if (voiceWindow === 'pet' && owner === 'chat') {
+        statusText.value = '聊天窗口占用语音连接，请先关闭聊天'
+      } else if (voiceWindow === 'pet' && (await isChatWindowVisible())) {
+        statusText.value = '请先关闭聊天窗口再语音对话'
+      } else {
+        statusText.value = '连接失败，请稍后再试'
+      }
+      return
+    }
     if (connected.value && realtimeSession.isOpen()) return
 
     if (connected.value && !realtimeSession.isOpen()) {
@@ -819,7 +863,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
         }
 
         if (phase === 'user_speaking') {
-          if (peak >= params.speechPeak) {
+          if (peak >= params.tailSpeechPeak || (speechVad && speechVad.isSpeaking())) {
             heardSpeech = true
             lastSpeechAt = Date.now()
           }
@@ -912,7 +956,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
   }
 
   async function endConversation() {
-    if (!recording) return
+    if (!recording && !talking.value) return
     clearSilenceWatch()
     clearTtsWatchdog()
     recording = false
@@ -928,7 +972,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
     localStt = null
     effectiveSttMode = 'cloud'
     setPhase('idle')
-    await capture.stop()
+    if (capture.isActive) {
+      await capture.stop()
+    }
     statusText.value = connected.value ? '点击开始对话' : ''
   }
 
@@ -941,27 +987,34 @@ export const useRealtimeStore = defineStore('realtime', () => {
         break
       case 'asr_partial':
         partialText.value = ev.text
+        if (ev.text.trim() && !pet.isChatOpen) {
+          pet.showVoiceBubble(`“${ev.text.trim()}”`)
+        }
         if (ev.sentenceEnd) {
           handleAsrEndpoint(ev.text)
         }
         break
-      case 'asr_final':
+      case 'asr_final': {
         if (textSending) {
           partialText.value = ''
           break
         }
+        const finalText = (ev.text.trim() || partialText.value.trim())
         partialText.value = ''
-        if (!ev.text.trim()) {
-          // Empty transcript — server may silently dismiss (noise) or prompt retry.
+        if (!finalText) {
           startTtsWatchdog()
           break
         }
-        commitUserMessage(ev.text, 'voice')
+        commitUserMessage(finalText, 'voice')
+        if (!pet.isChatOpen) {
+          pet.showVoiceBubble(`“${finalText}”`)
+        }
         replyText.value = ''
         setPhase('processing')
         startTtsWatchdog()
         statusText.value = 'Mochi 正在想...'
         break
+      }
       case 'llm_token':
         if (textViaRest) break
         if (recording && phase === 'processing') {

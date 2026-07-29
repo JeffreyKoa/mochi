@@ -62,6 +62,10 @@ export class HybridSpeechVad {
     this.energy.feed(samples)
   }
 
+  isSpeaking(): boolean {
+    return this.energy.isSpeaking() || (this.silero?.isSpeaking() ?? false)
+  }
+
   reset() {
     this.energy.reset()
     this.silero?.reset()
@@ -113,6 +117,12 @@ export class SileroSpeechVad {
     }
   }
 
+  private speechActive = false
+
+  isSpeaking(): boolean {
+    return this.speechActive
+  }
+
   feed(samples: Float32Array) {
     if (!this.ready || !this.processor) return
 
@@ -128,9 +138,11 @@ export class SileroSpeechVad {
         switch (ev.msg) {
           case Message.SpeechStart:
           case Message.SpeechRealStart:
+            this.speechActive = true
             this.onEvent('speech_start')
             break
           case Message.SpeechEnd:
+            this.speechActive = false
             this.onEvent('speech_end')
             break
         }
@@ -139,12 +151,14 @@ export class SileroSpeechVad {
   }
 
   reset() {
+    this.speechActive = false
     this.pending = new Float32Array(0)
     this.processor?.reset()
     this.processor?.resume()
   }
 
   destroy() {
+    this.speechActive = false
     this.processor = null
     this.ready = false
     this.pending = new Float32Array(0)
@@ -163,6 +177,10 @@ export class EnergySpeechVad {
     private minSpeechMs = 250,
     private peakThreshold = 0.05,
   ) {}
+
+  isSpeaking(): boolean {
+    return this.speaking
+  }
 
   setPeakThreshold(threshold: number) {
     this.peakThreshold = threshold

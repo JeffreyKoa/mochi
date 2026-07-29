@@ -13,6 +13,7 @@ export interface RealtimeVadConfig {
   minSpeechMs: number
   endpointingEnabled: boolean
   energyPeak: number
+  tailSpeechPeak: number
   playbackPeak: number
   wakePeak: number
   silero: RealtimeSileroVadConfig
@@ -57,6 +58,7 @@ export const DEFAULT_REALTIME: RealtimeClientConfig = {
     minSpeechMs: 250,
     endpointingEnabled: true,
     energyPeak: 0.05,
+    tailSpeechPeak: 0.015,
     playbackPeak: 0.10,
     wakePeak: 0.06,
     silero: { ...DEFAULT_SILERO },
@@ -137,6 +139,7 @@ function parseRealtimeBlock(raw: unknown): RealtimeClientConfig {
       minSpeechMs: num(v.min_speech_ms ?? v.minSpeechMs, base.vad.minSpeechMs),
       endpointingEnabled: v.endpointing_enabled !== false && v.endpointingEnabled !== false,
       energyPeak: num(v.energy_peak ?? v.energyPeak, base.vad.energyPeak),
+      tailSpeechPeak: num(v.tail_speech_peak ?? v.tailSpeechPeak, base.vad.tailSpeechPeak),
       playbackPeak: num(v.playback_peak ?? v.playbackPeak, base.vad.playbackPeak),
       wakePeak: num(v.wake_peak ?? v.wakePeak, 0),
       silero: parseSileroBlock(v.silero, base.vad.silero),

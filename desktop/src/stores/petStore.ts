@@ -150,7 +150,7 @@ export const usePetStore = defineStore('pet', () => {
   }
 
   function showSpeechBubble(text: string, duration = 4000) {
-    if (bubblePinned.value) return
+    if (isChatOpen.value || bubblePinned.value) return
     clearBubbleTimer()
     bubbleText.value = bubbleDisplayText(text)
     showBubble.value = true
@@ -158,26 +158,33 @@ export const usePetStore = defineStore('pet', () => {
   }
 
   function showPersistentBubble(text: string) {
+    if (isChatOpen.value) return
+    const formatted = bubbleDisplayText(text)
+    if (bubbleText.value === formatted && showBubble.value) return
     if (bubblePinned.value) {
-      bubbleText.value = bubbleDisplayText(text)
+      bubbleText.value = formatted
       return
     }
     clearBubbleTimer()
-    bubbleText.value = bubbleDisplayText(text)
+    bubbleText.value = formatted
     showBubble.value = true
   }
 
   /** Pin bubble until TTS finishes (releaseVoiceBubble). */
   function showVoiceBubble(text: string) {
+    if (isChatOpen.value) return
     clearBubbleTimer()
     bubblePinned.value = true
-    bubbleText.value = bubbleDisplayText(text)
+    const formatted = bubbleDisplayText(text)
+    bubbleText.value = formatted
     showBubble.value = true
   }
 
   function updateVoiceBubble(text: string) {
     if (!bubblePinned.value) return
-    bubbleText.value = bubbleDisplayText(text)
+    const formatted = bubbleDisplayText(text)
+    if (bubbleText.value === formatted) return
+    bubbleText.value = formatted
   }
 
   function releaseVoiceBubble(graceMs = 800) {

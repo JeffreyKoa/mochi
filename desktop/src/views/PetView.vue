@@ -46,7 +46,6 @@ const bubbleEl = ref<HTMLElement | null>(null)
 const bubbleStyle = ref<Record<string, string>>({})
 const menuPosReady = ref(true)
 const MENU_PAD = 6
-const BUBBLE_PAD = 8
 const isDragging = ref(false)
 const dragMoved = ref(false)
 const didDragWindow = ref(false)
@@ -198,7 +197,7 @@ function startRoamer() {
 }
 
 watch(
-  () => [pet.showBubble, pet.bubbleText, pet.facing] as const,
+  () => [pet.showBubble, pet.bubbleText, pet.facing, pet.currentAnimation] as const,
   () => {
     if (!pet.showBubble) {
       bubbleStyle.value = {}
@@ -375,10 +374,8 @@ watch(
   () => rt.partialText,
   (text) => {
     if (pet.isChatOpen || !rt.talking || !rt.userSpeaking || pet.isReminderBubbleActive()) return
-    if (pet.isVoiceBubbleActive()) {
-      pet.releaseVoiceBubble(0)
-    }
-    pet.showPersistentBubble(text.trim() || '正在听…')
+    const trimmed = text.trim() ? `“${text.trim()}”` : '正在听…'
+    pet.showPersistentBubble(trimmed)
   },
 )
 
@@ -387,10 +384,8 @@ watch(
   (speaking) => {
     if (pet.isChatOpen || !rt.talking || pet.isReminderBubbleActive()) return
     if (speaking) {
-      if (pet.isVoiceBubbleActive()) {
-        pet.releaseVoiceBubble(0)
-      }
-      pet.showPersistentBubble(rt.partialText.trim() || '正在听…')
+      const trimmed = rt.partialText.trim() ? `“${rt.partialText.trim()}”` : '正在听…'
+      pet.showPersistentBubble(trimmed)
     }
   },
 )
@@ -422,6 +417,7 @@ async function openChat() {
   roamer?.pause()
   auth.syncFromStorage()
 
+  pet.hideSpeechBubble()
   if (isTauri()) {
     const ok = await showSidePanelPopup('chat')
     if (!ok) {
@@ -455,6 +451,11 @@ async function startVoiceInteraction() {
     return false
   }
 
+  if (isTauri()) {
+    rt.setVoiceWindow('pet')
+    await claimVoiceOwner('pet')
+  }
+
   pet.setAnimation('happy')
   pet.showSpeechBubble('我在听，主人说~', 2500)
 
@@ -477,29 +478,51 @@ async function startVoiceInteraction() {
   }
 }
 
-async function onPetClick() {
-  if (didDragWindow.value || suppressClick) return
+async function handlePetTap() {
+  if (dragMoved.value || suppressClick) return
   if (pet.bootFailed) {
     pet.retryBoot()
     return
   }
-  if (clickTimer) clearTimeout(clickTimer)
-  clickTimer = setTimeout(async () => {
-    clickTimer = null
 
-    if (rt.talking) {
-      if (rt.resting) {
-        if (!rt.wakeListening()) {
-          pet.showSpeechBubble('连接断开，正在重连…', 3000)
-          void rt.connect().then(() => rt.startTalk())
-        } else {
-          pet.showSpeechBubble('我在听，主人说~', 2500)
-        }
+  // 连接已断但 talking 未清理 → 重置后重试
+  if (rt.talking && !rt.connected) {
+    await rt.endConversation()
+    await startVoiceInteraction()
+    return
+  }
+
+  if (rt.talking) {
+    if (rt.resting) {
+      if (!rt.wakeListening()) {
+        pet.showSpeechBubble('连接断开，正在重连…', 3000)
+        void rt.connect().then(() => rt.startTalk())
+      } else {
+        pet.showSpeechBubble('我在听，主人说~', 2500)
       }
       return
     }
+    if (rt.userSpeaking) {
+      rt.submitUtterance(false)
+      return
+    }
+    if (rt.processing) {
+      pet.showSpeechBubble('我在想呢，稍等~', 2500)
+      return
+    }
+    pet.showSpeechBubble('正在说话呢~', 2500)
+    return
+  }
 
-    await startVoiceInteraction()
+  await startVoiceInteraction()
+}
+
+async function onPetClick() {
+  if (didDragWindow.value || suppressClick) return
+  if (clickTimer) clearTimeout(clickTimer)
+  clickTimer = setTimeout(async () => {
+    clickTimer = null
+    await handlePetTap()
   }, 200)
 }
 
@@ -588,47 +611,18 @@ function layoutSpeechBubble() {
   const el = bubbleEl.value
   if (!el || !pet.showBubble) return
 
-  const pad = 10
+  // top: 12px guarantees 0% top clipping (12px below OS window top edge)
+  // left: 12px & right: 12px with max-width: 256px (doubled width!) guarantees 0% side clipping
+  // height stays compact (~45px-65px), keeping 24px+ clear gap above Mochi's ears (0% face overlap)
   bubbleStyle.value = {
-    left: '50%',
-    top: `${BUBBLE_PAD}px`,
-    transform: 'translateX(-50%)',
-    '--tail-x': '50%',
+    left: '12px',
+    right: '12px',
+    width: 'fit-content',
+    'max-width': '256px',
+    top: '12px',
+    bottom: 'auto',
+    margin: '0 auto',
   }
-
-  requestAnimationFrame(() => {
-    const node = bubbleEl.value
-    if (!node || !pet.showBubble) return
-
-    const rect = node.getBoundingClientRect()
-    let shift = 0
-    if (rect.left < pad) shift += pad - rect.left
-    if (rect.right > window.innerWidth - pad) {
-      shift -= rect.right - (window.innerWidth - pad)
-    }
-
-    if (shift !== 0) {
-      bubbleStyle.value = {
-        left: '50%',
-        top: `${BUBBLE_PAD}px`,
-        transform: `translateX(calc(-50% + ${Math.round(shift)}px))`,
-        '--tail-x': '50%',
-      }
-    }
-
-    requestAnimationFrame(() => {
-      const bubble = bubbleEl.value
-      const area = bubble?.closest('.pet-area') as HTMLElement | null
-      if (!bubble || !area) return
-      const areaRect = area.getBoundingClientRect()
-      const bubbleRect = bubble.getBoundingClientRect()
-      const tailX = areaRect.left + areaRect.width / 2 - bubbleRect.left
-      bubbleStyle.value = {
-        ...bubbleStyle.value,
-        '--tail-x': `${Math.round(Math.max(18, Math.min(bubbleRect.width - 18, tailX)))}px`,
-      }
-    })
-  })
 }
 
 function clampMenuPos(clientX: number, clientY: number, menuW: number, menuH: number) {
@@ -647,9 +641,9 @@ function clampMenuPos(clientX: number, clientY: number, menuW: number, menuH: nu
   }
   if (y < MENU_PAD) y = MENU_PAD
 
-  // 避免挡住头顶 speech bubble
-  if (pet.showBubble && y < 72) {
-    y = 72
+  // 避免挡住头顶 speech bubble（气泡在头部上方，预留更高空间）
+  if (pet.showBubble && y < 48) {
+    y = 48
     if (y + menuH + MENU_PAD > vh) {
       y = Math.max(MENU_PAD, vh - menuH - MENU_PAD)
     }
@@ -716,7 +710,7 @@ function onDblClick() {
           ref="bubbleEl"
           class="speech-bubble"
           :class="[
-            pet.facing === 'left' ? 'speech-bubble--tr' : 'speech-bubble--tl',
+            bubbleStyle.right !== 'auto' ? 'speech-bubble--tl' : 'speech-bubble--tr',
             { 'speech-bubble--voice': pet.isVoiceBubbleActive() },
           ]"
           :style="bubbleStyle"
@@ -784,88 +778,59 @@ function onDblClick() {
 
 .speech-bubble {
   position: absolute;
-  top: 4px;
-  left: 50%;
-  transform: translateX(-50%);
+  top: 12px;
   background: linear-gradient(145deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 255, 0.96) 100%);
-  padding: 10px 14px;
-  border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.85);
-  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.88);
+  font-size: 12px;
   font-weight: 500;
   color: #2c3340;
   box-shadow:
-    0 4px 20px rgba(88, 120, 180, 0.16),
-    0 1px 3px rgba(0, 0, 0, 0.06);
-  backdrop-filter: blur(8px);
-  max-width: min(380px, calc(100vw - 24px));
+    0 6px 20px rgba(88, 120, 180, 0.18),
+    0 1px 4px rgba(0, 0, 0, 0.08);
+  backdrop-filter: blur(10px);
+  width: fit-content;
   width: max-content;
-  min-width: 0;
+  max-width: 256px;
+  min-width: 42px;
+  height: fit-content;
+  height: max-content;
+  max-height: 120px;
+  overflow-y: auto;
   box-sizing: border-box;
   overflow-wrap: anywhere;
   word-break: break-word;
-  line-height: 1.55;
+  line-height: 1.45;
   letter-spacing: 0.01em;
   text-align: left;
   z-index: 30;
-  pointer-events: none;
+  pointer-events: auto;
   white-space: pre-wrap;
 }
 
-.speech-bubble--voice {
-  border-color: rgba(120, 160, 255, 0.35);
-  box-shadow:
-    0 6px 24px rgba(88, 120, 220, 0.2),
-    0 0 0 1px rgba(120, 160, 255, 0.12);
+.speech-bubble::-webkit-scrollbar {
+  width: 3px;
 }
 
-.bubble-pop-enter-active {
-  animation: bubble-in 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+.speech-bubble::-webkit-scrollbar-thumb {
+  background: rgba(140, 160, 200, 0.4);
+  border-radius: 3px;
 }
 
-.bubble-pop-leave-active {
-  animation: bubble-out 0.22s ease-in forwards;
-}
-
-@keyframes bubble-in {
-  from {
-    opacity: 0;
-    transform: translateX(-50%) translateY(6px) scale(0.94);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0) scale(1);
-  }
-}
-
-@keyframes bubble-out {
-  from {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0) scale(1);
-  }
-  to {
-    opacity: 0;
-    transform: translateX(-50%) translateY(-4px) scale(0.96);
-  }
+.speech-bubble::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .speech-bubble::after {
   content: '';
   position: absolute;
-  bottom: -7px;
-  left: var(--tail-x, 50%);
+  bottom: -6px;
+  left: 50%;
   transform: translateX(-50%);
-  border: 7px solid transparent;
+  border: 6px solid transparent;
   border-top-color: rgba(252, 253, 255, 0.98);
   filter: drop-shadow(0 2px 2px rgba(88, 120, 180, 0.08));
-}
-
-.speech-bubble--tl::after {
-  left: var(--tail-x, 58%);
-}
-
-.speech-bubble--tr::after {
-  left: var(--tail-x, 42%);
 }
 
 .context-menu {

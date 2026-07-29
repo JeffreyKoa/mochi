@@ -59,6 +59,9 @@ async function acquireChatVoice() {
     rt.setVoiceWindow('inline')
     await rt.connectIfOwner()
   }
+  if (realtimeEnabled.value && !rt.talking) {
+    await rt.startTalk().catch(() => {})
+  }
 }
 
 async function releaseChatVoice() {
@@ -157,13 +160,13 @@ onUnmounted(() => {
           </div>
         </div>
         <div v-if="rt.partialText" class="message user">
-          <div class="bubble streaming">{{ rt.partialText }}</div>
+          <div class="bubble streaming"><span class="streaming-tag">🎤 正在识别：</span>{{ rt.partialText }}</div>
         </div>
         <div v-if="showStreamingReply" class="message assistant">
           <div class="bubble streaming">{{ rt.replyText }}</div>
         </div>
         <div v-if="rt.userSpeaking && !rt.partialText" class="message user">
-          <div class="bubble streaming">正在听...</div>
+          <div class="bubble streaming">🎙️ 正在听，请说话...</div>
         </div>
       </div>
 
@@ -355,7 +358,15 @@ onUnmounted(() => {
 }
 
 .bubble.streaming {
-  opacity: 0.7;
+  opacity: 0.9;
+  animation: pulse-stream 1.5s infinite ease-in-out;
+}
+
+.streaming-tag {
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.95;
+  margin-right: 2px;
 }
 
 .text-input-row {

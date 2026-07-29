@@ -53,6 +53,7 @@ realtime:
     min_speech_ms: 250
     endpointing_enabled: true
     energy_peak: 0.05
+    tail_speech_peak: 0.015   # user_speaking 阶段刷新 lastSpeechAt 的低音量门槛（防句尾截断）
     playback_peak: 0.10
     wake_peak: 0
     silero:

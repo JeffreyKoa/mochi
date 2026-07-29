@@ -107,6 +107,7 @@ type RealtimeVAD struct {
 	MinSpeechMS        int               `yaml:"min_speech_ms"`
 	EndpointingEnabled bool              `yaml:"endpointing_enabled"`
 	EnergyPeak         float64           `yaml:"energy_peak"`
+	TailSpeechPeak     float64           `yaml:"tail_speech_peak"`
 	PlaybackPeak       float64           `yaml:"playback_peak"`
 	WakePeak           float64           `yaml:"wake_peak"`
 	Silero             RealtimeSileroVAD `yaml:"silero"`
@@ -136,6 +137,7 @@ type RealtimePublicConfig struct {
 		MinSpeechMS        int     `json:"min_speech_ms"`
 		EndpointingEnabled bool    `json:"endpointing_enabled"`
 		EnergyPeak         float64 `json:"energy_peak"`
+		TailSpeechPeak     float64 `json:"tail_speech_peak"`
 		PlaybackPeak       float64 `json:"playback_peak"`
 		WakePeak           float64 `json:"wake_peak"`
 		Silero             struct {
@@ -428,6 +430,9 @@ func (r *RealtimeConfig) applyDefaults() {
 	if r.VAD.EnergyPeak == 0 {
 		r.VAD.EnergyPeak = 0.05
 	}
+	if r.VAD.TailSpeechPeak == 0 {
+		r.VAD.TailSpeechPeak = 0.015
+	}
 	if r.VAD.PlaybackPeak == 0 {
 		r.VAD.PlaybackPeak = 0.10
 	}
@@ -549,6 +554,7 @@ func (r RealtimeConfig) PublicClient() RealtimePublicConfig {
 	out.VAD.MinSpeechMS = r.VAD.MinSpeechMS
 	out.VAD.EndpointingEnabled = r.VAD.EndpointingEnabled
 	out.VAD.EnergyPeak = r.VAD.EnergyPeak
+	out.VAD.TailSpeechPeak = r.VAD.TailSpeechPeak
 	out.VAD.PlaybackPeak = r.VAD.PlaybackPeak
 	wakePeak := r.VAD.WakePeak
 	if wakePeak == 0 {

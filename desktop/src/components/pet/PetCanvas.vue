@@ -10,13 +10,7 @@ const canvasRef = ref<HTMLCanvasElement>()
 const CANVAS_W = 280
 const CANVAS_H = 280
 const BODY_R = 48
-const BODY_CY = -18
-/** Base scale during happy spin — further reduced dynamically when tail nears edges. */
-const DANCE_FIT_SCALE = 0.7
-const DANCE_EDGE_MARGIN = 18
-/** Max distance from body pivot to tail tip (incl. puff radius). */
-const TAIL_EXTENT = 138
-const LEG_EXTENT = 84
+const BODY_CY = 18
 
 let app: PIXI.Application | null = null
 let petGraphic: PIXI.Graphics | null = null
@@ -26,9 +20,6 @@ let legSwing = 0
 let earFlop = 0
 let tailSwing = 0
 let tailWave = 0
-let danceRotation = 0
-let danceSkewX = 0
-let danceSkewY = 0
 
 const COLORS = computed(() => pet.animationColors)
 const LEG_COLOR = computed(() => pet.legColor)
@@ -163,32 +154,13 @@ function drawLegs(legTop: number) {
   petGraphic.fill(lastFootColor)
 }
 
-function danceFitScale(rotation: number): number {
-  // Tail sits back-right-up in local space; track where the tip points as we spin.
-  const tipAngle = rotation * 1.15 + 0.62
-  const proj = Math.max(
-    Math.abs(Math.cos(tipAngle)) * TAIL_EXTENT,
-    Math.abs(Math.sin(tipAngle)) * TAIL_EXTENT,
-    LEG_EXTENT,
-  )
-  const maxHalf = Math.min(CANVAS_W, CANVAS_H) / 2 - DANCE_EDGE_MARGIN
-  return Math.min(DANCE_FIT_SCALE, maxHalf / (proj + DANCE_EDGE_MARGIN))
-}
-
 function applyDanceTransform(anim: Animation) {
   if (!petGraphic) return
 
   if (anim === 'happy') {
-    const phase = danceRotation
-    const fit = danceFitScale(phase)
-    const tumbleX = 0.78 + Math.abs(Math.sin(phase * 0.95)) * 0.18
-    const tumbleY = 0.78 + Math.abs(Math.cos(phase * 0.78)) * 0.18
-    petGraphic.rotation = phase * 1.15
-    petGraphic.skew.set(
-      Math.sin(phase * 1.35) * 0.07 + danceSkewX,
-      Math.cos(phase * 1.05) * 0.05 + danceSkewY,
-    )
-    petGraphic.scale.set(fit * tumbleX, fit * tumbleY)
+    petGraphic.rotation = 0
+    petGraphic.skew.set(0, 0)
+    petGraphic.scale.set(pet.facing === 'left' ? -1 : 1, 1)
     return
   }
 
@@ -281,9 +253,6 @@ function startAnimLoop(anim: Animation) {
         tailWave = Math.sin(frame * 0.16 + 1.2) * 3.5
         break
       case 'happy':
-        danceRotation = frame * 0.11
-        danceSkewX = Math.sin(frame * 0.17) * 0.04
-        danceSkewY = Math.cos(frame * 0.13) * 0.03
         bounceOffset = Math.abs(Math.sin(frame * 0.55)) * -9
         legSwing = Math.sin(frame * 0.9) * 12
         earFlop = Math.sin(frame * 0.7) * 8

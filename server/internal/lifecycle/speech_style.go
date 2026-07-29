@@ -6,7 +6,7 @@ func DefaultSpeechStyle(stage, species string) string {
 	var base string
 	switch stage {
 	case "newborn":
-		base = "像普通年轻人聊天，短句、直接、自然，不用婴儿语或撒娇表演"
+		base = "像刚出生的小孩，说话断断续续，但仍然是正常人类说话"
 	case "juvenile":
 		base = "像十多岁的人说话，口语化，好奇时会问，不文绉绉"
 	case "child":

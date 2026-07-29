@@ -196,8 +196,14 @@ func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text
 		}
 	}()
 
+	// Always push ASR text to client first so chat/partial UI can show what was heard,
+	// even if noise gate or response gate later dismisses the turn.
+	if withVoice && strings.TrimSpace(text) != "" {
+		_ = send.Send(MsgASRFinal, ASRText{Text: text})
+	}
+
 	// Noise gate: silently dismiss false-trigger ASR results (voice turns only)
-	// before they reach the chat history or the LLM.
+	// before they reach the LLM.
 	if withVoice && p.isNoiseTranscript(text) {
 		log.Printf("[realtime] asr noise dismiss session=%s text=%q audio_bytes=%d", sess.ID, text, sess.TurnAudioBytes())
 		p.abortTurnSilent(sess, send)
@@ -219,8 +225,6 @@ func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text
 			return
 		}
 	}
-
-	_ = send.Send(MsgASRFinal, ASRText{Text: text})
 
 	if text == "" {
 		if !withVoice {
