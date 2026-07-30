@@ -92,6 +92,8 @@ type RealtimeConfig struct {
 	Pipeline       RealtimePipeline       `yaml:"pipeline"`
 	ThinkingFiller RealtimeThinkingFiller `yaml:"thinking_filler"`
 	Gate           RealtimeGate           `yaml:"gate"`
+	Voiceprint     RealtimeVoiceprint     `yaml:"voiceprint"`
+	Presence       RealtimePresence       `yaml:"presence"`
 }
 
 type RealtimeDashscope struct {
@@ -128,6 +130,23 @@ type RealtimeBargeIn struct {
 	BargeInMS     int     `yaml:"barge_in_ms"`
 }
 
+type RealtimeVoiceprint struct {
+	Required               bool    `yaml:"required"`
+	Threshold              float64 `yaml:"threshold"`
+	VerifyWindowSec        float64 `yaml:"verify_window_sec"`
+	WakeProbeSec           float64 `yaml:"wake_probe_sec"`
+	StreamCheckIntervalMS  int     `yaml:"stream_check_interval_ms"`
+}
+
+type RealtimePresence struct {
+	Enabled             bool    `yaml:"enabled"`
+	AmbientIntervalMS   int     `yaml:"ambient_interval_ms"`
+	AwayTimeoutSec      int     `yaml:"away_timeout_sec"`
+	SpeechThreshold     float64 `yaml:"speech_threshold"`
+	AmbientEnergyFloor  float64 `yaml:"ambient_energy_floor"`
+	OwnerPresenceTTLSec int     `yaml:"owner_presence_ttl_sec"`
+}
+
 // RealtimePublicConfig is exposed via GET /api/v1/public/config (no secrets).
 type RealtimePublicConfig struct {
 	STTMode       string `json:"stt_mode"`
@@ -153,6 +172,21 @@ type RealtimePublicConfig struct {
 		PeakThreshold float64 `json:"peak_threshold"`
 		BargeInMS     int     `json:"barge_in_ms"`
 	} `json:"barge_in"`
+	Voiceprint struct {
+		Required              bool    `json:"required"`
+		Threshold             float64 `json:"threshold"`
+		VerifyWindowSec       float64 `json:"verify_window_sec"`
+		WakeProbeSec          float64 `json:"wake_probe_sec"`
+		StreamCheckIntervalMS int     `json:"stream_check_interval_ms"`
+	} `json:"voiceprint"`
+	Presence struct {
+		Enabled            bool    `json:"enabled"`
+		AmbientIntervalMS  int     `json:"ambient_interval_ms"`
+		AwayTimeoutSec     int     `json:"away_timeout_sec"`
+		SpeechThreshold    float64 `json:"speech_threshold"`
+		AmbientEnergyFloor float64 `json:"ambient_energy_floor"`
+		OwnerPresenceTTLSec int    `json:"owner_presence_ttl_sec"`
+	} `json:"presence"`
 	TTSTransport string `json:"tts_transport"`
 }
 
@@ -460,6 +494,35 @@ func (r *RealtimeConfig) applyDefaults() {
 	if r.BargeIn.BargeInMS == 0 {
 		r.BargeIn.BargeInMS = 800
 	}
+	if r.Voiceprint.Threshold == 0 {
+		r.Voiceprint.Threshold = 0.38
+		r.Voiceprint.Required = true
+	}
+	if r.Voiceprint.VerifyWindowSec == 0 {
+		r.Voiceprint.VerifyWindowSec = 4.0
+	}
+	if r.Voiceprint.WakeProbeSec == 0 {
+		r.Voiceprint.WakeProbeSec = 1.0
+	}
+	if r.Voiceprint.StreamCheckIntervalMS == 0 {
+		r.Voiceprint.StreamCheckIntervalMS = 500
+	}
+	if r.Presence.AmbientIntervalMS == 0 {
+		r.Presence.AmbientIntervalMS = 2000
+		r.Presence.Enabled = true
+	}
+	if r.Presence.AwayTimeoutSec == 0 {
+		r.Presence.AwayTimeoutSec = 180
+	}
+	if r.Presence.SpeechThreshold == 0 {
+		r.Presence.SpeechThreshold = 0.30
+	}
+	if r.Presence.AmbientEnergyFloor == 0 {
+		r.Presence.AmbientEnergyFloor = 0.012
+	}
+	if r.Presence.OwnerPresenceTTLSec == 0 {
+		r.Presence.OwnerPresenceTTLSec = 30
+	}
 	if r.ThinkingFiller.Enabled {
 		if r.ThinkingFiller.ThresholdMS == 0 {
 			r.ThinkingFiller.ThresholdMS = 800
@@ -569,6 +632,17 @@ func (r RealtimeConfig) PublicClient() RealtimePublicConfig {
 	out.BargeIn.EchoGuardMS = r.BargeIn.EchoGuardMS
 	out.BargeIn.PeakThreshold = r.BargeIn.PeakThreshold
 	out.BargeIn.BargeInMS = r.BargeIn.BargeInMS
+	out.Voiceprint.Required = r.Voiceprint.Required
+	out.Voiceprint.Threshold = r.Voiceprint.Threshold
+	out.Voiceprint.VerifyWindowSec = r.Voiceprint.VerifyWindowSec
+	out.Voiceprint.WakeProbeSec = r.Voiceprint.WakeProbeSec
+	out.Voiceprint.StreamCheckIntervalMS = r.Voiceprint.StreamCheckIntervalMS
+	out.Presence.Enabled = r.Presence.Enabled
+	out.Presence.AmbientIntervalMS = r.Presence.AmbientIntervalMS
+	out.Presence.AwayTimeoutSec = r.Presence.AwayTimeoutSec
+	out.Presence.SpeechThreshold = r.Presence.SpeechThreshold
+	out.Presence.AmbientEnergyFloor = r.Presence.AmbientEnergyFloor
+	out.Presence.OwnerPresenceTTLSec = r.Presence.OwnerPresenceTTLSec
 	return out
 }
 

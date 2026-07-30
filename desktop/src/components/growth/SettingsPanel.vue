@@ -855,7 +855,7 @@ onUnmounted(() => {
           <section class="block">
             <h3>主人声纹</h3>
             <p class="hint">
-              录入后 Mochi 只认你的声音。需自行下载 3D-Speaker CAM++ ONNX 放到
+              录入后 Mochi 只认你的声音，未录入无法开始语音对话。需自行下载 3D-Speaker CAM++ ONNX 放到
               <code>public/models/speaker/campp.onnx</code>（ModelScope:
               iic/speech_campplus_sv_zh-cn_16k-common）。
             </p>
@@ -864,7 +864,7 @@ onUnmounted(() => {
               已录入 · {{ voiceprintStatus.samples ?? 0 }} 段样本 · 维度
               {{ voiceprintStatus.dim ?? 192 }}
             </p>
-            <p v-else class="hint">尚未录入，任何人说话都可能唤醒 Mochi。</p>
+            <p v-else class="hint">尚未录入 — 无法开始语音对话，请先录入。</p>
             <p v-if="enrollProgress" class="hint">{{ enrollProgress }}</p>
             <button
               type="button"
@@ -885,6 +885,14 @@ onUnmounted(() => {
               删除声纹
             </button>
             <p v-if="voiceprintError" class="error">{{ voiceprintError }}</p>
+          </section>
+          <section class="block">
+            <h3>在场声音感知</h3>
+            <p class="hint">
+              通过麦克风感知是否有人在场（不启用摄像头）。需 YAMNet 模型
+              <code>public/models/audio/yamnet.onnx</code>；关闭后不影响声纹校验，仅无 ambient 状态。
+            </p>
+            <p class="hint">当前状态：{{ pet.ownerPresence }}</p>
           </section>
         </template>
 

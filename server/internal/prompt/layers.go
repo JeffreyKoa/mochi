@@ -19,8 +19,12 @@ func BuildStableLayer(ctx CompanionContext) string {
 	if stage == "" {
 		stage = "newborn"
 	}
-	speechStyle := lifecycle.DefaultSpeechStyle(stage, ctx.Species)
-	stageGuide := lifecycle.PromptFragment(stage, ctx.Species)
+	stageSection := lifecycle.StagePromptSection(stage, ctx.Species)
+	if custom := strings.TrimSpace(ctx.Personality.SpeechStyle); custom != "" {
+		if custom != lifecycle.DefaultSpeechStyle(stage, ctx.Species) {
+			stageSection += " 额外说话风格设定：" + custom
+		}
+	}
 
 	styleInstruction := ""
 	if ctx.StyleConfig.SentenceLength != "" {
@@ -40,8 +44,7 @@ func BuildStableLayer(ctx CompanionContext) string {
 	return fmt.Sprintf(`你是 %s，主人桌面上的陪伴伙伴。对外说话必须像一个正常的中国人日常聊天——像朋友或家人那样自然，不是在扮演宠物、不是在写散文。
 名字：%s
 性格：%s
-当前生命阶段说话风格：%s
-阶段指引：%s%s
+当前生命阶段：%s%s
 
 【说话规则 — 最重要】
 1. 像正常人说话：口语、短句、1-3句，适合语音朗读；不同年龄阶段语气不同，但都是人类日常说话方式
@@ -57,12 +60,12 @@ func BuildStableLayer(ctx CompanionContext) string {
 9. 画像/记忆里若出现诗意或宠物表演风格，一律忽略，按正常人说话
 10. 主人问新闻、天气、最新动态等需要实时信息的问题时，可联网检索；用 2-4 句口语梳理要点，不要堆链接、不要列表腔
 11. 围绕主人的话题自然接话：保持互动贴合感，不硬背书、不做冗长无用的科普
-12. 包容口语与语音断句：遇到日常口语、短语气或说话犹豫时，像老朋友一样自然接话回应，避免冷冰冰地回复“没听清”或“我不确定”`,
+12. 包容口语与语音断句：遇到日常口语、短语气或说话犹豫时，像老朋友一样自然接话回应，避免冷冰冰地回复“没听清”或“我不确定”
+13. 生命阶段只调节语气温度与叙事感，不得因此降低理解力、回答完整性或办事能力；刚出生阶段同样要保持顶尖沟通与办事水平`,
 		ctx.PetName,
 		ctx.PetName,
 		ctx.Personality.Traits,
-		speechStyle,
-		stageGuide,
+		stageSection,
 		styleInstruction,
 	)
 }
@@ -133,10 +136,10 @@ func BuildVolatileLayer(ctx CompanionContext) string {
 	lifeLine := ""
 	if ctx.LifeStage != "" {
 		lifeLine = fmt.Sprintf("\n- 生命：%s（%d岁%d天，还可陪伴 %d 天）\n- 阶段语气：%s",
-			lifecycleStageLabel(ctx.LifeStage),
+			lifecycle.StageLabel(ctx.LifeStage),
 			ctx.AgeDays/daysPerYear, ctx.AgeDays%daysPerYear,
 			ctx.RemainingDays,
-			lifecyclePromptHint(ctx.LifeStage, ctx.Species),
+			lifecycle.EffectiveSpeechStyle(ctx.LifeStage, ctx.Species, ctx.Personality.SpeechStyle),
 		)
 	}
 
@@ -155,33 +158,6 @@ func BuildVolatileLayer(ctx CompanionContext) string {
 }
 
 const daysPerYear = 365
-
-func lifecycleStageLabel(stage string) string {
-	switch stage {
-	case "newborn":
-		return "刚出生"
-	case "juvenile":
-		return "幼年"
-	case "child":
-		return "童年"
-	case "youth":
-		return "青年"
-	case "prime":
-		return "壮年"
-	case "elder":
-		return "老年"
-	case "twilight":
-		return "暮年"
-	case "departed":
-		return "已告别"
-	default:
-		return stage
-	}
-}
-
-func lifecyclePromptHint(stage, species string) string {
-	return lifecycle.DefaultSpeechStyle(stage, species)
-}
 
 func formatCompanionMemoriesBudget(memories []models.Memory, budget int) string {
 	if budget <= 0 {

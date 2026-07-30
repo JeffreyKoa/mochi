@@ -27,8 +27,10 @@ import PetCanvas from '@/components/pet/PetCanvas.vue'
 import { onLipSync } from '@/services/voice'
 import {
   claimVoiceOwner,
-  setupVoiceOwnerListener,
+  getStoredVoiceOwner,
   isChatWindowVisible,
+  releaseVoiceOwner,
+  setupVoiceOwnerListener,
 } from '@/services/voiceSessionOwner'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 
@@ -249,13 +251,12 @@ onMounted(async () => {
         onAcquire: () => rt.connectIfOwner(),
         onYield: () => rt.yieldVoiceConnection(),
       })
-      if (!(await isChatWindowVisible())) {
+      const chatVisible = await isChatWindowVisible()
+      if (!chatVisible && !pet.isChatOpen && getStoredVoiceOwner() !== 'chat') {
         await claimVoiceOwner('pet')
-        await rt.connectIfOwner()
       }
     } else {
       rt.setVoiceWindow('inline')
-      await rt.connectIfOwner()
     }
   }
 
@@ -396,7 +397,18 @@ async function closeChatSurface(collapse = true) {
   pet.chatInline = false
   setPopupChatFollowsPet(false)
   if (isTauri()) {
+    if (getStoredVoiceOwner() === 'chat') {
+      await rt.yieldVoiceConnection()
+      await releaseVoiceOwner('chat')
+    }
     await closeChatPanel(collapse)
+    try {
+      const { emit } = await import('@tauri-apps/api/event')
+      await emit('chat-closed', {})
+      await emit('side-panel-closed', { mode: 'chat' })
+    } catch {
+      // optional
+    }
   }
 }
 
@@ -494,16 +506,35 @@ async function handlePetTap() {
 
   if (rt.talking) {
     if (rt.resting) {
-      if (!rt.wakeListening()) {
-        pet.showSpeechBubble('连接断开，正在重连…', 3000)
-        void rt.connect().then(() => rt.startTalk())
-      } else {
+      const wake = await rt.wakeListening()
+      if (wake.ok) {
         pet.showSpeechBubble('我在听，主人说~', 2500)
+      } else {
+        switch (wake.reason) {
+          case 'voiceprint_missing':
+            pet.showSpeechBubble('请先在设置中录入主人声纹~', 4000)
+            break
+          case 'disconnected':
+            pet.showSpeechBubble('连接断开，正在重连…', 3000)
+            void rt.connectIfOwner().then(async () => {
+              if (!(await rt.startTalk())) {
+                pet.showSpeechBubble(rt.statusText || '重连失败，请稍后再试', 4000)
+              }
+            })
+            break
+          case 'not_owner':
+            pet.showSpeechBubble('我只听主人的声音哦~', 2500)
+            break
+          case 'not_speech':
+            break
+          default:
+            break
+        }
       }
       return
     }
     if (rt.userSpeaking) {
-      rt.submitUtterance(false)
+      rt.submitUtterance(true)
       return
     }
     if (rt.processing) {

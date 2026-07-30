@@ -6,7 +6,12 @@ import { closeChatPanel, isTauri } from '@/services/chatWindow'
 import { getChatHistory } from '@/services/api'
 import { getClientConfig, initClientConfig } from '@/config'
 import { listenProactive } from '@/services/proactiveSync'
-import { claimVoiceOwner, releaseVoiceOwner } from '@/services/voiceSessionOwner'
+import {
+  claimVoiceOwner,
+  getStoredVoiceOwner,
+  releaseVoiceOwner,
+} from '@/services/voiceSessionOwner'
+import { useAuthStore } from '@/stores/authStore'
 
 const props = defineProps<{ floating?: boolean; compact?: boolean; docked?: boolean }>()
 
@@ -31,7 +36,10 @@ const rt = useRealtimeStore()
 const textInput = ref('')
 const scrollEl = ref<HTMLElement | null>(null)
 const realtimeEnabled = ref(true)
+const auth = useAuthStore()
 let unlistenProactive: (() => void) | null = null
+let unlistenChatOpened: (() => void) | null = null
+let unlistenSidePanelOpened: (() => void) | null = null
 
 const showStreamingReply = computed(() => {
   if (!rt.replyText || !rt.processing) return false
@@ -50,18 +58,32 @@ watch(
   () => void scrollToBottom(),
 )
 
-async function acquireChatVoice() {
+async function acquireChatVoice(options?: { autoStartTalk?: boolean }) {
+  const autoStartTalk = options?.autoStartTalk ?? true
+  auth.syncFromStorage()
+
   if (props.floating && isTauri()) {
     rt.setVoiceWindow('chat')
     await claimVoiceOwner('chat')
+    if (getStoredVoiceOwner() !== 'chat') {
+      await claimVoiceOwner('chat')
+    }
+    // Let the pet window yield its /ws/voice connection after ownership changes.
+    await new Promise((resolve) => setTimeout(resolve, 80))
     await rt.connectIfOwner()
   } else {
     rt.setVoiceWindow('inline')
     await rt.connectIfOwner()
   }
-  if (realtimeEnabled.value && !rt.talking) {
+
+  if (autoStartTalk && realtimeEnabled.value && !rt.talking) {
     await rt.startTalk().catch(() => {})
   }
+}
+
+async function onStartTalk() {
+  await acquireChatVoice({ autoStartTalk: false })
+  await rt.startTalk()
 }
 
 async function releaseChatVoice() {
@@ -87,7 +109,7 @@ async function close() {
 }
 
 async function finishSpeaking() {
-  rt.submitUtterance(false)
+  rt.submitUtterance(true)
 }
 
 async function stopConversation() {
@@ -124,6 +146,24 @@ onMounted(async () => {
     // history optional
   }
 
+  if (props.floating && isTauri()) {
+    try {
+      const { listen } = await import('@tauri-apps/api/event')
+      const onChatShow = () => {
+        void acquireChatVoice().catch(() => {
+          rt.statusText = realtimeEnabled.value ? '连接失败' : '文字模式'
+        })
+      }
+      unlistenChatOpened = await listen('chat-opened', onChatShow)
+      unlistenSidePanelOpened = await listen('side-panel-opened', (event) => {
+        const mode = (event.payload as { mode?: string } | undefined)?.mode
+        if (mode === 'chat' || !mode) onChatShow()
+      })
+    } catch {
+      // optional
+    }
+  }
+
   await acquireChatVoice().catch(() => {
     rt.statusText = realtimeEnabled.value ? '连接失败' : '文字模式'
   })
@@ -133,6 +173,10 @@ onUnmounted(() => {
   void releaseChatVoice()
   unlistenProactive?.()
   unlistenProactive = null
+  unlistenChatOpened?.()
+  unlistenChatOpened = null
+  unlistenSidePanelOpened?.()
+  unlistenSidePanelOpened = null
 })
 </script>
 
@@ -152,10 +196,13 @@ onUnmounted(() => {
           v-for="(m, i) in rt.messages"
           :key="i"
           class="message"
-          :class="m.role"
+          :class="[m.role, { dismissed: m.dismissed }]"
         >
           <div class="message-col">
-            <div class="bubble">{{ m.content }}</div>
+            <div class="bubble">
+              {{ m.content }}
+              <span v-if="m.dismissed" class="dismiss-tag">已听到 · 未回应</span>
+            </div>
             <span v-if="m.createdAt" class="msg-time">{{ formatMessageTime(m.createdAt) }}</span>
           </div>
         </div>
@@ -198,7 +245,7 @@ onUnmounted(() => {
           <div v-if="rt.talking" class="mic-meter">
             <div class="mic-meter-bar" :style="{ width: Math.round(rt.micLevel * 100) + '%' }" />
           </div>
-          <button v-if="!rt.talking" class="mic-btn" type="button" @click="rt.startTalk()">
+          <button v-if="!rt.talking" class="mic-btn" type="button" @click="onStartTalk">
             开始对话
           </button>
           <button v-else-if="rt.resting" class="mic-btn resting" type="button" disabled>
@@ -349,6 +396,18 @@ onUnmounted(() => {
   background: #ff8fab;
   color: white;
   border-bottom-right-radius: 4px;
+}
+
+.message.user.dismissed .bubble {
+  background: #e8e8e8;
+  color: #666;
+}
+
+.dismiss-tag {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  opacity: 0.85;
 }
 
 .message.assistant .bubble {

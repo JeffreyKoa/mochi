@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { postActivityHeartbeat } from './api'
+import { getAmbientPresenceSnapshot } from './ambientMic'
 import { isTauri } from './chatWindow'
 
 const HEARTBEAT_MS = 5 * 60 * 1000
@@ -27,8 +28,14 @@ async function readSnapshot(): Promise<ActivitySnapshot | null> {
 async function sendHeartbeat() {
   const snap = await readSnapshot()
   if (!snap) return
+  const presence = getAmbientPresenceSnapshot()
   try {
-    await postActivityHeartbeat(snap)
+    await postActivityHeartbeat({
+      ...snap,
+      sound_presence: presence.sound_presence,
+      last_human_voice_sec: presence.last_human_voice_sec ?? undefined,
+      last_owner_voice_sec: presence.last_owner_voice_sec ?? undefined,
+    })
   } catch (e) {
     console.warn('[activity] heartbeat failed', e)
   }

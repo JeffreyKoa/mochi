@@ -8,6 +8,7 @@ import { useGrowthStore } from '@/stores/growthStore'
 import { getPet, getLifeState, getChatHistory, initClientConfig, AuthError, ApiError } from '@/services/api'
 import { healthMonitor } from '@/services/healthMonitor'
 import { startActivityHeartbeat, stopActivityHeartbeat } from '@/services/activityHeartbeat'
+import { stopAmbientMic } from '@/services/ambientMic'
 import { wsManager } from '@/services/ws'
 import { handleProactiveMessage } from '@/services/proactiveHandler'
 import { listenProactive } from '@/services/proactiveSync'
@@ -261,6 +262,9 @@ async function loadUserData() {
       void rt.ensurePushConnected()
     }
     startActivityHeartbeat()
+    void rt.initAmbientPresence().catch((e) => {
+      console.warn('[ambient] presence init skipped', e)
+    })
     healthMonitor.stop()
     loadError.value = ''
     pet.setBootFailed(false)
@@ -357,6 +361,7 @@ watch(
       loading.value = false
       healthMonitor.stop()
       stopActivityHeartbeat()
+      void stopAmbientMic()
       await setLoginLayout()
     }
   },
@@ -388,12 +393,14 @@ function onAdoptLogout() {
   wsManager.disconnect()
   wsInitialized.value = false
   stopActivityHeartbeat()
+  void stopAmbientMic()
   void setLoginLayout()
 }
 
 onUnmounted(() => {
   healthMonitor.stop()
   stopActivityHeartbeat()
+  void stopAmbientMic()
   unlistenProactive?.()
   unlistenProactive = null
 })

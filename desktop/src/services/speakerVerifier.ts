@@ -100,6 +100,40 @@ export class SpeakerVerifier {
     return { match: score >= threshold, score }
   }
 
+  /** Sliding-window max cosine score over PCM (better owner recall on long utterances). */
+  async verifyMaxScore(
+    pcm: Float32Array,
+    ownerEmbedding: Float32Array,
+    threshold: number,
+    windowSec = 1.5,
+    stepSec = 0.5,
+  ): Promise<VerifyResult | null> {
+    if (!this._available || !this.session) return null
+    if (pcm.length < MIN_SAMPLES) return null
+
+    const windowSamples = Math.floor(windowSec * SAMPLE_RATE)
+    const stepSamples = Math.max(Math.floor(stepSec * SAMPLE_RATE), 1)
+    let maxScore = -1
+    let anyWindow = false
+
+    for (let end = pcm.length; end >= MIN_SAMPLES; end -= stepSamples) {
+      const start = Math.max(0, end - windowSamples)
+      const slice = pcm.subarray(start, end)
+      if (slice.length < MIN_SAMPLES) continue
+      const emb = await this.extract(slice)
+      if (!emb) continue
+      anyWindow = true
+      const score = SpeakerVerifier.cosineSimilarity(emb, ownerEmbedding)
+      if (score > maxScore) maxScore = score
+    }
+
+    if (!anyWindow) {
+      return this.verify(pcm, ownerEmbedding, threshold)
+    }
+
+    return { match: maxScore >= threshold, score: maxScore }
+  }
+
   static cosineSimilarity(a: Float32Array, b: Float32Array): number {
     const n = Math.min(a.length, b.length)
     if (n === 0) return 0

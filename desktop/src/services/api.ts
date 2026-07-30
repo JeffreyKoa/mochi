@@ -316,6 +316,9 @@ export async function postActivityHeartbeat(body: {
   continuous_active_minutes: number
   session_active_minutes_today: number
   active_app?: string
+  sound_presence?: string
+  last_human_voice_sec?: number
+  last_owner_voice_sec?: number
 }) {
   const { data } = await request(`${getApiBase()}/api/v1/activity/heartbeat`, {
     method: 'POST',

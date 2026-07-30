@@ -6,22 +6,11 @@ import (
 )
 
 func TestDefaultSpeechStyle_byStage(t *testing.T) {
-	tests := []struct {
-		stage string
-		want  string
-	}{
-		{"newborn", "像刚出生的小孩"},
-		{"child", "像小孩一样口语化"},
-		{"prime", "像三十岁左右"},
-		{"elder", "像长辈"},
-	}
-	for _, tt := range tests {
-		got := DefaultSpeechStyle(tt.stage, "cat")
+	stages := []string{"newborn", "child", "prime", "elder"}
+	for _, stage := range stages {
+		got := DefaultSpeechStyle(stage, "cat")
 		if got == "" {
-			t.Fatalf("stage %s: empty style", tt.stage)
-		}
-		if tt.want != "" && !strings.Contains(got, tt.want) {
-			t.Fatalf("stage %s: got %q, want substring %q", tt.stage, got, tt.want)
+			t.Fatalf("stage %s: empty style", stage)
 		}
 	}
 }

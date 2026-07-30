@@ -49,9 +49,9 @@ realtime:
     ws_url: ""
   vad:
     model: silero
-    silence_ms: 1200
+    silence_ms: 1800
     min_speech_ms: 250
-    endpointing_enabled: true
+    endpointing_enabled: false   # 不用 ASR sentenceEnd 自动提交，避免话未说完就截断
     energy_peak: 0.05
     tail_speech_peak: 0.015   # user_speaking 阶段刷新 lastSpeechAt 的低音量门槛（防句尾截断）
     playback_peak: 0.10
@@ -59,13 +59,26 @@ realtime:
     silero:
       positive_threshold: 0.5
       negative_threshold: 0.35
-      redemption_ms: 800
+      redemption_ms: 1200
       min_speech_ms: 350
       pre_speech_pad_ms: 300
   barge_in:
     echo_guard_ms: 1800
     peak_threshold: 0.06
     barge_in_ms: 800
+  voiceprint:
+    required: true
+    threshold: 0.38
+    verify_window_sec: 4.0
+    wake_probe_sec: 1.0
+    stream_check_interval_ms: 500
+  presence:
+    enabled: true
+    ambient_interval_ms: 2000
+    away_timeout_sec: 180
+    speech_threshold: 0.30
+    ambient_energy_floor: 0.012
+    owner_presence_ttl_sec: 30
   asr:
     provider: dashscope
     model: paraformer-realtime-v2
@@ -91,7 +104,7 @@ realtime:
     tts_strong_punctuation: "。！？~!?.\n"
     tts_weak_punctuation: "，、,"
   gate:
-    enabled: true
+    enabled: false        # 主动对话场景建议关闭，避免识别到了却不回复
     model: qwen-turbo
     timeout_ms: 800
     max_chars: 200

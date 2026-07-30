@@ -25,8 +25,11 @@ func (r *Registry) Register(userID uint64, sessionID string, send func(WSMessage
 		r.sessions[userID] = make(map[string]sessionSender)
 	} else {
 		for id, s := range r.sessions[userID] {
-			if id != sessionID && s.onEvict != nil {
-				s.onEvict()
+			if id != sessionID {
+				if s.onEvict != nil {
+					s.onEvict()
+				}
+				delete(r.sessions[userID], id)
 			}
 		}
 	}

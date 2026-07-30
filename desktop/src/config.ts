@@ -25,6 +25,23 @@ export interface RealtimeBargeInConfig {
   bargeInMs: number
 }
 
+export interface RealtimeVoiceprintConfig {
+  required: boolean
+  threshold: number
+  verifyWindowSec: number
+  wakeProbeSec: number
+  streamCheckIntervalMs: number
+}
+
+export interface RealtimePresenceConfig {
+  enabled: boolean
+  ambientIntervalMs: number
+  awayTimeoutSec: number
+  speechThreshold: number
+  ambientEnergyFloor: number
+  ownerPresenceTtlSec: number
+}
+
 export type SttMode = 'cloud' | 'local' | 'auto'
 
 export interface RealtimeClientConfig {
@@ -32,6 +49,8 @@ export interface RealtimeClientConfig {
   speechLocale: string
   vad: RealtimeVadConfig
   bargeIn: RealtimeBargeInConfig
+  voiceprint: RealtimeVoiceprintConfig
+  presence: RealtimePresenceConfig
 }
 
 export interface ClientConfig {
@@ -45,7 +64,7 @@ export interface ClientConfig {
 export const DEFAULT_SILERO: RealtimeSileroVadConfig = {
   positiveThreshold: 0.5,
   negativeThreshold: 0.35,
-  redemptionMs: 800,
+  redemptionMs: 1200,
   minSpeechMs: 350,
   preSpeechPadMs: 300,
 }
@@ -54,9 +73,9 @@ export const DEFAULT_REALTIME: RealtimeClientConfig = {
   sttMode: 'auto',
   speechLocale: 'zh-CN',
   vad: {
-    silenceMs: 1200,
+    silenceMs: 1800,
     minSpeechMs: 250,
-    endpointingEnabled: true,
+    endpointingEnabled: false,
     energyPeak: 0.05,
     tailSpeechPeak: 0.015,
     playbackPeak: 0.10,
@@ -67,6 +86,21 @@ export const DEFAULT_REALTIME: RealtimeClientConfig = {
     echoGuardMs: 1800,
     peakThreshold: 0.06,
     bargeInMs: 800,
+  },
+  voiceprint: {
+    required: true,
+    threshold: 0.38,
+    verifyWindowSec: 4.0,
+    wakeProbeSec: 1.0,
+    streamCheckIntervalMs: 500,
+  },
+  presence: {
+    enabled: true,
+    ambientIntervalMs: 2000,
+    awayTimeoutSec: 180,
+    speechThreshold: 0.3,
+    ambientEnergyFloor: 0.012,
+    ownerPresenceTtlSec: 30,
   },
 }
 
@@ -88,6 +122,14 @@ export function getClientConfig(): ClientConfig {
 
 export function getRealtimeConfig(): RealtimeClientConfig {
   return _clientConfig.realtime
+}
+
+export function getVoiceprintConfig(): RealtimeVoiceprintConfig {
+  return _clientConfig.realtime.voiceprint
+}
+
+export function getPresenceConfig(): RealtimePresenceConfig {
+  return _clientConfig.realtime.presence
 }
 
 export function setApiBase(url: string) {
@@ -116,6 +158,8 @@ function parseRealtimeBlock(raw: unknown): RealtimeClientConfig {
     ...DEFAULT_REALTIME,
     vad: { ...DEFAULT_REALTIME.vad, silero: { ...DEFAULT_REALTIME.vad.silero } },
     bargeIn: { ...DEFAULT_REALTIME.bargeIn },
+    voiceprint: { ...DEFAULT_REALTIME.voiceprint },
+    presence: { ...DEFAULT_REALTIME.presence },
   }
   if (!raw || typeof raw !== 'object') return base
 
@@ -158,6 +202,40 @@ function parseRealtimeBlock(raw: unknown): RealtimeClientConfig {
 
   if (base.vad.wakePeak <= 0) {
     base.vad.wakePeak = base.bargeIn.peakThreshold
+  }
+
+  const vp = r.voiceprint
+  if (vp && typeof vp === 'object') {
+    const v = vp as Record<string, unknown>
+    base.voiceprint = {
+      required: v.required !== false,
+      threshold: num(v.threshold, base.voiceprint.threshold),
+      verifyWindowSec: num(v.verify_window_sec ?? v.verifyWindowSec, base.voiceprint.verifyWindowSec),
+      wakeProbeSec: num(v.wake_probe_sec ?? v.wakeProbeSec, base.voiceprint.wakeProbeSec),
+      streamCheckIntervalMs: num(
+        v.stream_check_interval_ms ?? v.streamCheckIntervalMs,
+        base.voiceprint.streamCheckIntervalMs,
+      ),
+    }
+  }
+
+  const pr = r.presence
+  if (pr && typeof pr === 'object') {
+    const p = pr as Record<string, unknown>
+    base.presence = {
+      enabled: p.enabled !== false,
+      ambientIntervalMs: num(p.ambient_interval_ms ?? p.ambientIntervalMs, base.presence.ambientIntervalMs),
+      awayTimeoutSec: num(p.away_timeout_sec ?? p.awayTimeoutSec, base.presence.awayTimeoutSec),
+      speechThreshold: num(p.speech_threshold ?? p.speechThreshold, base.presence.speechThreshold),
+      ambientEnergyFloor: num(
+        p.ambient_energy_floor ?? p.ambientEnergyFloor,
+        base.presence.ambientEnergyFloor,
+      ),
+      ownerPresenceTtlSec: num(
+        p.owner_presence_ttl_sec ?? p.ownerPresenceTtlSec,
+        base.presence.ownerPresenceTtlSec,
+      ),
+    }
   }
 
   return base

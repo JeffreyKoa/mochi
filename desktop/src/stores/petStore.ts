@@ -40,6 +40,13 @@ export interface PetPersonality {
 
 export type Animation = 'idle' | 'happy' | 'sad' | 'sleep' | 'eat' | 'walk'
 
+export type OwnerPresence =
+  | 'away'
+  | 'nearby'
+  | 'human_voice'
+  | 'owner_present'
+  | 'owner_speaking'
+
 export const usePetStore = defineStore('pet', () => {
   const petName = ref('Mochi')
   const lifeState = ref<LifeState>({ mood: 70, love: 60, hungry: 30, energy: 80, health: 90, sleep: 20, curiosity: 50, knowledge: 40 })
@@ -68,6 +75,7 @@ export const usePetStore = defineStore('pet', () => {
   const stageHint = ref('')
   const skin = ref<PetSkin | null>(null)
   const currentAnimation = ref<Animation>('idle')
+  const ownerPresence = ref<OwnerPresence>('away')
   const facing = ref<'left' | 'right'>('right')
   const isRoaming = ref(false)
   const isChatOpen = ref(false)
@@ -264,6 +272,7 @@ export const usePetStore = defineStore('pet', () => {
     footColor,
     earInnerColor,
     currentAnimation,
+    ownerPresence,
     facing,
     isRoaming,
     isChatOpen,

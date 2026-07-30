@@ -37,6 +37,8 @@ export class RealtimeSession {
   private ws: WebSocket | null = null
   private listeners = new Set<Listener>()
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  /** Suppress disconnected event when replacing an existing socket during connect(). */
+  private replacing = false
 
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -53,6 +55,7 @@ export class RealtimeSession {
         : `${proto}//${window.location.host}/ws/voice?token=${encodeURIComponent(token)}`
 
       if (this.ws) {
+        this.replacing = true
         this.ws.onopen = null
         this.ws.onmessage = null
         this.ws.onerror = null
@@ -65,6 +68,7 @@ export class RealtimeSession {
       this.ws.binaryType = 'arraybuffer'
 
       this.ws.onopen = () => {
+        this.replacing = false
         this.startHeartbeat()
         this.emit({ type: 'connected' })
         resolve()
@@ -89,11 +93,17 @@ export class RealtimeSession {
 
       this.ws.onclose = () => {
         this.stopHeartbeat()
+        if (this.replacing) {
+          this.replacing = false
+          return
+        }
         this.emit({ type: 'disconnected' })
       }
 
       this.ws.onerror = () => {
-        reject(new Error('websocket error'))
+        if (!this.replacing) {
+          reject(new Error('websocket error'))
+        }
       }
     })
   }

@@ -86,6 +86,9 @@ func (s *Service) SaveActivity(ctx context.Context, userID uint64, in HeartbeatI
 		ContinuousActiveMinutes:   in.ContinuousActiveMinutes,
 		SessionActiveMinutesToday: in.SessionActiveMinutesToday,
 		ActiveApp:                 in.ActiveApp,
+		SoundPresence:             in.SoundPresence,
+		LastHumanVoiceSec:         in.LastHumanVoiceSec,
+		LastOwnerVoiceSec:         in.LastOwnerVoiceSec,
 		UpdatedAt:                 time.Now(),
 	}
 	raw, err := json.Marshal(act)

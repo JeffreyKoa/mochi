@@ -142,7 +142,7 @@ function resample(input: Float32Array, fromRate: number, toRate: number): Float3
   return out
 }
 
-function floatTo16LE(samples: Float32Array): ArrayBuffer {
+export function float32ToPcm16LE(samples: Float32Array): ArrayBuffer {
   const buf = new ArrayBuffer(samples.length * 2)
   const view = new DataView(buf)
   for (let i = 0; i < samples.length; i++) {
@@ -150,6 +150,10 @@ function floatTo16LE(samples: Float32Array): ArrayBuffer {
     view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true)
   }
   return buf
+}
+
+function floatTo16LE(samples: Float32Array): ArrayBuffer {
+  return float32ToPcm16LE(samples)
 }
 
 export function arrayBufferToBase64(buf: ArrayBuffer): string {

@@ -122,7 +122,16 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 	}
 
 	if h.sessions != nil {
-		h.sessions.Register(userID, sessionID, sender.send, closeConn)
+		onEvict := func() {
+			closeConn()
+			_ = conn.WriteControl(
+				websocket.CloseMessage,
+				websocket.FormatCloseMessage(4001, "replaced by new session"),
+				time.Now().Add(time.Second),
+			)
+			conn.Close()
+		}
+		h.sessions.Register(userID, sessionID, sender.send, onEvict)
 		defer h.sessions.Unregister(userID, sessionID)
 	}
 
@@ -489,6 +498,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 			audioMu.Unlock()
 			vad.Reset()
 			if len(buf) > 0 {
+				log.Printf("[realtime] audio_end session=%s bytes=%d", sessionID, len(buf))
 				_ = sender.Send(MsgVAD, VADEvent{Event: "speech_end"})
 				processSpeechEnd(buf)
 			} else if sess.State() == StateIdle {
