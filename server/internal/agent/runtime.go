@@ -655,10 +655,44 @@ func (r *Runtime) applyToolTurn(
 	}
 
 	if len(resp.ToolCalls) == 0 {
-		if strings.TrimSpace(resp.Content) != "" {
-			return toolTurnResult{directReply: strings.TrimSpace(resp.Content)}, nil
+		needsAction := tools.NeedsToolAction(userMsg, hint)
+		if needsAction {
+			if hr, err := r.toolsExec.TryHeuristicCreate(ctx, tools.ExecContext{
+				PetID:   pet.ID,
+				UserID:  userID,
+				UserMsg: userMsg,
+				Bond:    bond,
+			}); err != nil {
+				log.Printf("[Runtime] heuristic tool create failed: %v", err)
+			} else if hr != nil {
+				return toolTurnResult{messages: tools.AppendHeuristicToolTurn(msgs, hr)}, nil
+			}
+
+			retryMsgs := append(msgs, ai.Message{
+				Role: "user",
+				Content: "【系统】主人明确要求设置提醒或待办，你必须调用 reminder_create 或 todo_add，禁止只口头答应而不调用工具。",
+			})
+			retryResp, retryErr := r.ai.ChatWithTools(ctx, ai.ChatWithToolsRequest{
+				Messages:    retryMsgs,
+				Tools:       tools.Registry(),
+				ToolChoice:  "auto",
+				Temperature: 0.1,
+				MaxTokens:   maxTok,
+			})
+			if retryErr == nil && len(retryResp.ToolCalls) > 0 {
+				resp = retryResp
+				msgs = retryMsgs
+			} else if needsAction {
+				log.Printf("[Runtime] tool turn missed action for plan message: %q", userMsg)
+				return toolTurnResult{messages: messages}, nil
+			}
 		}
-		return toolTurnResult{messages: messages}, nil
+		if len(resp.ToolCalls) == 0 {
+			if strings.TrimSpace(resp.Content) != "" && !needsAction {
+				return toolTurnResult{directReply: strings.TrimSpace(resp.Content)}, nil
+			}
+			return toolTurnResult{messages: messages}, nil
+		}
 	}
 
 	exec := tools.ExecContext{

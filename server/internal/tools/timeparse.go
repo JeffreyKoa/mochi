@@ -239,3 +239,52 @@ func trimTimePhrases(s string) string {
 func FormatFireAt(t time.Time) string {
 	return t.In(loc).Format("1月2日 15:04")
 }
+
+var advanceMinRe = regexp.MustCompile(`提前\s*([零一二两三四五六七八九十\d]+)\s*分钟`)
+
+// parseAdvanceMinutes extracts "提前N分钟" offset from reminder text.
+func parseAdvanceMinutes(text string) time.Duration {
+	m := advanceMinRe.FindStringSubmatch(text)
+	if len(m) < 2 {
+		return 0
+	}
+	if n, ok := parseHourToken(m[1]); ok && n > 0 {
+		return time.Duration(n) * time.Minute
+	}
+	return 0
+}
+
+// ParseScheduledTime parses colloquial schedule text including bare "下午4点20" and advance offsets.
+func ParseScheduledTime(text string) (time.Time, bool) {
+	now := time.Now().In(loc)
+	advance := parseAdvanceMinutes(text)
+
+	if t, ok := ParseFireAt(text, now); ok {
+		return t.Add(-advance), true
+	}
+	if t, ok := ParseRelativeFireAt(text, now); ok {
+		return t.Add(-advance), true
+	}
+	if h, m, ok := extractHourMinute(text); ok {
+		h = normalizeHourForDayPart(text, h)
+		fire := time.Date(now.Year(), now.Month(), now.Day(), h, m, 0, 0, loc)
+		if fire.Before(now) {
+			fire = fire.AddDate(0, 0, 1)
+		}
+		return fire.Add(-advance), true
+	}
+	return time.Time{}, false
+}
+
+func inferReminderTitle(text string) string {
+	title := ExtractReminderTitle(text)
+	if title != "" && len([]rune(title)) >= 2 {
+		return title
+	}
+	switch {
+	case strings.Contains(text, "开会"), strings.Contains(text, "会议"):
+		return "开会"
+	default:
+		return "提醒"
+	}
+}

@@ -55,7 +55,8 @@ func QuickDetect(message string) Hint {
 		h.Temperature = 0.9
 	}
 	if strings.Contains(msg, "提醒") || strings.Contains(msg, "记得") || strings.Contains(msg, "明天") ||
-		strings.Contains(msg, "今天") || strings.Contains(msg, "今晚") {
+		strings.Contains(msg, "今天") || strings.Contains(msg, "今晚") ||
+		strings.Contains(msg, "记一下") || strings.Contains(msg, "记下来") || strings.Contains(msg, "通知") {
 		h.Intent = "plan"
 	}
 	if strings.Contains(msg, "？") || strings.Contains(msg, "?") || strings.Contains(msg, "怎么") || strings.Contains(msg, "什么") {

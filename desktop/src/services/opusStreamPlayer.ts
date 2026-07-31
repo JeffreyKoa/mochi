@@ -3,6 +3,8 @@
  * Supports sub-10ms decoding latency, smooth queueing, and instant barge-in stop.
  */
 
+import { emitLipSync } from './voice'
+
 export function isOpusDecodeSupported(): boolean {
   if (typeof AudioDecoder === 'undefined') return false
   try {
@@ -28,6 +30,9 @@ export class OpusStreamPlayer {
   private onFirstPlay: (() => void) | null = null
   private firstPlayFired = false
   private sampleRate = 48000
+  private gainNode: GainNode | null = null
+  private analyser: AnalyserNode | null = null
+  private lipSyncRaf: number | null = null
 
   constructor() {
     this.initDecoder()
@@ -80,6 +85,44 @@ export class OpusStreamPlayer {
     return this.audioCtx
   }
 
+  private ensureOutputChain(ctx: AudioContext) {
+    if (this.gainNode && this.analyser) return
+    this.gainNode = ctx.createGain()
+    this.analyser = ctx.createAnalyser()
+    this.analyser.fftSize = 256
+    this.gainNode.connect(this.analyser)
+    this.analyser.connect(ctx.destination)
+  }
+
+  private hasPendingAudio(ctx: AudioContext): boolean {
+    return this.activeSources.length > 0 || this.nextStartTime > ctx.currentTime + 0.02
+  }
+
+  private startLipSyncLoop() {
+    if (this.lipSyncRaf != null || !this.analyser) return
+    const dataArray = new Uint8Array(this.analyser.frequencyBinCount)
+    const tick = () => {
+      const ctx = this.audioCtx
+      if (!this.analyser || !ctx || !this.hasPendingAudio(ctx)) {
+        this.stopLipSyncLoop()
+        return
+      }
+      this.analyser.getByteFrequencyData(dataArray)
+      const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255
+      emitLipSync(Math.min(1, avg * 2.5))
+      this.lipSyncRaf = requestAnimationFrame(tick)
+    }
+    this.lipSyncRaf = requestAnimationFrame(tick)
+  }
+
+  private stopLipSyncLoop() {
+    if (this.lipSyncRaf != null) {
+      cancelAnimationFrame(this.lipSyncRaf)
+      this.lipSyncRaf = null
+    }
+    emitLipSync(0)
+  }
+
   enqueue(data: ArrayBuffer, onFirstPlay?: () => void) {
     if (onFirstPlay && !this.firstPlayFired) {
       this.onFirstPlay = onFirstPlay
@@ -122,6 +165,7 @@ export class OpusStreamPlayer {
       }
 
       const ctx = this.getAudioContext()
+      this.ensureOutputChain(ctx)
       const numberOfChannels = frame.numberOfChannels
       const numberOfFrames = frame.numberOfFrames
       const sampleRate = frame.sampleRate || this.sampleRate
@@ -135,7 +179,7 @@ export class OpusStreamPlayer {
 
       const source = ctx.createBufferSource()
       source.buffer = buffer
-      source.connect(ctx.destination)
+      source.connect(this.gainNode!)
 
       const currentTime = ctx.currentTime
       if (this.nextStartTime < currentTime) {
@@ -145,6 +189,7 @@ export class OpusStreamPlayer {
       source.start(this.nextStartTime)
       this.nextStartTime += buffer.duration
       this.isPlaying = true
+      this.startLipSyncLoop()
 
       this.activeSources.push(source)
       source.onended = () => {
@@ -152,6 +197,10 @@ export class OpusStreamPlayer {
         if (idx >= 0) this.activeSources.splice(idx, 1)
         if (this.activeSources.length === 0) {
           this.isPlaying = false
+          const audioCtx = this.audioCtx
+          if (!audioCtx || !this.hasPendingAudio(audioCtx)) {
+            this.stopLipSyncLoop()
+          }
         }
       }
     } finally {
@@ -160,6 +209,7 @@ export class OpusStreamPlayer {
   }
 
   stop() {
+    this.stopLipSyncLoop()
     this.droppedFrames = 0
     this.activeSources.forEach((src) => {
       try {
@@ -198,12 +248,15 @@ export class OpusStreamPlayer {
   /** Resolves when all scheduled audio sources have finished playing. */
   waitUntilIdle(timeoutMs = 60000): Promise<void> {
     if (this.activeSources.length === 0 && !this.isPlaying) {
+      this.stopLipSyncLoop()
       return Promise.resolve()
     }
     return new Promise((resolve) => {
       const deadline = Date.now() + timeoutMs
       const poll = () => {
-        if (this.activeSources.length === 0 && !this.isPlaying) {
+        const ctx = this.audioCtx
+        if (this.activeSources.length === 0 && !this.isPlaying && (!ctx || !this.hasPendingAudio(ctx))) {
+          this.stopLipSyncLoop()
           resolve()
           return
         }

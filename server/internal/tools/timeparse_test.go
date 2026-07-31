@@ -3,6 +3,8 @@ package tools
 import (
 	"testing"
 	"time"
+
+	"github.com/mochi-ai/server/internal/emotion"
 )
 
 func TestParseRelativeFireAt(t *testing.T) {
@@ -79,5 +81,23 @@ func TestExtractTodoTitle(t *testing.T) {
 func TestRegistryCount(t *testing.T) {
 	if len(Registry()) != 6 {
 		t.Fatalf("expected 6 tools, got %d", len(Registry()))
+	}
+}
+
+func TestParseScheduledTime_afternoonWithAdvance(t *testing.T) {
+	now := time.Date(2026, 7, 30, 16, 15, 0, 0, loc)
+	fire, ok := ParseScheduledTime("下午4点20有一个会议给我进行一下，提前两分钟通知我")
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	_ = now
+	if fire.Hour() != 16 || fire.Minute() != 18 {
+		t.Fatalf("want 16:18 got %v", fire.In(loc))
+	}
+}
+
+func TestNeedsToolAction_recordPhrase(t *testing.T) {
+	if !NeedsToolAction("龙井茶给我记一下", emotion.Hint{Intent: "chat"}) {
+		t.Fatal("expected todo intent")
 	}
 }

@@ -115,13 +115,55 @@ func (h *Hub) sendProactive(userID uint64, item pendingItem) bool {
 	var onSent func()
 	if item.ReminderID > 0 && h.onDelivered != nil {
 		id := item.ReminderID
-		onSent = func() { h.onDelivered(id) }
+		onSent = func() {
+			h.clearReminderQueued(id)
+			h.onDelivered(id)
+		}
 	}
 	if h.trySend(userID, msg, onSent) {
 		return true
 	}
-	h.enqueuePending(userID, item)
+	if !h.enqueuePending(userID, item) {
+		return false
+	}
+	return false
+}
+
+func (h *Hub) enqueuePending(userID uint64, item pendingItem) bool {
+	if h.rdb == nil {
+		log.Printf("[WS] proactive queued but redis unavailable user=%d", userID)
+		return false
+	}
+	ctx := context.Background()
+	if item.ReminderID > 0 {
+		dedupKey := fmt.Sprintf("mochi:reminder:queued:%d", item.ReminderID)
+		set, err := h.rdb.SetNX(ctx, dedupKey, "1", 7*24*time.Hour).Result()
+		if err != nil {
+			log.Printf("[WS] reminder dedup failed id=%d: %v", item.ReminderID, err)
+		} else if !set {
+			log.Printf("[WS] reminder already queued id=%d user=%d", item.ReminderID, userID)
+			return true
+		}
+	}
+	key := fmt.Sprintf("%s%d", pendingProactivePrefix, userID)
+	payload, _ := json.Marshal(item)
+	if err := h.rdb.RPush(ctx, key, payload).Err(); err != nil {
+		log.Printf("[WS] enqueue pending failed user=%d: %v", userID, err)
+		if item.ReminderID > 0 {
+			_ = h.rdb.Del(ctx, fmt.Sprintf("mochi:reminder:queued:%d", item.ReminderID)).Err()
+		}
+		return false
+	}
+	_ = h.rdb.Expire(ctx, key, 7*24*time.Hour)
+	log.Printf("[WS] proactive queued user=%d reminder=%d", userID, item.ReminderID)
 	return true
+}
+
+func (h *Hub) clearReminderQueued(reminderID uint64) {
+	if h.rdb == nil || reminderID == 0 {
+		return
+	}
+	_ = h.rdb.Del(context.Background(), fmt.Sprintf("mochi:reminder:queued:%d", reminderID)).Err()
 }
 
 func (h *Hub) SendLifeStageChanged(userID uint64, data map[string]interface{}) {
@@ -157,22 +199,6 @@ func (h *Hub) trySend(userID uint64, msg Message, onSent func()) bool {
 		log.Printf("[WS] send buffer full for user %d", userID)
 		return false
 	}
-}
-
-func (h *Hub) enqueuePending(userID uint64, item pendingItem) {
-	if h.rdb == nil {
-		log.Printf("[WS] proactive queued but redis unavailable user=%d", userID)
-		return
-	}
-	ctx := context.Background()
-	key := fmt.Sprintf("%s%d", pendingProactivePrefix, userID)
-	payload, _ := json.Marshal(item)
-	if err := h.rdb.RPush(ctx, key, payload).Err(); err != nil {
-		log.Printf("[WS] enqueue pending failed user=%d: %v", userID, err)
-		return
-	}
-	_ = h.rdb.Expire(ctx, key, 7*24*time.Hour)
-	log.Printf("[WS] proactive queued user=%d reminder=%d", userID, item.ReminderID)
 }
 
 func (h *Hub) flushPending(userID uint64) {

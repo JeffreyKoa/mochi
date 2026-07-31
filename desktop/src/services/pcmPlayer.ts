@@ -74,6 +74,7 @@ export class PCMPlayer {
     this.pending = 0
     this.active = false
     this.onIdle = null
+    emitLipSync(0)
     if (this.context) {
       void this.context.close()
       this.context = null
