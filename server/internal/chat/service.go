@@ -111,7 +111,7 @@ func (s *Service) activityContextForUser(ctx context.Context, userID uint64) map
 	return wellness.ToActivityContext(act)
 }
 
-func (s *Service) turnMessage(ctx context.Context, userID uint64, message, triggerType string, onToken func(token string)) (string, error) {
+func (s *Service) turnMessage(ctx context.Context, userID uint64, message, triggerType string, acoustic emotion.AcousticHint, onToken func(token string)) (string, error) {
 	pet, err := s.getPetByUser(ctx, userID)
 	if err != nil {
 		return "", err
@@ -123,6 +123,7 @@ func (s *Service) turnMessage(ctx context.Context, userID uint64, message, trigg
 		Message:         message,
 		TriggerType:     triggerType,
 		ActivityContext: s.activityContextForUser(ctx, userID),
+		AcousticHint:    acoustic,
 	}
 
 	out, err := s.runtime.Turn(ctx, input)
@@ -151,11 +152,11 @@ func (s *Service) turnMessage(ctx context.Context, userID uint64, message, trigg
 }
 
 func (s *Service) StreamMessage(ctx context.Context, userID uint64, message string, onToken func(token string)) (string, error) {
-	return s.turnMessage(ctx, userID, message, "user_chat", onToken)
+	return s.turnMessage(ctx, userID, message, "user_chat", emotion.EmptyAcousticHint(), onToken)
 }
 
-func (s *Service) StreamMessageVoice(ctx context.Context, userID uint64, message string, onToken func(token string)) (string, error) {
-	return s.turnMessage(ctx, userID, message, "user_voice", onToken)
+func (s *Service) StreamMessageVoice(ctx context.Context, userID uint64, message string, acoustic emotion.AcousticHint, onToken func(token string)) (string, error) {
+	return s.turnMessage(ctx, userID, message, "user_voice", acoustic, onToken)
 }
 
 func (s *Service) SendMessageStream(c *gin.Context, userID uint64, message string) {
@@ -204,7 +205,7 @@ func (s *Service) SendMessageStream(c *gin.Context, userID uint64, message strin
 }
 
 func (s *Service) CompleteMessage(ctx context.Context, userID uint64, message string) (string, error) {
-	return s.turnMessage(ctx, userID, message, "user_chat", nil)
+	return s.turnMessage(ctx, userID, message, "user_chat", emotion.EmptyAcousticHint(), nil)
 }
 
 func (s *Service) Runtime() *agent.Runtime {

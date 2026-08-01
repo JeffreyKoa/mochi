@@ -8,6 +8,7 @@ import {
   type PetSkin,
   type PetSkinColors,
 } from '@/types/petSkin'
+import { mapServerAnimation } from '@/utils/animation'
 
 export interface LifeState {
   mood: number
@@ -153,6 +154,11 @@ export const usePetStore = defineStore('pet', () => {
     currentAnimation.value = anim
   }
 
+  /** 后端 state_update / proactive 推送的动画名（worried→sad 等映射）。 */
+  function setServerAnimation(raw: string | undefined) {
+    currentAnimation.value = mapServerAnimation(raw)
+  }
+
   function bubbleDisplayText(text: string): string {
     return text.trim()
   }
@@ -288,6 +294,7 @@ export const usePetStore = defineStore('pet', () => {
     updateLifecycle,
     applySkinFromSKU,
     setAnimation,
+    setServerAnimation,
     setFacing,
     setRoaming,
     showSpeechBubble,

@@ -1,5 +1,4 @@
 import { usePetStore } from '@/stores/petStore'
-import { mapServerAnimation } from '@/utils/animation'
 import { broadcastProactive, notifyTasksRefresh, type ProactivePayload } from './proactiveSync'
 
 let lastShown = { text: '', at: 0 }
@@ -17,7 +16,7 @@ export function handleProactiveMessage(payload: ProactivePayload, opts: Proactiv
   lastShown = { text: payload.message, at: now }
 
   const pet = usePetStore()
-  pet.setAnimation(mapServerAnimation(payload.animation ?? 'happy'))
+  pet.setServerAnimation(payload.animation ?? 'happy')
   if (opts.priority) {
     pet.showReminderBubble(payload.message, 15000)
   } else {

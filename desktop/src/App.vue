@@ -110,7 +110,7 @@ function setupWs() {
     wsManager.on('state_update', (data: unknown) => {
       const d = data as { state: typeof pet.lifeState; animation: string }
       pet.updateLifeState(d.state)
-      if (d.animation) pet.setAnimation(d.animation as typeof pet.currentAnimation)
+      if (d.animation) pet.setServerAnimation(d.animation)
     })
     wsManager.on('proactive_message', (data: unknown) => {
       const d = data as { message: string; animation: string }

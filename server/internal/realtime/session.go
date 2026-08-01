@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/mochi-ai/server/internal/emotion"
 )
 
 type SessionState string
@@ -31,6 +33,11 @@ type Session struct {
 	turnLat        *TurnLatency
 	turnAudioBytes int
 	preferMP3      bool
+	echoGuardMS    int // 0 = 使用服务端默认
+
+	turnPCM        []byte
+	acousticHint   emotion.AcousticHint
+	acousticReady  bool
 
 	onStateChange func(SessionState)
 }
@@ -149,4 +156,58 @@ func (s *Session) PreferMP3() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.preferMP3
+}
+
+// SetTurnPCM 保存本 turn 的用户 PCM（供声学情绪旁路）。
+func (s *Session) SetTurnPCM(pcm []byte) {
+	s.mu.Lock()
+	s.turnPCM = append([]byte(nil), pcm...)
+	s.acousticReady = false
+	s.acousticHint = emotion.EmptyAcousticHint()
+	s.mu.Unlock()
+}
+
+// TurnPCM 返回本 turn 用户 PCM 副本。
+func (s *Session) TurnPCM() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]byte(nil), s.turnPCM...)
+}
+
+// SetAcousticHint 缓存声学识别结果。
+func (s *Session) SetAcousticHint(h emotion.AcousticHint) {
+	s.mu.Lock()
+	s.acousticHint = h
+	s.acousticReady = true
+	s.mu.Unlock()
+}
+
+// AcousticHint 返回本 turn 声学情绪（未识别则 empty）。
+func (s *Session) AcousticHint() emotion.AcousticHint {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.acousticHint
+}
+
+func (s *Session) acousticDone() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.acousticReady
+}
+
+// SetEchoGuardMS 设置本会话 effective echo guard（client_caps AEC 握手）。
+func (s *Session) SetEchoGuardMS(ms int) {
+	s.mu.Lock()
+	s.echoGuardMS = ms
+	s.mu.Unlock()
+}
+
+// EffectiveEchoGuardMS 返回会话级 echo guard，0 表示使用 caller 传入的默认值。
+func (s *Session) EffectiveEchoGuardMS(defaultMS int) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.echoGuardMS > 0 {
+		return s.echoGuardMS
+	}
+	return defaultMS
 }

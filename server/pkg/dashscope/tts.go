@@ -63,6 +63,18 @@ func (c *TTSClient) AudioFormat() string {
 	return c.audioFormat
 }
 
+// SynthOptions 控制单次 TTS 合成的语速/音高/音量。
+type SynthOptions struct {
+	Rate   float64
+	Pitch  float64
+	Volume int
+}
+
+// DefaultSynthOptions 返回 DashScope 默认合成参数。
+func DefaultSynthOptions() SynthOptions {
+	return SynthOptions{Rate: 1.0, Pitch: 1.0, Volume: 50}
+}
+
 // TTSSession holds an active synthesis task.
 type TTSSession struct {
 	conn     *websocket.Conn
@@ -75,7 +87,16 @@ type TTSSession struct {
 }
 
 // StartSession opens a TTS task and begins receiving audio chunks.
-func (c *TTSClient) StartSession(ctx context.Context, onAudio func([]byte)) (*TTSSession, error) {
+func (c *TTSClient) StartSession(ctx context.Context, opts SynthOptions, onAudio func([]byte)) (*TTSSession, error) {
+	if opts.Rate == 0 {
+		opts.Rate = 1.0
+	}
+	if opts.Pitch == 0 {
+		opts.Pitch = 1.0
+	}
+	if opts.Volume == 0 {
+		opts.Volume = 50
+	}
 	if c.apiKey == "" {
 		return nil, fmt.Errorf("dashscope api key not configured")
 	}
@@ -122,9 +143,9 @@ func (c *TTSClient) StartSession(ctx context.Context, onAudio func([]byte)) (*TT
 		"voice":       c.voice,
 		"format":      format,
 		"sample_rate": c.sampleRate,
-		"volume":      50,
-		"rate":        1.0,
-		"pitch":       1.0,
+		"volume":      opts.Volume,
+		"rate":        opts.Rate,
+		"pitch":       opts.Pitch,
 		"enable_ssml": false,
 	}
 
@@ -270,8 +291,8 @@ func (s *TTSSession) readLoop() {
 }
 
 // Synthesize converts full text to audio in one session (non-incremental helper).
-func (c *TTSClient) Synthesize(ctx context.Context, text string, onAudio func([]byte)) error {
-	sess, err := c.StartSession(ctx, onAudio)
+func (c *TTSClient) Synthesize(ctx context.Context, text string, opts SynthOptions, onAudio func([]byte)) error {
+	sess, err := c.StartSession(ctx, opts, onAudio)
 	if err != nil {
 		return err
 	}

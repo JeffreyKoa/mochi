@@ -342,6 +342,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 				if text == "" {
 					text = lastPartial
 				}
+				sess.SetTurnPCM(buf)
 				h.pipeline.OnTranscript(ctx, sess, text, sender)
 				lastPartial = ""
 				return
@@ -383,6 +384,22 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 				if !in.OpusDecode {
 					log.Printf("[realtime] client_caps session=%s opus_decode=false → mp3 transport", sessionID)
 				}
+				echoGuard := h.cfg.BargeIn.EchoGuardMS
+				if in.AecEnabled {
+					if h.cfg.BargeIn.EchoGuardMSAEC > 0 {
+						echoGuard = h.cfg.BargeIn.EchoGuardMSAEC
+					}
+					log.Printf("[realtime] client_caps session=%s aec_enabled=true echo_guard_ms=%d", sessionID, echoGuard)
+				} else {
+					log.Printf("[realtime] client_caps session=%s aec_enabled=false echo_guard_ms=%d", sessionID, echoGuard)
+				}
+				sess.SetEchoGuardMS(echoGuard)
+				_ = sender.Send(MsgBargeInConfig, BargeInConfig{
+					EchoGuardMS:   echoGuard,
+					PeakThreshold: h.cfg.BargeIn.PeakThreshold,
+					BargeInMS:     h.cfg.BargeIn.BargeInMS,
+					AecEnabled:    in.AecEnabled,
+				})
 			}
 
 		case MsgPrewarm:

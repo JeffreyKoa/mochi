@@ -14,7 +14,7 @@ func try(key, model, voice string, ep dashscope.EndpointConfig, label string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	var n int
-	err := c.Synthesize(ctx, "你好，我是 Mochi。", func(b []byte) { n += len(b) })
+	err := c.Synthesize(ctx, "你好，我是 Mochi。", dashscope.DefaultSynthOptions(), func(b []byte) { n += len(b) })
 	fmt.Printf("[%s] %s / %s => err=%v bytes=%d\n", label, model, voice, err, n)
 }
 

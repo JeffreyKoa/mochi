@@ -18,12 +18,12 @@ type dashscopeTTSSession struct {
 	sess *dashscope.TTSSession
 }
 
-func (d *dashscopeTTSSynth) Synthesize(ctx context.Context, text string, onAudio func([]byte)) error {
-	return d.client.Synthesize(ctx, text, onAudio)
+func (d *dashscopeTTSSynth) Synthesize(ctx context.Context, text string, opts dashscope.SynthOptions, onAudio func([]byte)) error {
+	return d.client.Synthesize(ctx, text, opts, onAudio)
 }
 
-func (d *dashscopeTTSSynth) StartSession(ctx context.Context, onAudio func([]byte)) (TTSSession, error) {
-	sess, err := d.client.StartSession(ctx, onAudio)
+func (d *dashscopeTTSSynth) StartSession(ctx context.Context, opts dashscope.SynthOptions, onAudio func([]byte)) (TTSSession, error) {
+	sess, err := d.client.StartSession(ctx, opts, onAudio)
 	if err != nil {
 		return nil, err
 	}

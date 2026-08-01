@@ -18,7 +18,7 @@ func TestTTSCosyVoiceV2(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var n int
-	err := client.Synthesize(ctx, "你好，我是 Mochi。", func(b []byte) {
+	err := client.Synthesize(ctx, "你好，我是 Mochi。", DefaultSynthOptions(), func(b []byte) {
 		n += len(b)
 	})
 	if err != nil {
@@ -39,7 +39,7 @@ func TestTTSQwenAudio(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var n int
-	err := client.Synthesize(ctx, "你好，我是 Mochi。", func(b []byte) {
+	err := client.Synthesize(ctx, "你好，我是 Mochi。", DefaultSynthOptions(), func(b []byte) {
 		n += len(b)
 	})
 	if err != nil {

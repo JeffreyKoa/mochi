@@ -24,12 +24,47 @@ type Hint struct {
 }
 
 type Service struct {
-	rdb *redis.Client
-	ai  ai.AIProvider
+	rdb            *redis.Client
+	ai             ai.AIProvider
+	acoustic       AcousticClient
+	minAcousticConf float64
 }
 
 func NewService(rdb *redis.Client, aiProvider ai.AIProvider) *Service {
-	return &Service{rdb: rdb, ai: aiProvider}
+	return &Service{
+		rdb:             rdb,
+		ai:              aiProvider,
+		acoustic:        NoopAcousticClient{},
+		minAcousticConf: 0.65,
+	}
+}
+
+// ConfigureAcoustic 注入声学客户端与融合置信度阈值。
+func (s *Service) ConfigureAcoustic(client AcousticClient, minConfidence float64) {
+	if s == nil {
+		return
+	}
+	if client != nil {
+		s.acoustic = client
+	}
+	if minConfidence > 0 {
+		s.minAcousticConf = minConfidence
+	}
+}
+
+// AcousticClient 返回当前声学客户端。
+func (s *Service) AcousticClient() AcousticClient {
+	if s == nil || s.acoustic == nil {
+		return NoopAcousticClient{}
+	}
+	return s.acoustic
+}
+
+// BuildHint 融合缓存、文本 QuickDetect 与声学情绪。
+func (s *Service) BuildHint(ctx context.Context, petID uint64, userMsg string, acoustic AcousticHint) Hint {
+	cached := s.GetCached(ctx, petID)
+	quick := QuickDetect(userMsg)
+	return MergeAcousticHint(cached, quick, acoustic, s.minAcousticConf)
 }
 
 var ventKeywords = []string{
@@ -180,6 +215,48 @@ func MergeHint(cached, quick Hint, currentMsg string) Hint {
 	merged.NeedsEmpathy = false
 	if merged.Temperature == 0 {
 		merged.Temperature = 0.85
+	}
+	return merged
+}
+
+// MergeAcousticHint 声学高置信度时覆盖文字 neutral 判断（「我没事」+ 哽咽场景）。
+func MergeAcousticHint(cached, quick Hint, acoustic AcousticHint, minConfidence float64) Hint {
+	merged := MergeHint(cached, quick, "")
+
+	// 文本 vent 关键词优先，不被声学覆盖
+	if quick.NeedsEmpathy || quick.Intent == "vent" {
+		return merged
+	}
+
+	if acoustic.Confidence < minConfidence {
+		return merged
+	}
+
+	mood := strings.ToLower(strings.TrimSpace(acoustic.Mood))
+	switch mood {
+	case "sad", "stressed", "happy":
+	default:
+		return merged
+	}
+
+	// 仅当文字侧为 neutral 时声学覆写
+	if quick.UserMood != "neutral" && quick.UserMood != "" {
+		return merged
+	}
+
+	merged.UserMood = mood
+	switch mood {
+	case "sad", "stressed":
+		merged.NeedsEmpathy = true
+		if merged.Intent == "chat" {
+			merged.Intent = "vent"
+		}
+		merged.Temperature = 0.75
+	case "happy":
+		if merged.Intent == "chat" {
+			merged.Intent = "joke"
+		}
+		merged.Temperature = 0.9
 	}
 	return merged
 }

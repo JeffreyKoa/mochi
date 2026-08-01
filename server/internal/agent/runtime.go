@@ -433,9 +433,24 @@ func (r *Runtime) Turn(ctx context.Context, input TurnInput) (TurnOutput, error)
 
 	// 2. Recall (Context Preparation)
 	recallStart := time.Now()
-	agentCtx := r.orchestrator.PrepareChatContext(ctx, pet.ID, input.Message)
+	agentCtx := r.orchestrator.PrepareChatContext(ctx, pet.ID, input.Message, input.AcousticHint)
 	trace.MemoryHitCount = len(agentCtx.Memories)
 	trace.StepTimings.RecallMs = time.Since(recallStart).Milliseconds()
+
+	// 用户说完后立即切换 FSM，在 LLM/TTS 之前推送共情动画。
+	perceptionForFSM := PerceptionResult{
+		UserMood:     agentCtx.EmotionHint.UserMood,
+		NeedsEmpathy: agentCtx.EmotionHint.NeedsEmpathy,
+		Intent:       agentCtx.EmotionHint.Intent,
+		Topic:        agentCtx.EmotionHint.Topic,
+	}
+	if perceptionForFSM.UserMood == "" {
+		perceptionForFSM.UserMood = perception.UserMood
+	}
+	if perceptionForFSM.Intent == "" {
+		perceptionForFSM.Intent = perception.Intent
+	}
+	r.UpdateEmotionFSM(ctx, pet.ID, perceptionForFSM)
 
 	var personality models.Personality
 	_ = json.Unmarshal(pet.PersonalityJSON, &personality)
@@ -557,11 +572,12 @@ func (r *Runtime) Turn(ctx context.Context, input TurnInput) (TurnOutput, error)
 		defer close(outChan)
 		var fullResponse strings.Builder
 		var sanitizer text.StreamSanitizer
+		var moodStrip text.StreamMoodStripper
 
 		for {
 			select {
 			case <-ctx.Done():
-				reply := finalizeReply(fullResponse.String() + sanitizer.Flush())
+				reply := finalizeReply(fullResponse.String() + sanitizer.Flush() + moodStrip.Flush())
 				postStart := time.Now()
 				r.postProcess(context.Background(), pet.ID, input.Message, reply, agentCtx.EmotionHint)
 				trace.StepTimings.PostTurnMs = time.Since(postStart).Milliseconds()
@@ -570,7 +586,7 @@ func (r *Runtime) Turn(ctx context.Context, input TurnInput) (TurnOutput, error)
 				return
 			case chunk, ok := <-chunkChan:
 				if !ok {
-					reply := finalizeReply(fullResponse.String() + sanitizer.Flush())
+					reply := finalizeReply(fullResponse.String() + sanitizer.Flush() + moodStrip.Flush())
 					postStart := time.Now()
 					r.postProcess(context.Background(), pet.ID, input.Message, reply, agentCtx.EmotionHint)
 					trace.StepTimings.PostTurnMs = time.Since(postStart).Milliseconds()
@@ -579,7 +595,7 @@ func (r *Runtime) Turn(ctx context.Context, input TurnInput) (TurnOutput, error)
 					return
 				}
 				if chunk.Done {
-					reply := finalizeReply(fullResponse.String() + sanitizer.Flush())
+					reply := finalizeReply(fullResponse.String() + sanitizer.Flush() + moodStrip.Flush())
 					postStart := time.Now()
 					r.postProcess(context.Background(), pet.ID, input.Message, reply, agentCtx.EmotionHint)
 					trace.StepTimings.PostTurnMs = time.Since(postStart).Milliseconds()
@@ -592,6 +608,7 @@ func (r *Runtime) Turn(ctx context.Context, input TurnInput) (TurnOutput, error)
 					continue
 				}
 				cleaned := sanitizer.Feed(chunk.Content)
+				cleaned = moodStrip.Feed(cleaned)
 				if cleaned != "" {
 					fullResponse.WriteString(cleaned)
 					outChan <- ai.ChatChunk{Content: cleaned}
@@ -782,15 +799,6 @@ func (r *Runtime) postProcess(ctx context.Context, petID uint64, userMsg, petRep
 		r.reflection.ReflectAsync(ctx, petID, userMsg, petReply, bondProfile, quickHint.NeedsEmpathy)
 	}
 
-	// Update pet FSM state
-	perception := PerceptionResult{
-		UserMood:     quickHint.UserMood,
-		NeedsEmpathy: quickHint.NeedsEmpathy,
-		Intent:       quickHint.Intent,
-		Topic:        quickHint.Topic,
-	}
-	r.UpdateEmotionFSM(ctx, petID, perception)
-
 	r.life.Interact(ctx, petID, "chat")
 }
 
@@ -813,7 +821,9 @@ func (r *Runtime) applyBondFromMessage(ctx context.Context, petID uint64, userMs
 }
 
 func finalizeReply(reply string) string {
-	return text.SanitizeSpokenReply(text.StripActionParentheticals(strings.TrimSpace(reply)))
+	s := text.StripActionParentheticals(strings.TrimSpace(reply))
+	s = text.StripMoodTags(s)
+	return text.SanitizeSpokenReply(s)
 }
 
 func appendTimeContext(messages []ai.Message) []ai.Message {

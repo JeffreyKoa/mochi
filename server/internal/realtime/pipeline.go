@@ -13,6 +13,8 @@ import (
 
 	"github.com/mochi-ai/server/internal/chat"
 	"github.com/mochi-ai/server/internal/config"
+	"github.com/mochi-ai/server/internal/emotion"
+	"github.com/mochi-ai/server/internal/text"
 	"github.com/mochi-ai/server/pkg/dashscope"
 	"github.com/mochi-ai/server/pkg/opus"
 )
@@ -28,6 +30,8 @@ type Pipeline struct {
 	ep        dashscope.EndpointConfig
 	gate      *ResponseGate
 	noiseFillers map[rune]bool
+	acoustic  emotion.AcousticClient
+	asrSampleRate int
 }
 
 func NewPipeline(chatSvc *chat.Service, cfg config.RealtimeConfig, appCfg *config.Config) *Pipeline {
@@ -37,7 +41,22 @@ func NewPipeline(chatSvc *chat.Service, cfg config.RealtimeConfig, appCfg *confi
 		WorkspaceID: cfg.Dashscope.WorkspaceID,
 		Region:      cfg.Dashscope.Region,
 	}
-	p := &Pipeline{chat: chatSvc, cfg: cfg, ttsFormat: "mp3", apiKey: apiKey, ep: ep}
+	p := &Pipeline{
+		chat:          chatSvc,
+		cfg:           cfg,
+		ttsFormat:     "mp3",
+		apiKey:        apiKey,
+		ep:            ep,
+		asrSampleRate: cfg.ASR.SampleRate,
+		acoustic:      emotion.NoopAcousticClient{},
+	}
+	if appCfg.Emotion.Acoustic.Enabled && appCfg.Emotion.Acoustic.URL != "" {
+		p.acoustic = emotion.NewHTTPAcousticClient(
+			appCfg.Emotion.Acoustic.URL,
+			time.Duration(appCfg.Emotion.Acoustic.TimeoutMS)*time.Millisecond,
+			cfg.ASR.SampleRate,
+		)
+	}
 	asrEp := dashscope.EndpointConfig{WSURL: cfg.Dashscope.ASRWSURL}
 	if cfg.ASR.Provider == "dashscope" && apiKey != "" {
 		p.asr = newDashscopeASR(dashscope.NewASRClient(apiKey, cfg.ASR.Model, cfg.ASR.SampleRate, asrEp))
@@ -59,17 +78,31 @@ func ttsPreferMP3(cfg config.RealtimeConfig, clientPreferMP3 bool) bool {
 	return !opus.Available()
 }
 
-func (p *Pipeline) getTTSForSession(ctx context.Context, sess *Session) (TTSSynthesizer, string) {
+// sessionTTSBundle 含会话级 TTS 合成器、格式与音色基线。
+type sessionTTSBundle struct {
+	synth    TTSSynthesizer
+	format   string
+	baseline VoiceProfile
+}
+
+// ttsSegment 为带 prosody 的分句 TTS 任务。
+type ttsSegment struct {
+	text string
+	opts dashscope.SynthOptions
+}
+
+func (p *Pipeline) getTTSForSession(ctx context.Context, sess *Session) sessionTTSBundle {
 	preferMP3 := ttsPreferMP3(p.cfg, sess.PreferMP3())
+	empty := sessionTTSBundle{format: "mp3", baseline: VoiceProfile{Rate: "+0%", Pitch: "+0Hz"}}
 	if p.tts == nil {
-		return nil, "mp3"
+		return empty
 	}
 	if p.chat == nil {
-		return p.tts, p.ttsFormat
+		return sessionTTSBundle{synth: p.tts, format: p.ttsFormat, baseline: empty.baseline}
 	}
 	pet, err := p.chat.GetPetByUser(ctx, sess.UserID)
 	if err != nil || pet == nil {
-		return p.tts, p.ttsFormat
+		return sessionTTSBundle{synth: p.tts, format: p.ttsFormat, baseline: empty.baseline}
 	}
 
 	profile := ResolveVoice(pet.Gender, pet.LifeStage, string(pet.PersonalityJSON))
@@ -80,9 +113,9 @@ func (p *Pipeline) getTTSForSession(ctx context.Context, sess *Session) (TTSSynt
 
 	synth, fmtStr := buildTTSSynth(cfg, p.apiKey, p.ep, preferMP3)
 	if synth != nil {
-		return synth, fmtStr
+		return sessionTTSBundle{synth: synth, format: fmtStr, baseline: profile}
 	}
-	return p.tts, p.ttsFormat
+	return sessionTTSBundle{synth: p.tts, format: p.ttsFormat, baseline: profile}
 }
 
 func buildTTSSynth(cfg config.RealtimeConfig, apiKey string, ep dashscope.EndpointConfig, preferMP3 bool) (TTSSynthesizer, string) {
@@ -120,7 +153,7 @@ func (p *Pipeline) PrewarmTTS(ctx context.Context) {
 	go func() {
 		warmCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		if err := p.tts.Synthesize(warmCtx, "嗯", func([]byte) {}); err != nil {
+		if err := p.tts.Synthesize(warmCtx, "嗯", dashscope.DefaultSynthOptions(), func([]byte) {}); err != nil {
 			log.Printf("[realtime] tts prewarm: %v", err)
 			return
 		}
@@ -133,6 +166,7 @@ func (p *Pipeline) OnSpeechEnd(ctx context.Context, sess *Session, audio []byte,
 	send.SendAnimation(StateThinking)
 
 	log.Printf("[realtime] session=%s user=%d audio_bytes=%d", sess.ID, sess.UserID, len(audio))
+	sess.SetTurnPCM(audio)
 	sess.SetTurnAudioBytes(len(audio))
 
 	if p.asr == nil {
@@ -143,26 +177,56 @@ func (p *Pipeline) OnSpeechEnd(ctx context.Context, sess *Session, audio []byte,
 	pipeCtx := sess.BeginPipeline(ctx)
 	defer sess.EndPipeline()
 
-	var lastPartial string
-	text, err := p.asr.Recognize(pipeCtx, audio, func(partial string, _ bool) {
-		if partial == lastPartial {
+	var (
+		text         string
+		asrErr       error
+		acousticHint emotion.AcousticHint
+		lastPartial  string
+	)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		text, asrErr = p.asr.Recognize(pipeCtx, audio, func(partial string, _ bool) {
+			if partial == lastPartial {
+				return
+			}
+			lastPartial = partial
+			_ = send.Send(MsgASRPartial, ASRText{Text: partial})
+		})
+	}()
+
+	if p.acoustic != nil && p.acoustic.Enabled() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			hint, err := p.acoustic.Recognize(pipeCtx, audio, p.asrSampleRate)
+			if err != nil {
+				log.Printf("[realtime] acoustic error session=%s: %v", sess.ID, err)
+				return
+			}
+			acousticHint = hint
+			log.Printf("[realtime] acoustic session=%s mood=%s conf=%.2f", sess.ID, hint.Mood, hint.Confidence)
+		}()
+	}
+
+	wg.Wait()
+
+	if asrErr != nil {
+		if p.handleCancelled(pipeCtx, sess, send, asrErr) {
 			return
 		}
-		lastPartial = partial
-		_ = send.Send(MsgASRPartial, ASRText{Text: partial})
-	})
-	if err != nil {
-		if p.handleCancelled(pipeCtx, sess, send, err) {
-			return
-		}
-		log.Printf("[realtime] asr error session=%s: %v", sess.ID, err)
-		p.failTurn(ctx, sess, send, "ASR_FAILED", fmt.Sprintf("语音识别失败: %v", err))
+		log.Printf("[realtime] asr error session=%s: %v", sess.ID, asrErr)
+		p.failTurn(ctx, sess, send, "ASR_FAILED", fmt.Sprintf("语音识别失败: %v", asrErr))
 		return
 	}
 
 	if text == "" {
 		text = lastPartial
 	}
+	sess.SetAcousticHint(acousticHint)
+
 	if lat := sess.TurnLatency(); lat != nil {
 		lat.MarkASRFinal()
 	}
@@ -187,8 +251,31 @@ func (p *Pipeline) OnTextInput(ctx context.Context, sess *Session, text string, 
 	p.onTranscriptWithMode(pipeCtx, sess, text, send, withVoice)
 }
 
+// ensureAcousticHint 对流式 ASR 路径补跑声学识别（OnSpeechEnd 已并行则跳过）。
+func (p *Pipeline) ensureAcousticHint(ctx context.Context, sess *Session) emotion.AcousticHint {
+	if sess.acousticDone() {
+		return sess.AcousticHint()
+	}
+	pcm := sess.TurnPCM()
+	if p.acoustic == nil || !p.acoustic.Enabled() || len(pcm) == 0 {
+		return emotion.EmptyAcousticHint()
+	}
+	hint, err := p.acoustic.Recognize(ctx, pcm, p.asrSampleRate)
+	if err != nil {
+		log.Printf("[realtime] acoustic fallback error session=%s: %v", sess.ID, err)
+		return emotion.EmptyAcousticHint()
+	}
+	sess.SetAcousticHint(hint)
+	log.Printf("[realtime] acoustic(stream) session=%s mood=%s conf=%.2f", sess.ID, hint.Mood, hint.Confidence)
+	return hint
+}
+
 // onTranscriptWithMode: LLM streams tokens; voice turns pipe sentences to TTS as they complete.
 func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text string, send Sender, withVoice bool) {
+	acousticHint := emotion.EmptyAcousticHint()
+	if withVoice {
+		acousticHint = p.ensureAcousticHint(ctx, sess)
+	}
 	turnStarted := false
 	defer func() {
 		if turnStarted {
@@ -241,7 +328,7 @@ func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text
 	send.SendAnimation(StateThinking)
 	turnStarted = true
 
-	if ok := p.streamLLMAndVoice(ctx, sess, send, text, withVoice); !ok {
+	if ok := p.streamLLMAndVoice(ctx, sess, send, text, withVoice, acousticHint); !ok {
 		turnStarted = false
 	}
 }
@@ -251,12 +338,19 @@ type segmentSynthResult struct {
 	err    error
 }
 
-func (p *Pipeline) synthSegmentBufferedWithSynth(ctx context.Context, synth TTSSynthesizer, text string) segmentSynthResult {
+func (p *Pipeline) synthSegmentBufferedWithSynth(ctx context.Context, synth TTSSynthesizer, seg ttsSegment) segmentSynthResult {
 	if synth == nil {
 		synth = p.tts
 	}
+	if seg.text == "" {
+		return segmentSynthResult{}
+	}
+	opts := seg.opts
+	if opts.Rate == 0 && opts.Pitch == 0 && opts.Volume == 0 {
+		opts = dashscope.DefaultSynthOptions()
+	}
 	var chunks [][]byte
-	err := synth.Synthesize(ctx, text, func(audio []byte) {
+	err := synth.Synthesize(ctx, seg.text, opts, func(audio []byte) {
 		if len(audio) == 0 {
 			return
 		}
@@ -265,16 +359,16 @@ func (p *Pipeline) synthSegmentBufferedWithSynth(ctx context.Context, synth TTSS
 	return segmentSynthResult{chunks: chunks, err: err}
 }
 
-func (p *Pipeline) asyncSynthSegmentWithSynth(ctx context.Context, synth TTSSynthesizer, text string) <-chan segmentSynthResult {
+func (p *Pipeline) asyncSynthSegmentWithSynth(ctx context.Context, synth TTSSynthesizer, seg ttsSegment) <-chan segmentSynthResult {
 	ch := make(chan segmentSynthResult, 1)
 	go func() {
-		ch <- p.synthSegmentBufferedWithSynth(ctx, synth, text)
+		ch <- p.synthSegmentBufferedWithSynth(ctx, synth, seg)
 	}()
 	return ch
 }
 
 // runPrefetchSegmentTTS synthesizes segments with one-ahead prefetch to hide inter-sentence gaps.
-func (p *Pipeline) runPrefetchSegmentTTS(ctx context.Context, synth TTSSynthesizer, segCh <-chan string, onChunk func([]byte), onSegmentDone func()) error {
+func (p *Pipeline) runPrefetchSegmentTTS(ctx context.Context, synth TTSSynthesizer, segCh <-chan ttsSegment, onChunk func([]byte), onSegmentDone func()) error {
 	var ttsErr error
 
 	var ahead <-chan segmentSynthResult
@@ -290,7 +384,7 @@ func (p *Pipeline) runPrefetchSegmentTTS(ctx context.Context, synth TTSSynthesiz
 	}
 
 	for {
-		var seg string
+		var seg ttsSegment
 		var ok bool
 
 		if ahead != nil {
@@ -338,7 +432,7 @@ func (p *Pipeline) playSegmentResult(res segmentSynthResult, onChunk func([]byte
 }
 
 // streamLLMAndVoice runs LLM token streaming and pipes sentence chunks to TTS asynchronously.
-func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Sender, userText string, withVoice bool) bool {
+func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Sender, userText string, withVoice bool, acousticHint emotion.AcousticHint) bool {
 	var tokenBuf strings.Builder
 	speaking := false
 	audioChunks := 0
@@ -351,11 +445,14 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 	fillerPlayed := false
 	isFirstSegment := true
 
-	ttsSynth, ttsFormat := p.getTTSForSession(ctx, sess)
+	ttsBundle := p.getTTSForSession(ctx, sess)
+	ttsSynth := ttsBundle.synth
+	ttsFormat := ttsBundle.format
 	if ttsSynth == nil {
 		ttsSynth = p.tts
 		ttsFormat = p.ttsFormat
 	}
+	moodTracker := text.NewMoodTracker()
 
 	var opusBridge *OpusBridge
 	var streamStartSent bool
@@ -414,10 +511,10 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		}
 	}
 
-	var segCh chan string
+	var segCh chan ttsSegment
 	var ttsDone chan struct{}
 	if withVoice && ttsSynth != nil {
-		segCh = make(chan string, 16)
+		segCh = make(chan ttsSegment, 16)
 		ttsDone = make(chan struct{})
 		go func() {
 			defer close(ttsDone)
@@ -444,17 +541,22 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		}()
 	}
 
-	enqueueSeg := func(text string, markSentence bool) {
-		text = strings.TrimSpace(text)
-		if text == "" || segCh == nil {
+	enqueueSeg := func(raw string, markSentence bool) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" || segCh == nil {
 			return
 		}
+		tone := moodTracker.Process(raw)
+		if tone.Text == "" {
+			return
+		}
+		opts := ProsodyForMood(tone.Mood, ttsBundle.baseline).ToSynthOptions()
 		if markSentence && lat != nil && !sentenceFlushed {
 			sentenceFlushed = true
 			lat.MarkLLMFirstSentence()
 		}
 		select {
-		case segCh <- text:
+		case segCh <- ttsSegment{text: tone.Text, opts: opts}:
 		case <-ctx.Done():
 		}
 	}
@@ -501,7 +603,7 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		}()
 	}
 
-	reply, err := p.chat.StreamMessageVoice(ctx, sess.UserID, userText, func(token string) {
+	reply, err := p.chat.StreamMessageVoice(ctx, sess.UserID, userText, acousticHint, func(token string) {
 		llmTokenMu.Lock()
 		if !llmTokenSeen {
 			llmTokenSeen = true
@@ -605,7 +707,9 @@ func (p *Pipeline) speakAudio(ctx context.Context, sess *Session, send Sender, r
 	var chunks int
 	var opusBridge *OpusBridge
 	var streamStartSent bool
-	ttsSynth, ttsFormat := p.getTTSForSession(ctx, sess)
+	ttsBundle := p.getTTSForSession(ctx, sess)
+	ttsSynth := ttsBundle.synth
+	ttsFormat := ttsBundle.format
 	if ttsSynth == nil {
 		ttsSynth = p.tts
 		ttsFormat = p.ttsFormat
@@ -621,7 +725,14 @@ func (p *Pipeline) speakAudio(ctx context.Context, sess *Session, send Sender, r
 		}
 	}
 
-	err := ttsSynth.Synthesize(ctx, reply, func(audio []byte) {
+	tone := text.NewMoodTracker().Process(reply)
+	speakText := tone.Text
+	if speakText == "" {
+		speakText = text.StripMoodTags(reply)
+	}
+	opts := ProsodyForMood(tone.Mood, ttsBundle.baseline).ToSynthOptions()
+
+	err := ttsSynth.Synthesize(ctx, speakText, opts, func(audio []byte) {
 		select {
 		case <-ctx.Done():
 			return

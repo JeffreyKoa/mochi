@@ -8,6 +8,39 @@ const CHUNK_SAMPLES = 320 // 20ms @ 16kHz
 
 type ChunkHandler = (pcm: ArrayBuffer, seq: number) => void
 
+/** 探测 WebView/Tauri 是否实际启用 AEC（短时 getUserMedia，立即释放）。 */
+export async function probeAecEnabled(): Promise<boolean> {
+  if (!navigator.mediaDevices?.getUserMedia) return false
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    })
+    const track = stream.getAudioTracks()[0]
+    const enabled = track ? readTrackAecEnabled(track) : false
+    stream.getTracks().forEach((t) => t.stop())
+    return enabled
+  } catch (e) {
+    console.warn('[pcmCapture] probeAecEnabled failed', e)
+    return false
+  }
+}
+
+/** 从 MediaStreamTrack settings 读取 AEC 是否生效。 */
+export function readTrackAecEnabled(track: MediaStreamTrack | null | undefined): boolean {
+  if (!track) return false
+  try {
+    const settings = track.getSettings()
+    // undefined 视为可用（部分 WebView 不回报具体值）
+    return settings.echoCancellation !== false
+  } catch {
+    return false
+  }
+}
+
 export class PCMCapture {
   private stream: MediaStream | null = null
   private context: AudioContext | null = null
@@ -15,6 +48,7 @@ export class PCMCapture {
   private processor: ScriptProcessorNode | null = null
   private active = false
   private onChunk: ChunkHandler | null = null
+  private aecEnabled = false
 
   async start(onChunk: ChunkHandler): Promise<void> {
     if (this.active) return
@@ -30,9 +64,13 @@ export class PCMCapture {
 
     const track = this.stream.getAudioTracks()[0]
     if (track) {
+      this.aecEnabled = readTrackAecEnabled(track)
       const settings = track.getSettings()
       if (settings.echoCancellation === false) {
         console.warn('[pcmCapture] echoCancellation unavailable — barge-in may be less reliable')
+        this.aecEnabled = false
+      } else if (this.aecEnabled) {
+        console.info('[pcmCapture] echoCancellation active')
       }
       if (settings.noiseSuppression === false) {
         console.warn('[pcmCapture] noiseSuppression unavailable')
@@ -123,6 +161,11 @@ export class PCMCapture {
 
   get isActive() {
     return this.active
+  }
+
+  /** 当前采集流是否启用 AEC（start 后有效）。 */
+  get isAecEnabled() {
+    return this.aecEnabled
   }
 }
 

@@ -47,7 +47,7 @@ func (s *Service) Synthesize(ctx context.Context, text string) ([]byte, string, 
 		return nil, "", fmt.Errorf("TTS not configured: set ai.api_key in config.yaml")
 	}
 	var out []byte
-	err := s.tts.Synthesize(ctx, text, func(chunk []byte) {
+	err := s.tts.Synthesize(ctx, text, dashscope.DefaultSynthOptions(), func(chunk []byte) {
 		if len(chunk) > 0 {
 			out = append(out, chunk...)
 		}

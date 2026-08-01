@@ -22,3 +22,5 @@ server/logs/
 config.yaml
 config/config.yaml
 config/logs/
+
+services/emotion2vec/.venv/

@@ -1,5 +1,6 @@
 import { getApiBase, getToken } from './api'
 import { isOpusDecodeSupported } from './ttsAudioPlayer'
+import { probeAecEnabled } from './pcmCapture'
 
 export type RealtimeEvent =
   | { type: 'session_start'; sessionId: string }
@@ -16,6 +17,7 @@ export type RealtimeEvent =
   | { type: 'turn_ack' }
   | { type: 'turn_metrics'; metrics: TurnMetrics }
   | { type: 'animation'; state: string }
+  | { type: 'barge_in_config'; echoGuardMs: number; peakThreshold: number; bargeInMs: number; aecEnabled: boolean }
   | { type: 'proactive_message'; message: string; animation?: string; reminderId?: number }
   | { type: 'error'; code: string; message: string }
   | { type: 'connected' }
@@ -138,8 +140,12 @@ export class RealtimeSession {
     return this.send('text_input', data)
   }
 
-  sendClientCaps(): boolean {
-    return this.send('client_caps', { opus_decode: isOpusDecodeSupported() })
+  async sendClientCaps(): Promise<boolean> {
+    const aecEnabled = await probeAecEnabled()
+    return this.send('client_caps', {
+      opus_decode: isOpusDecodeSupported(),
+      aec_enabled: aecEnabled,
+    })
   }
 
   sendPrewarm(): boolean {
@@ -241,6 +247,15 @@ export class RealtimeSession {
         break
       case 'animation':
         this.emit({ type: 'animation', state: String(data.state) })
+        break
+      case 'barge_in_config':
+        this.emit({
+          type: 'barge_in_config',
+          echoGuardMs: Number(data.echo_guard_ms ?? 1800),
+          peakThreshold: Number(data.peak_threshold ?? 0.06),
+          bargeInMs: Number(data.barge_in_ms ?? 800),
+          aecEnabled: Boolean(data.aec_enabled),
+        })
         break
       case 'proactive_message':
         this.emit({

@@ -22,6 +22,7 @@ type Config struct {
 	Growth    GrowthConfig    `yaml:"growth"`
 	Tools     ToolsConfig     `yaml:"tools"`
 	Wellness  WellnessConfig  `yaml:"wellness"`
+	Emotion   EmotionConfig   `yaml:"emotion"`
 
 	// Loaded from config/data/* (not in main yaml).
 	configDir        string
@@ -125,9 +126,10 @@ type RealtimeSileroVAD struct {
 }
 
 type RealtimeBargeIn struct {
-	EchoGuardMS   int     `yaml:"echo_guard_ms"`
-	PeakThreshold float64 `yaml:"peak_threshold"`
-	BargeInMS     int     `yaml:"barge_in_ms"`
+	EchoGuardMS    int     `yaml:"echo_guard_ms"`
+	EchoGuardMSAEC int     `yaml:"echo_guard_ms_aec"` // AEC 握手成功后的缩短窗口
+	PeakThreshold  float64 `yaml:"peak_threshold"`
+	BargeInMS      int     `yaml:"barge_in_ms"`
 }
 
 type RealtimeVoiceprint struct {
@@ -274,6 +276,28 @@ type WellnessConfig struct {
 	EveningRestHour           int               `yaml:"evening_rest_hour"`
 }
 
+// EmotionConfig 情绪感知相关配置。
+type EmotionConfig struct {
+	Acoustic AcousticEmotionConfig `yaml:"acoustic"`
+}
+
+// AcousticEmotionConfig emotion2vec 旁路微服务配置。
+type AcousticEmotionConfig struct {
+	Enabled       bool    `yaml:"enabled"`
+	URL           string  `yaml:"url"`
+	TimeoutMS     int     `yaml:"timeout_ms"`
+	MinConfidence float64 `yaml:"min_confidence"`
+}
+
+func (e *EmotionConfig) applyDefaults() {
+	if e.Acoustic.TimeoutMS == 0 {
+		e.Acoustic.TimeoutMS = 800
+	}
+	if e.Acoustic.MinConfidence == 0 {
+		e.Acoustic.MinConfidence = 0.65
+	}
+}
+
 type ToolsConfig struct {
 	Enabled               bool   `yaml:"enabled"`
 	Mode                  string `yaml:"mode"`
@@ -377,6 +401,7 @@ func (c *Config) applyDefaults() {
 	c.Growth.applyDefaults()
 	c.Tools.applyDefaults()
 	c.Wellness.applyDefaults()
+	c.Emotion.applyDefaults()
 }
 
 func (c *CompanionConfig) applyDefaults() {
@@ -487,6 +512,9 @@ func (r *RealtimeConfig) applyDefaults() {
 	}
 	if r.BargeIn.EchoGuardMS == 0 {
 		r.BargeIn.EchoGuardMS = 1800
+	}
+	if r.BargeIn.EchoGuardMSAEC == 0 {
+		r.BargeIn.EchoGuardMSAEC = 200
 	}
 	if r.BargeIn.PeakThreshold == 0 {
 		r.BargeIn.PeakThreshold = 0.06

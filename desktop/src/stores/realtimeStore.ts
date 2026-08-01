@@ -980,7 +980,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     unsub = realtimeSession.on(handleEvent)
     try {
       await realtimeSession.connect()
-      realtimeSession.sendClientCaps()
+      await realtimeSession.sendClientCaps()
     } catch {
       connected.value = false
       detachHandler()
@@ -1224,6 +1224,14 @@ export const useRealtimeStore = defineStore('realtime', () => {
       case 'session_start':
         sessionId.value = ev.sessionId
         break
+      case 'barge_in_config':
+        params.echoGuardMs = ev.echoGuardMs
+        params.bargeInPeak = ev.peakThreshold
+        params.bargeInMs = ev.bargeInMs
+        console.info(
+          `[realtime] barge_in_config aec=${ev.aecEnabled} echo_guard_ms=${ev.echoGuardMs}`,
+        )
+        break
       case 'asr_partial':
         partialText.value = ev.text
         if (ev.text.trim() && !pet.isChatOpen) {
@@ -1321,11 +1329,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
         pet.setAnimation('happy')
         break
       case 'animation':
+        // 会话阶段动画不覆盖 emotion_state 驱动的表情（state_update）
         if (ev.state === 'listening') pet.setAnimation('happy')
-        else if (ev.state === 'thinking') pet.setAnimation('idle')
-        else if (ev.state === 'speaking') pet.setAnimation('happy')
-        else if (ev.state === 'idle') pet.setAnimation('idle')
-        else pet.syncAnimationFromState()
+        else if (ev.state === 'idle') pet.syncAnimationFromState()
         break
       case 'error':
         ttsPlayer.stop()

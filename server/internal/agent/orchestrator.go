@@ -35,8 +35,8 @@ func NewOrchestrator(memSvc *memory.Service, emoSvc *emotion.Service, briefSvc *
 	}
 }
 
-// PrepareChatContext 真正并行并发准备聊天上下文（情绪判定、记忆检索、画像及关系度 4 路并发获取）
-func (o *Orchestrator) PrepareChatContext(ctx context.Context, petID uint64, userMsg string) AgentContext {
+// PrepareChatContext 并行准备聊天上下文（情绪、记忆、画像、关系度）。
+func (o *Orchestrator) PrepareChatContext(ctx context.Context, petID uint64, userMsg string, acoustic emotion.AcousticHint) AgentContext {
 	var result AgentContext
 	var wg sync.WaitGroup
 
@@ -46,13 +46,20 @@ func (o *Orchestrator) PrepareChatContext(ctx context.Context, petID uint64, use
 	var userBrief string
 	var memories []models.Memory
 
-	// 1. 情绪判别 (Goroutine)
+	// 1. 情绪判别（文本 + 声学融合）
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		cached := o.emotion.GetCached(ctx, petID)
-		quick := emotion.QuickDetect(userMsg)
-		emoHint = emotion.MergeHint(cached, quick, userMsg)
+		if o.emotion != nil {
+			emoHint = o.emotion.BuildHint(ctx, petID, userMsg, acoustic)
+		} else {
+			emoHint = emotion.MergeAcousticHint(
+				emotion.Hint{UserMood: "neutral", Intent: "chat", Temperature: 0.85},
+				emotion.QuickDetect(userMsg),
+				acoustic,
+				0.65,
+			)
+		}
 	}()
 
 	// 2. 简短历史与 Bond 亲密关系 (Goroutine)

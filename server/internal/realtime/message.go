@@ -34,6 +34,7 @@ const (
 	MsgTurnMetrics       = "turn_metrics"
 	MsgProactiveMessage  = "proactive_message"
 	MsgTTSStreamStart    = "tts_stream_start"
+	MsgBargeInConfig     = "barge_in_config"
 )
 
 type TTSStreamStart struct {
@@ -64,6 +65,15 @@ type TextInput struct {
 // ClientCaps advertises playback capabilities so the server can pick a compatible TTS transport.
 type ClientCaps struct {
 	OpusDecode bool `json:"opus_decode"`
+	AecEnabled bool `json:"aec_enabled"` // WebView getUserMedia echoCancellation 实际生效
+}
+
+// BargeInConfig 服务端下发的打断参数（AEC 握手后 echo_guard_ms 可缩短）。
+type BargeInConfig struct {
+	EchoGuardMS   int     `json:"echo_guard_ms"`
+	PeakThreshold float64 `json:"peak_threshold"`
+	BargeInMS     int     `json:"barge_in_ms"`
+	AecEnabled    bool    `json:"aec_enabled"`
 }
 
 type VADEvent struct {

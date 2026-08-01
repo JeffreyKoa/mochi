@@ -64,6 +64,7 @@ realtime:
       pre_speech_pad_ms: 300
   barge_in:
     echo_guard_ms: 1800
+    echo_guard_ms_aec: 200
     peak_threshold: 0.06
     barge_in_ms: 800
   voiceprint:
@@ -151,3 +152,11 @@ wellness:
     lunch: ["12:00", "13:00"]
     dinner: ["18:00", "19:00"]
   evening_rest_hour: 22
+
+# 声学情绪识别（emotion2vec Sidecar，Phase 2）
+emotion:
+  acoustic:
+    enabled: true
+    url: "http://127.0.0.1:8091"
+    timeout_ms: 800
+    min_confidence: 0.65

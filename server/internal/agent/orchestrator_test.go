@@ -24,7 +24,7 @@ func TestOrchestrator_PrepareChatContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	agentCtx := orch.PrepareChatContext(ctx, 1, "今天天气真好，我很开心！")
+	agentCtx := orch.PrepareChatContext(ctx, 1, "今天天气真好，我很开心！", emotion.EmptyAcousticHint())
 
 	if agentCtx.EmotionHint.UserMood == "" {
 		t.Errorf("expected non-empty emotion hint user mood")
