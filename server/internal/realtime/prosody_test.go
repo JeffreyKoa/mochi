@@ -13,12 +13,18 @@ func TestProsodyForMood(t *testing.T) {
 	if gentle.Rate >= 1.0 || gentle.Pitch >= 1.0 {
 		t.Errorf("gentle should slow/down pitch: %+v", gentle)
 	}
+	if gentle.Rate > 0.86 {
+		t.Errorf("gentle rate should be ~0.85, got %v", gentle.Rate)
+	}
 	excited := ProsodyForMood(text.MoodExcited, baseline)
 	if excited.Rate <= 1.0 || excited.Pitch <= 1.0 {
 		t.Errorf("excited should speed/up pitch: %+v", excited)
 	}
-	if gentle.Rate < 0.85 || excited.Rate > 1.15 {
-		t.Error("rate out of clamp range")
+	if excited.Rate < 1.10 {
+		t.Errorf("excited rate should be noticeably faster, got %v", excited.Rate)
+	}
+	if gentle.Rate >= excited.Rate {
+		t.Error("gentle and excited should be audibly different")
 	}
 }
 

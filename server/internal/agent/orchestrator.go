@@ -9,6 +9,7 @@ import (
 	"github.com/mochi-ai/server/internal/emotion"
 	"github.com/mochi-ai/server/internal/memory"
 	"github.com/mochi-ai/server/internal/models"
+	"github.com/mochi-ai/server/internal/vision"
 )
 
 type AgentContext struct {
@@ -36,7 +37,7 @@ func NewOrchestrator(memSvc *memory.Service, emoSvc *emotion.Service, briefSvc *
 }
 
 // PrepareChatContext 并行准备聊天上下文（情绪、记忆、画像、关系度）。
-func (o *Orchestrator) PrepareChatContext(ctx context.Context, petID uint64, userMsg string, acoustic emotion.AcousticHint) AgentContext {
+func (o *Orchestrator) PrepareChatContext(ctx context.Context, petID uint64, userMsg string, acoustic emotion.AcousticHint, visual vision.Hint) AgentContext {
 	var result AgentContext
 	var wg sync.WaitGroup
 
@@ -51,14 +52,15 @@ func (o *Orchestrator) PrepareChatContext(ctx context.Context, petID uint64, use
 	go func() {
 		defer wg.Done()
 		if o.emotion != nil {
-			emoHint = o.emotion.BuildHint(ctx, petID, userMsg, acoustic)
+			emoHint = o.emotion.BuildHint(ctx, petID, userMsg, acoustic, visual)
 		} else {
-			emoHint = emotion.MergeAcousticHint(
+			merged := emotion.MergeAcousticHint(
 				emotion.Hint{UserMood: "neutral", Intent: "chat", Temperature: 0.85},
 				emotion.QuickDetect(userMsg),
 				acoustic,
 				0.65,
 			)
+			emoHint = emotion.MergeVisualHint(merged, visual, 0.6)
 		}
 	}()
 

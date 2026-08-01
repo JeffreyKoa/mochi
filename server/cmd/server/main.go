@@ -65,6 +65,7 @@ func main() {
 	briefSvc := brief.NewService(db, cfg.Growth)
 	memSvc := memory.NewService(db, rdb, aiRouter, briefSvc)
 	emotionSvc := emotion.NewService(rdb, aiRouter)
+	emotionSvc.ConfigureVisual(cfg.Vision.MinExpressionConfidence)
 	hub := ws.NewHub(rdb)
 
 	lifeSvc := life.NewService(db, hub)
@@ -126,6 +127,7 @@ func main() {
 		RealtimePublic:   cfg.Realtime.PublicClient(),
 		WriteApproval:    cfg.Growth.WriteApproval,
 		GrowthEnabled:   cfg.Growth.Enabled,
+		VisionEnabled:   cfg.Vision.Enabled,
 	})
 
 	addr := ":" + cfg.ServerPort()

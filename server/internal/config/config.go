@@ -23,6 +23,7 @@ type Config struct {
 	Tools     ToolsConfig     `yaml:"tools"`
 	Wellness  WellnessConfig  `yaml:"wellness"`
 	Emotion   EmotionConfig   `yaml:"emotion"`
+	Vision    VisionConfig    `yaml:"vision"`
 
 	// Loaded from config/data/* (not in main yaml).
 	configDir        string
@@ -298,6 +299,43 @@ func (e *EmotionConfig) applyDefaults() {
 	}
 }
 
+// VisionConfig 视觉感知（Qwen-VL，V1 owner_face + V1.5 object/scene 路由）。
+type VisionConfig struct {
+	Enabled                 bool     `yaml:"enabled"`
+	Model                   string   `yaml:"model"`
+	TimeoutMS               int      `yaml:"timeout_ms"`
+	DefaultFocus            string   `yaml:"default_focus"`
+	AutoOnVoiceTurn         bool     `yaml:"auto_on_voice_turn"`
+	MinExpressionConfidence float64  `yaml:"min_expression_confidence"`
+	ObjectTriggerKeywords   []string `yaml:"object_trigger_keywords"`
+	SceneTriggerKeywords    []string `yaml:"scene_trigger_keywords"`
+}
+
+func (v *VisionConfig) applyDefaults() {
+	if v.Model == "" {
+		v.Model = "qwen-vl-plus"
+	}
+	if v.TimeoutMS == 0 {
+		v.TimeoutMS = 5000
+	}
+	if v.DefaultFocus == "" {
+		v.DefaultFocus = "owner_face"
+	}
+	if v.MinExpressionConfidence == 0 {
+		v.MinExpressionConfidence = 0.6
+	}
+	if len(v.ObjectTriggerKeywords) == 0 {
+		v.ObjectTriggerKeywords = []string{
+			"这是什么", "看看这个", "帮我看看", "认认这个", "是什么东西", "这啥", "what is this",
+		}
+	}
+	if len(v.SceneTriggerKeywords) == 0 {
+		v.SceneTriggerKeywords = []string{
+			"你看外面", "你看窗外", "看看外面", "你看房间", "看看环境", "你看周围", "你看一下外面",
+		}
+	}
+}
+
 type ToolsConfig struct {
 	Enabled               bool   `yaml:"enabled"`
 	Mode                  string `yaml:"mode"`
@@ -402,6 +440,7 @@ func (c *Config) applyDefaults() {
 	c.Tools.applyDefaults()
 	c.Wellness.applyDefaults()
 	c.Emotion.applyDefaults()
+	c.Vision.applyDefaults()
 }
 
 func (c *CompanionConfig) applyDefaults() {

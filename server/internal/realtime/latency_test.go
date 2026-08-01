@@ -11,13 +11,14 @@ func TestTurnLatency_Marks(t *testing.T) {
 
 	lat.MarkAudioEnd()
 	lat.MarkASRFinal()
+	lat.MarkVisionFinal()
 	lat.MarkLLMFirstToken()
 	lat.MarkLLMFirstSentence()
 	lat.MarkTTSFirstByte()
 	lat.MarkPlaybackFromClient(1200)
 
 	m := lat.ToMetrics()
-	if m.AudioEndMS < 0 || m.ASRFinalMS < 0 || m.LLMFirstTokenMS < 0 {
+	if m.AudioEndMS < 0 || m.ASRFinalMS < 0 || m.VisionMS < 0 || m.LLMFirstTokenMS < 0 {
 		t.Fatalf("expected non-negative server marks, got %+v", m)
 	}
 	if m.PlaybackStartMS != 1200 {

@@ -69,6 +69,68 @@ func NewMoodTracker() *MoodTracker {
 	return &MoodTracker{current: MoodCalm}
 }
 
+// NewMoodTrackerWithDefault 创建 mood 追踪器，首句无 [mood:xxx] 时继承 defaultMood（Phase 4 流式默认）。
+func NewMoodTrackerWithDefault(defaultMood MoodTag) *MoodTracker {
+	if defaultMood == "" {
+		defaultMood = MoodCalm
+	}
+	return &MoodTracker{current: defaultMood}
+}
+
+// InferDefaultMood 根据用户情绪上下文推断 TTS 首句默认 mood（LLM 漏标时使用）。
+func InferDefaultMood(userMood, intent string, needsEmpathy bool) MoodTag {
+	if needsEmpathy || intent == "vent" || userMood == "stressed" || userMood == "sad" {
+		return MoodGentle
+	}
+	if intent == "joke" || userMood == "happy" {
+		return MoodPlayful
+	}
+	return MoodCalm
+}
+
+// CountMoodTags 统计回复中的 [mood:xxx] 标记数量。
+func CountMoodTags(s string) int {
+	if s == "" {
+		return 0
+	}
+	return len(moodTagRE.FindAllString(s, -1))
+}
+
+// CountSpeakSentences 估算可分句朗读的句子数（用于 mood tag 遵标率）。
+func CountSpeakSentences(s string) int {
+	s = StripMoodTags(strings.TrimSpace(s))
+	if s == "" {
+		return 0
+	}
+	parts := sentenceSplitRE.Split(s, -1)
+	n := 0
+	for _, p := range parts {
+		if strings.TrimSpace(p) != "" {
+			n++
+		}
+	}
+	if n == 0 {
+		return 1
+	}
+	return n
+}
+
+// MoodTagComplianceRate 返回 mood tag 遵标率（标记数 / 句子数，上限 1.0）。
+func MoodTagComplianceRate(raw string) float64 {
+	sentences := CountSpeakSentences(raw)
+	if sentences == 0 {
+		return 0
+	}
+	tags := CountMoodTags(raw)
+	rate := float64(tags) / float64(sentences)
+	if rate > 1 {
+		return 1
+	}
+	return rate
+}
+
+var sentenceSplitRE = regexp.MustCompile(`[。！？.!?\n]+`)
+
 // Process 解析分句并更新继承 mood。
 func (mt *MoodTracker) Process(raw string) ToneSegment {
 	seg := ParseToneSegment(raw)

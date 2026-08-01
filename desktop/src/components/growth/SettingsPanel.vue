@@ -40,7 +40,11 @@ import {
 } from '@/constants/lifecycle'
 import { resolveVoiceLabel } from '@/constants/voiceProfile'
 import { formatMemoryTime } from '@/utils/date'
-import { listenTasksRefresh } from '@/services/proactiveSync'
+import { getClientConfig, initClientConfig } from '@/config'
+import {
+  isVisionCaptureEnabled,
+  setVisionCaptureEnabled,
+} from '@/services/visionCapture'
 import { hideSidePanelPopup, isTauri } from '@/services/chatWindow'
 
 type TabId = 'bond' | 'memory' | 'pet' | 'tasks' | 'voice' | 'account'
@@ -58,6 +62,8 @@ const followUpEnabled = ref(true)
 const reminderVoice = ref(true)
 const voiceReplyDefault = ref(true)
 const sttMode = ref<'auto' | 'local' | 'cloud'>('auto')
+const visionEnabled = ref(isVisionCaptureEnabled())
+const serverVisionEnabled = ref(false)
 const quietStart = ref(23)
 const quietEnd = ref(8)
 const wellnessEnabled = ref(true)
@@ -171,6 +177,20 @@ async function loadTasks() {
     tasksError.value = e instanceof Error ? e.message : '加载失败'
   } finally {
     tasksLoading.value = false
+  }
+}
+
+function onVisionToggle() {
+  visionEnabled.value = !visionEnabled.value
+  setVisionCaptureEnabled(visionEnabled.value)
+}
+
+async function loadServerVisionFlag() {
+  try {
+    await initClientConfig()
+    serverVisionEnabled.value = getClientConfig().visionEnabled
+  } catch {
+    serverVisionEnabled.value = false
   }
 }
 
@@ -515,6 +535,7 @@ function logout() {
 let unlistenTasksRefresh: (() => void) | null = null
 
 onMounted(async () => {
+  void loadServerVisionFlag()
   unlistenTasksRefresh = await listenTasksRefresh(() => {
     if (tab.value === 'tasks') void loadTasks()
   })
@@ -841,6 +862,23 @@ onUnmounted(() => {
                 {{ voiceReplyDefault ? '开' : '关' }}
               </button>
             </label>
+          </section>
+          <section v-if="serverVisionEnabled" class="block flat">
+            <label class="toggle-row">
+              <span>语音时看我表情</span>
+              <button
+                type="button"
+                class="toggle"
+                :class="{ on: visionEnabled }"
+                @click="onVisionToggle"
+              >
+                {{ visionEnabled ? '开' : '关' }}
+              </button>
+            </label>
+            <p class="hint">
+              每次说完话前会短暂打开前置摄像头拍一帧，仅用于理解你的表情；照片不上传日志、不长期保存。
+              需服务端开启 vision（config.yaml）。
+            </p>
           </section>
           <section class="block">
             <h3>语音识别</h3>

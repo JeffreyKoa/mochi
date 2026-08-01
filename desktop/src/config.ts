@@ -58,6 +58,7 @@ export interface ClientConfig {
   realtimeEnabled: boolean
   writeApproval: boolean
   growthEnabled: boolean
+  visionEnabled: boolean
   realtime: RealtimeClientConfig
 }
 
@@ -109,6 +110,7 @@ let _clientConfig: ClientConfig = {
   realtimeEnabled: true,
   writeApproval: false,
   growthEnabled: true,
+  visionEnabled: false,
   realtime: { ...DEFAULT_REALTIME },
 }
 
@@ -252,6 +254,7 @@ function applyPublicConfig(base: string, data: Record<string, unknown>) {
     realtimeEnabled: data.realtime_enabled !== false,
     writeApproval: !!data.write_approval,
     growthEnabled: data.growth_enabled !== false,
+    visionEnabled: !!data.vision_enabled,
     realtime: parseRealtimeBlock(data.realtime),
   }
   return _clientConfig

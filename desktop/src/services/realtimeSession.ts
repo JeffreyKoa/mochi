@@ -28,6 +28,7 @@ type Listener = (ev: RealtimeEvent) => void
 export interface TurnMetrics {
   audioEndMs: number
   asrFinalMs: number
+  visionMs: number
   llmFirstTokenMs: number
   llmFirstSentenceMs: number
   ttsFirstByteMs: number
@@ -126,6 +127,11 @@ export class RealtimeSession {
 
   sendAudioEnd(): boolean {
     return this.send('audio_end', {})
+  }
+
+  /** 上传语音 turn 前抓拍 JPEG（base64，不含 data: 前缀）。 */
+  sendVisionFrame(jpegBase64: string, seq?: number): boolean {
+    return this.send('vision_frame', { jpeg: jpegBase64, seq: seq ?? Date.now() })
   }
 
   sendInterrupt(): boolean {
@@ -237,6 +243,7 @@ export class RealtimeSession {
           metrics: {
             audioEndMs: Number(data.audio_end_ms ?? -1),
             asrFinalMs: Number(data.asr_final_ms ?? -1),
+            visionMs: Number(data.vision_ms ?? -1),
             llmFirstTokenMs: Number(data.llm_first_token_ms ?? -1),
             llmFirstSentenceMs: Number(data.llm_first_sentence_ms ?? -1),
             ttsFirstByteMs: Number(data.tts_first_byte_ms ?? -1),

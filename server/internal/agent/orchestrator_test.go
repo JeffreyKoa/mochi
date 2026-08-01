@@ -10,6 +10,7 @@ import (
 	"github.com/mochi-ai/server/internal/config"
 	"github.com/mochi-ai/server/internal/emotion"
 	"github.com/mochi-ai/server/internal/memory"
+	"github.com/mochi-ai/server/internal/vision"
 )
 
 func TestOrchestrator_PrepareChatContext(t *testing.T) {
@@ -24,7 +25,7 @@ func TestOrchestrator_PrepareChatContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	agentCtx := orch.PrepareChatContext(ctx, 1, "今天天气真好，我很开心！", emotion.EmptyAcousticHint())
+	agentCtx := orch.PrepareChatContext(ctx, 1, "今天天气真好，我很开心！", emotion.EmptyAcousticHint(), vision.EmptyHint())
 
 	if agentCtx.EmotionHint.UserMood == "" {
 		t.Errorf("expected non-empty emotion hint user mood")

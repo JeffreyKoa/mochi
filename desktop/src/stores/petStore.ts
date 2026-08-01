@@ -76,6 +76,10 @@ export const usePetStore = defineStore('pet', () => {
   const stageHint = ref('')
   const skin = ref<PetSkin | null>(null)
   const currentAnimation = ref<Animation>('idle')
+  /** 共情 FSM 推送的 sad 等表情保持至 TTL，避免 TTS 结束后 syncAnimation 重置为 idle */
+  let emotionHoldUntil = 0
+  let heldEmotionAnim: Animation | null = null
+  const EMOTION_HOLD_MS = 120_000
   const ownerPresence = ref<OwnerPresence>('away')
   const facing = ref<'left' | 'right'>('right')
   const isRoaming = ref(false)
@@ -156,7 +160,17 @@ export const usePetStore = defineStore('pet', () => {
 
   /** 后端 state_update / proactive 推送的动画名（worried→sad 等映射）。 */
   function setServerAnimation(raw: string | undefined) {
-    currentAnimation.value = mapServerAnimation(raw)
+    const anim = mapServerAnimation(raw)
+    currentAnimation.value = anim
+    if (anim === 'sad' || raw === 'worried') {
+      heldEmotionAnim = anim
+      emotionHoldUntil = Date.now() + EMOTION_HOLD_MS
+    }
+  }
+
+  function clearEmotionHold() {
+    emotionHoldUntil = 0
+    heldEmotionAnim = null
   }
 
   function bubbleDisplayText(text: string): string {
@@ -237,6 +251,10 @@ export const usePetStore = defineStore('pet', () => {
 
   function syncAnimationFromState() {
     if (isRoaming.value) return
+    if (Date.now() < emotionHoldUntil && heldEmotionAnim) {
+      currentAnimation.value = heldEmotionAnim
+      return
+    }
     const { mood, energy } = lifeState.value
     if (energy < 10) {
       currentAnimation.value = 'sleep'
@@ -295,6 +313,7 @@ export const usePetStore = defineStore('pet', () => {
     applySkinFromSKU,
     setAnimation,
     setServerAnimation,
+    clearEmotionHold,
     setFacing,
     setRoaming,
     showSpeechBubble,

@@ -62,7 +62,11 @@ func BuildStableLayer(ctx CompanionContext) string {
 11. 围绕主人的话题自然接话：保持互动贴合感，不硬背书、不做冗长无用的科普
 12. 包容口语与语音断句：遇到日常口语、短语气或说话犹豫时，像老朋友一样自然接话回应，避免冷冰冰地回复“没听清”或“我不确定”
 13. 生命阶段只调节语气温度与叙事感，不得因此降低理解力、回答完整性或办事能力；刚出生阶段同样要保持顶尖沟通与办事水平
-14. 语音分句语气标记：每句台词句首附加 [mood:gentle|excited|sad|calm] 之一（系统会剥离，用户不可见）。例：[mood:gentle]没事的，慢慢说。[mood:excited]太好了！`,
+14. 语音分句语气标记：每句台词句首必须附加 [mood:calm|gentle|excited|sad|worried|playful|serious] 之一（系统会剥离，用户不可见）；缺标时系统按 calm 朗读。
+   共情示例：[mood:gentle]没事的，慢慢说。[mood:sad]听起来你真的挺难受的。
+   报喜示例：[mood:excited]太好了！[mood:playful]你也太会了吧！
+   平常示例：[mood:calm]嗯，我在呢。
+15. 若 L3 有视觉摘要（表情/物体/环境），可自然融入回复；主人让你认物体时直接描述物体，不要啰嗦背景或反复描述脸`,
 		ctx.PetName,
 		ctx.PetName,
 		ctx.Personality.Traits,
@@ -132,6 +136,18 @@ func BuildVolatileLayer(ctx CompanionContext) string {
 		masterNow = fmt.Sprintf("上次聊天 %s", ctx.Bond.LastMoodTag)
 	}
 
+	visualLine := ""
+	if ctx.Emotion.VisualNote != "" {
+		label := "主人（视觉）"
+		switch ctx.Emotion.VisualFocus {
+		case "object":
+			label = "主人展示的物体"
+		case "scene":
+			label = "主人让你看的环境"
+		}
+		visualLine = fmt.Sprintf("\n- %s：%s", label, ctx.Emotion.VisualNote)
+	}
+
 	weekday := []string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}[int(now.Weekday())]
 
 	lifeLine := ""
@@ -144,17 +160,22 @@ func BuildVolatileLayer(ctx CompanionContext) string {
 		)
 	}
 
+	moodDirective := moodTagDirective(ctx.Emotion)
+
 	return fmt.Sprintf(`【此刻】
 - 时间：%s %d点
 - 自身：心情%s（%d/100）| 亲密度 %d/100 | 饥饿 %d/100 | 精力 %d/100%s
-- 主人：%s
-- 策略：%s`,
+- 主人：%s%s
+- 策略：%s
+- %s`,
 		weekday, now.Hour(),
 		moodDesc, ctx.State.Mood,
 		ctx.State.Love, ctx.State.Hungry, ctx.State.Energy,
 		lifeLine,
 		masterNow,
+		visualLine,
 		emotionGuide,
+		moodDirective,
 	)
 }
 

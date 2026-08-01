@@ -10,6 +10,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/mochi-ai/server/internal/models"
+	"github.com/mochi-ai/server/internal/vision"
 	"github.com/mochi-ai/server/pkg/ai"
 )
 
@@ -20,14 +21,17 @@ type Hint struct {
 	Intent        string `json:"intent"`
 	NeedsEmpathy  bool   `json:"needs_empathy"`
 	Topic         string `json:"topic"`
+	VisualNote    string `json:"visual_note,omitempty"`  // 视觉感知摘要（Prompt L3）
+	VisualFocus   string `json:"visual_focus,omitempty"` // owner_face|object|scene
 	Temperature   float64
 }
 
 type Service struct {
-	rdb            *redis.Client
-	ai             ai.AIProvider
-	acoustic       AcousticClient
+	rdb             *redis.Client
+	ai              ai.AIProvider
+	acoustic        AcousticClient
 	minAcousticConf float64
+	minVisualConf   float64
 }
 
 func NewService(rdb *redis.Client, aiProvider ai.AIProvider) *Service {
@@ -52,6 +56,16 @@ func (s *Service) ConfigureAcoustic(client AcousticClient, minConfidence float64
 	}
 }
 
+// ConfigureVisual 设置视觉融合最低置信度阈值。
+func (s *Service) ConfigureVisual(minConfidence float64) {
+	if s == nil {
+		return
+	}
+	if minConfidence > 0 {
+		s.minVisualConf = minConfidence
+	}
+}
+
 // AcousticClient 返回当前声学客户端。
 func (s *Service) AcousticClient() AcousticClient {
 	if s == nil || s.acoustic == nil {
@@ -60,11 +74,16 @@ func (s *Service) AcousticClient() AcousticClient {
 	return s.acoustic
 }
 
-// BuildHint 融合缓存、文本 QuickDetect 与声学情绪。
-func (s *Service) BuildHint(ctx context.Context, petID uint64, userMsg string, acoustic AcousticHint) Hint {
+// BuildHint 融合缓存、文本 QuickDetect、声学与视觉情绪。
+func (s *Service) BuildHint(ctx context.Context, petID uint64, userMsg string, acoustic AcousticHint, visual vision.Hint) Hint {
 	cached := s.GetCached(ctx, petID)
 	quick := QuickDetect(userMsg)
-	return MergeAcousticHint(cached, quick, acoustic, s.minAcousticConf)
+	merged := MergeAcousticHint(cached, quick, acoustic, s.minAcousticConf)
+	minVisual := s.minVisualConf
+	if minVisual <= 0 {
+		minVisual = 0.6
+	}
+	return MergeVisualHint(merged, visual, minVisual)
 }
 
 var ventKeywords = []string{

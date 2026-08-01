@@ -20,7 +20,9 @@ import (
 	"github.com/mochi-ai/server/internal/memory"
 	"github.com/mochi-ai/server/internal/models"
 	"github.com/mochi-ai/server/internal/reflection"
+	"github.com/mochi-ai/server/internal/text"
 	"github.com/mochi-ai/server/internal/tools"
+	"github.com/mochi-ai/server/internal/vision"
 	"github.com/mochi-ai/server/internal/wellness"
 	"github.com/mochi-ai/server/pkg/ai"
 )
@@ -111,7 +113,7 @@ func (s *Service) activityContextForUser(ctx context.Context, userID uint64) map
 	return wellness.ToActivityContext(act)
 }
 
-func (s *Service) turnMessage(ctx context.Context, userID uint64, message, triggerType string, acoustic emotion.AcousticHint, onToken func(token string)) (string, error) {
+func (s *Service) turnMessage(ctx context.Context, userID uint64, message, triggerType string, acoustic emotion.AcousticHint, visual vision.Hint, onToken func(token string)) (string, error) {
 	pet, err := s.getPetByUser(ctx, userID)
 	if err != nil {
 		return "", err
@@ -124,6 +126,7 @@ func (s *Service) turnMessage(ctx context.Context, userID uint64, message, trigg
 		TriggerType:     triggerType,
 		ActivityContext: s.activityContextForUser(ctx, userID),
 		AcousticHint:    acoustic,
+		VisualHint:      visual,
 	}
 
 	out, err := s.runtime.Turn(ctx, input)
@@ -152,11 +155,11 @@ func (s *Service) turnMessage(ctx context.Context, userID uint64, message, trigg
 }
 
 func (s *Service) StreamMessage(ctx context.Context, userID uint64, message string, onToken func(token string)) (string, error) {
-	return s.turnMessage(ctx, userID, message, "user_chat", emotion.EmptyAcousticHint(), onToken)
+	return s.turnMessage(ctx, userID, message, "user_chat", emotion.EmptyAcousticHint(), vision.EmptyHint(), onToken)
 }
 
-func (s *Service) StreamMessageVoice(ctx context.Context, userID uint64, message string, acoustic emotion.AcousticHint, onToken func(token string)) (string, error) {
-	return s.turnMessage(ctx, userID, message, "user_voice", acoustic, onToken)
+func (s *Service) StreamMessageVoice(ctx context.Context, userID uint64, message string, acoustic emotion.AcousticHint, visual vision.Hint, onToken func(token string)) (string, error) {
+	return s.turnMessage(ctx, userID, message, "user_voice", acoustic, visual, onToken)
 }
 
 func (s *Service) SendMessageStream(c *gin.Context, userID uint64, message string) {
@@ -205,11 +208,40 @@ func (s *Service) SendMessageStream(c *gin.Context, userID uint64, message strin
 }
 
 func (s *Service) CompleteMessage(ctx context.Context, userID uint64, message string) (string, error) {
-	return s.turnMessage(ctx, userID, message, "user_chat", emotion.EmptyAcousticHint(), nil)
+	return s.turnMessage(ctx, userID, message, "user_chat", emotion.EmptyAcousticHint(), vision.EmptyHint(), nil)
 }
 
 func (s *Service) Runtime() *agent.Runtime {
 	return s.runtime
+}
+
+// BroadcastReplyMood 首句 mood tag 触发宠物表情推送（Phase 3）。
+func (s *Service) BroadcastReplyMood(ctx context.Context, userID uint64, mood text.MoodTag) {
+	if s.runtime == nil {
+		return
+	}
+	pet, err := s.getPetByUser(ctx, userID)
+	if err != nil {
+		return
+	}
+	anim := animationForReplyMood(mood)
+	if anim == "" {
+		return
+	}
+	s.runtime.BroadcastEmotionAnimation(ctx, pet.ID, anim)
+}
+
+func animationForReplyMood(m text.MoodTag) string {
+	switch m {
+	case text.MoodSad, text.MoodGentle:
+		return "sad"
+	case text.MoodWorried:
+		return "worried"
+	case text.MoodExcited, text.MoodPlayful:
+		return "happy"
+	default:
+		return ""
+	}
 }
 
 func mustJSON(v interface{}) string {

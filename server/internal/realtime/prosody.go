@@ -29,31 +29,32 @@ func ProsodyForMood(mood text.MoodTag, baseline VoiceProfile) ProsodyParams {
 	rate, pitch := parseVoiceBaseline(baseline)
 	vol := 50
 
+	// Phase 4：加大 mood 间 prosody 差异，使安慰 vs 报喜可听区分更明显。
 	switch mood {
 	case text.MoodGentle:
-		rate *= 0.92
-		pitch *= 0.95
-		vol = 48
+		rate *= 0.85
+		pitch *= 0.90
+		vol = 42
 	case text.MoodExcited:
-		rate *= 1.08
-		pitch *= 1.05
-		vol = 55
+		rate *= 1.12
+		pitch *= 1.10
+		vol = 58
 	case text.MoodSad:
-		rate *= 0.90
-		pitch *= 0.93
-		vol = 45
+		rate *= 0.82
+		pitch *= 0.88
+		vol = 40
 	case text.MoodWorried:
+		rate *= 0.88
+		pitch *= 0.92
+		vol = 43
+	case text.MoodPlayful:
+		rate *= 1.10
+		pitch *= 1.08
+		vol = 54
+	case text.MoodSerious:
 		rate *= 0.94
 		pitch *= 0.96
-		vol = 47
-	case text.MoodPlayful:
-		rate *= 1.05
-		pitch *= 1.03
-		vol = 52
-	case text.MoodSerious:
-		rate *= 0.96
-		pitch *= 0.98
-		vol = 50
+		vol = 48
 	default: // calm
 		// 使用基线
 	}

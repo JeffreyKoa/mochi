@@ -36,6 +36,7 @@ type Handlers struct {
 	RealtimePublic     config.RealtimePublicConfig
 	WriteApproval      bool
 	GrowthEnabled      bool
+	VisionEnabled      bool
 }
 
 func Setup(mode string, h Handlers) *gin.Engine {
@@ -60,6 +61,7 @@ func Setup(mode string, h Handlers) *gin.Engine {
 			"realtime":         h.RealtimePublic,
 			"write_approval":   h.WriteApproval,
 			"growth_enabled":   h.GrowthEnabled,
+			"vision_enabled":   h.VisionEnabled,
 		})
 	})
 

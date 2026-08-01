@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mochi-ai/server/internal/emotion"
+	"github.com/mochi-ai/server/internal/vision"
 )
 
 type SessionState string
@@ -38,6 +39,10 @@ type Session struct {
 	turnPCM        []byte
 	acousticHint   emotion.AcousticHint
 	acousticReady  bool
+
+	turnVisionJPEG []byte
+	visualHint     vision.Hint
+	visualReady    bool
 
 	onStateChange func(SessionState)
 }
@@ -164,6 +169,8 @@ func (s *Session) SetTurnPCM(pcm []byte) {
 	s.turnPCM = append([]byte(nil), pcm...)
 	s.acousticReady = false
 	s.acousticHint = emotion.EmptyAcousticHint()
+	s.visualReady = false
+	s.visualHint = vision.EmptyHint()
 	s.mu.Unlock()
 }
 
@@ -193,6 +200,69 @@ func (s *Session) acousticDone() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.acousticReady
+}
+
+// SetVisionFrame 缓存本 turn 客户端上传的 JPEG。
+func (s *Session) SetVisionFrame(jpeg []byte) {
+	s.mu.Lock()
+	s.turnVisionJPEG = append([]byte(nil), jpeg...)
+	s.visualReady = false
+	s.visualHint = vision.EmptyHint()
+	s.mu.Unlock()
+}
+
+// HasVisionFrame 本 turn 是否已有视觉帧。
+func (s *Session) HasVisionFrame() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.turnVisionJPEG) > 0
+}
+
+// TurnVisionJPEG 返回本 turn JPEG 副本。
+func (s *Session) TurnVisionJPEG() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]byte(nil), s.turnVisionJPEG...)
+}
+
+// ClearVisionFrame 消费后清除帧缓存。
+func (s *Session) ClearVisionFrame() {
+	s.mu.Lock()
+	s.turnVisionJPEG = nil
+	s.mu.Unlock()
+}
+
+// SetVisualHint 缓存视觉识别结果。
+func (s *Session) SetVisualHint(h vision.Hint) {
+	s.mu.Lock()
+	s.visualHint = h
+	s.visualReady = true
+	s.mu.Unlock()
+}
+
+// VisualHint 返回本 turn 视觉结果。
+func (s *Session) VisualHint() vision.Hint {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.visualHint
+}
+
+func (s *Session) visualDone() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.visualReady
+}
+
+// ClearTurnMedia 新一轮 utterance 开始时清除音视频缓存。
+func (s *Session) ClearTurnMedia() {
+	s.mu.Lock()
+	s.turnPCM = nil
+	s.turnVisionJPEG = nil
+	s.acousticReady = false
+	s.acousticHint = emotion.EmptyAcousticHint()
+	s.visualReady = false
+	s.visualHint = vision.EmptyHint()
+	s.mu.Unlock()
 }
 
 // SetEchoGuardMS 设置本会话 effective echo guard（client_caps AEC 握手）。

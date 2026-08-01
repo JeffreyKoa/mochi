@@ -160,3 +160,22 @@ emotion:
     url: "http://127.0.0.1:8091"
     timeout_ms: 800
     min_confidence: 0.65
+
+# 视觉感知（Qwen-VL，V1 owner_face；默认关闭，客户端需 opt-in）
+vision:
+  enabled: false
+  model: qwen-vl-plus
+  timeout_ms: 5000
+  default_focus: owner_face
+  auto_on_voice_turn: true
+  min_expression_confidence: 0.6
+  object_trigger_keywords:
+    - "这是什么"
+    - "看看这个"
+    - "帮我看看"
+    - "认认这个"
+  scene_trigger_keywords:
+    - "你看外面"
+    - "你看窗外"
+    - "看看外面"
+    - "你看房间"

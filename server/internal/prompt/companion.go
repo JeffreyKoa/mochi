@@ -88,6 +88,20 @@ func describeTrust(level uint8) string {
 	}
 }
 
+// moodTagDirective 按当前情绪上下文给出 mood tag few-shot 遵标提示（Phase 4）。
+func moodTagDirective(emo emotion.Hint) string {
+	if emo.NeedsEmpathy || emo.Intent == "vent" || emo.UserMood == "stressed" || emo.UserMood == "sad" {
+		return "语音语气（必须）：每句句首加 [mood:gentle|sad|worried]。" +
+			"例：[mood:gentle]没事，慢慢说。[mood:sad]听起来你真的挺难受的。"
+	}
+	if emo.Intent == "joke" || emo.UserMood == "happy" {
+		return "语音语气（必须）：每句句首加 [mood:playful|excited]。" +
+			"例：[mood:excited]哈哈哈这也太巧了！[mood:playful]你又来整活了？"
+	}
+	return "语音语气（必须）：每句句首加 [mood:calm|gentle|excited|sad|worried|playful|serious]；平常用 [mood:calm]。" +
+		"例：[mood:calm]嗯，我在呢。[mood:serious]这事得认真想想。"
+}
+
 func intentStrategy(intent string, rapport uint8, needsEmpathy bool) string {
 	if needsEmpathy {
 		return "主人需要被理解：先共情，不说教，不给「建议你试试」类未请求的建议。可以问「想聊聊还是想静静」。"

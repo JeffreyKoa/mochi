@@ -14,7 +14,12 @@ import { HybridSpeechVad, pcmToFloat, type VADEvent } from '@/services/sileroSpe
 import { LocalSTT, isLocalSttSupported } from '@/services/localStt'
 import { SpeakerVerifier } from '@/services/speakerVerifier'
 import { SoundEventClassifier } from '@/services/soundEventClassifier'
-import { getRealtimeConfig, getVoiceprintConfig, getPresenceConfig, initClientConfig, resolveSttMode } from '@/config'
+import { getRealtimeConfig, getVoiceprintConfig, getPresenceConfig, getClientConfig, initClientConfig, resolveSttMode } from '@/config'
+import {
+  captureOwnerFaceJPEG,
+  isVisionCaptureEnabled,
+  jpegToBase64,
+} from '@/services/visionCapture'
 import {
   bootstrapAmbientPresence as startAmbientPresenceService,
   pauseAmbientMicForTalk,
@@ -652,6 +657,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
   /** Owner started speaking — wake up and begin uploading. */
   function wakeOnSpeech() {
     if (phase !== 'resting' || !recording) return
+    usePetStore().clearEmotionHold()
     setPhase('user_speaking')
     uploadSeq = 0
     chunksSentCount = 0
@@ -708,6 +714,31 @@ export const useRealtimeStore = defineStore('realtime', () => {
   }
 
   function submitUtterance(force = false) {
+    void submitUtteranceAsync(force)
+  }
+
+  async function maybeSendVisionFrame() {
+    if (!isVisionCaptureEnabled() || !getClientConfig().visionEnabled) {
+      return
+    }
+    const start = Date.now()
+    const buf = await captureOwnerFaceJPEG()
+    if (!buf) {
+      console.warn('[vision] skip_send reason=capture_failed elapsed_ms=%d', Date.now() - start)
+      return
+    }
+    const b64 = jpegToBase64(buf)
+    const ok = realtimeSession.sendVisionFrame(b64)
+    console.info(
+      '[vision] frame_sent ok=%s jpeg_bytes=%d b64_len=%d elapsed_ms=%d',
+      ok,
+      buf.byteLength,
+      b64.length,
+      Date.now() - start,
+    )
+  }
+
+  async function submitUtteranceAsync(force = false) {
     if (!talking.value && !recording) {
       statusText.value = '请先点击开始对话'
       return
@@ -752,6 +783,8 @@ export const useRealtimeStore = defineStore('realtime', () => {
     turnStartAt = Date.now()
     playbackMarked = false
     ttsPlayer.resetTurn()
+
+    await maybeSendVisionFrame()
 
     const sent = realtimeSession.sendAudioEnd()
     if (!sent) {
@@ -1311,6 +1344,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
         lastTurnMetrics = ev.metrics
         if (import.meta.env.DEV) {
           console.debug('[realtime] turn_metrics', ev.metrics)
+          if (ev.metrics.visionMs >= 0) {
+            console.info('[realtime] vision_ms=%d', ev.metrics.visionMs)
+          }
         }
         break
       case 'turn_ack':

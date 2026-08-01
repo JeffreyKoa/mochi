@@ -137,49 +137,61 @@ func TestTransitionFSM(t *testing.T) {
 	highEmpathy := 95
 	lowEmpathy := 30
 
-	state1, mood1 := TransitionFSM("calm", PerceptionResult{Intent: "joke"}, highEmpathy)
+	state1, mood1 := TransitionFSM("calm", PerceptionResult{Intent: "joke"}, highEmpathy, "")
 	if state1 != "happy" || mood1 != 85 {
 		t.Errorf("calm + joke -> happy, got %s (%d)", state1, mood1)
 	}
 
-	state2, mood2 := TransitionFSM("happy", PerceptionResult{Intent: "joke"}, highEmpathy)
+	state2, mood2 := TransitionFSM("happy", PerceptionResult{Intent: "joke"}, highEmpathy, "")
 	if state2 != "excited" || mood2 != 100 {
 		t.Errorf("happy + joke -> excited, got %s (%d)", state2, mood2)
 	}
 
-	state3, mood3 := TransitionFSM("sad", PerceptionResult{Intent: "joke"}, highEmpathy)
+	state3, mood3 := TransitionFSM("sad", PerceptionResult{Intent: "joke"}, highEmpathy, "")
 	if state3 != "happy" || mood3 != 85 {
 		t.Errorf("sad + joke -> happy, got %s (%d)", state3, mood3)
 	}
 
-	state4, mood4 := TransitionFSM("calm", PerceptionResult{UserMood: "stressed", Intent: "vent"}, highEmpathy)
+	state4, mood4 := TransitionFSM("calm", PerceptionResult{UserMood: "stressed", Intent: "vent"}, highEmpathy, "")
 	if state4 != "worried" || mood4 != 45 {
 		t.Errorf("calm + vent -> worried, got %s (%d)", state4, mood4)
 	}
 
-	state5, mood5 := TransitionFSM("happy", PerceptionResult{UserMood: "stressed", Intent: "vent"}, highEmpathy)
+	state5, mood5 := TransitionFSM("happy", PerceptionResult{UserMood: "stressed", Intent: "vent"}, highEmpathy, "")
 	if state5 != "worried" || mood5 != 45 {
 		t.Errorf("happy + vent -> worried, got %s (%d)", state5, mood5)
 	}
 
-	state6, mood6 := TransitionFSM("worried", PerceptionResult{UserMood: "stressed", Intent: "vent"}, highEmpathy)
+	state6, mood6 := TransitionFSM("worried", PerceptionResult{UserMood: "stressed", Intent: "vent"}, highEmpathy, "")
 	if state6 != "sad" || mood6 != 20 {
 		t.Errorf("worried + vent -> sad, got %s (%d)", state6, mood6)
 	}
 
-	state7, _ := TransitionFSM("calm", PerceptionResult{UserMood: "stressed", Intent: "vent"}, lowEmpathy)
+	state7, _ := TransitionFSM("calm", PerceptionResult{UserMood: "stressed", Intent: "vent"}, lowEmpathy, "")
 	if state7 != "calm" {
 		t.Errorf("low empathy pet should not transition on vent, got %s", state7)
 	}
 
-	state8, mood8 := TransitionFSM("excited", PerceptionResult{}, highEmpathy)
+	state8, mood8 := TransitionFSM("excited", PerceptionResult{}, highEmpathy, "")
 	if state8 != "happy" || mood8 != 85 {
 		t.Errorf("excited decay -> happy, got %s (%d)", state8, mood8)
 	}
 
-	state9, mood9 := TransitionFSM("happy", PerceptionResult{}, highEmpathy)
+	state9, mood9 := TransitionFSM("happy", PerceptionResult{}, highEmpathy, "")
 	if state9 != "calm" || mood9 != 70 {
 		t.Errorf("happy decay -> calm, got %s (%d)", state9, mood9)
+	}
+
+	// Phase 3: hold 期间 neutral 不 decay
+	state10, _ := TransitionFSM("worried", PerceptionResult{UserMood: "neutral", Intent: "chat"}, highEmpathy, "worried")
+	if state10 != "worried" {
+		t.Errorf("worried hold + neutral -> worried, got %s", state10)
+	}
+
+	// Phase 4: sad 渐退 → worried
+	state11, mood11 := TransitionFSM("sad", PerceptionResult{UserMood: "neutral", Intent: "chat"}, highEmpathy, "")
+	if state11 != "worried" || mood11 != 45 {
+		t.Errorf("sad decay -> worried, got %s (%d)", state11, mood11)
 	}
 }
 

@@ -41,6 +41,37 @@ func TestMoodTracker_Inherit(t *testing.T) {
 	}
 }
 
+func TestNewMoodTrackerWithDefault(t *testing.T) {
+	mt := NewMoodTrackerWithDefault(MoodGentle)
+	s := mt.Process("没有标记的一句。")
+	if s.Mood != MoodGentle {
+		t.Fatalf("expected gentle default, got %q", s.Mood)
+	}
+}
+
+func TestInferDefaultMood(t *testing.T) {
+	if got := InferDefaultMood("sad", "chat", false); got != MoodGentle {
+		t.Errorf("sad -> gentle, got %q", got)
+	}
+	if got := InferDefaultMood("happy", "joke", false); got != MoodPlayful {
+		t.Errorf("happy joke -> playful, got %q", got)
+	}
+	if got := InferDefaultMood("neutral", "chat", false); got != MoodCalm {
+		t.Errorf("neutral -> calm, got %q", got)
+	}
+}
+
+func TestMoodTagComplianceRate(t *testing.T) {
+	full := "[mood:gentle]没事。[mood:calm]我在呢。"
+	if rate := MoodTagComplianceRate(full); rate < 0.99 {
+		t.Errorf("full compliance expected, got %v", rate)
+	}
+	partial := "[mood:gentle]没事。第二句没标。"
+	if rate := MoodTagComplianceRate(partial); rate < 0.49 || rate > 0.51 {
+		t.Errorf("half compliance expected ~0.5, got %v", rate)
+	}
+}
+
 func TestStreamMoodStripper(t *testing.T) {
 	var sm StreamMoodStripper
 	out := sm.Feed("[mood:gentle]")

@@ -13,6 +13,7 @@ const (
 	MsgPrewarm      = "prewarm"
 	MsgPlaybackMark = "playback_mark"
 	MsgClientCaps   = "client_caps"
+	MsgVisionFrame  = "vision_frame"
 )
 
 // Server → Client message types
@@ -55,6 +56,12 @@ type Envelope struct {
 type AudioIn struct {
 	PCM string `json:"pcm"` // base64 encoded PCM int16 LE
 	Seq int64  `json:"seq"`
+}
+
+// VisionFrameIn 客户端上传的单帧 JPEG（语音 turn 前抓拍）。
+type VisionFrameIn struct {
+	JPEG string `json:"jpeg"` // base64 encoded JPEG，日志禁止打印
+	Seq  int64  `json:"seq,omitempty"`
 }
 
 type TextInput struct {
@@ -119,6 +126,7 @@ type AckData struct {
 type TurnMetrics struct {
 	AudioEndMS          int64 `json:"audio_end_ms"`
 	ASRFinalMS          int64 `json:"asr_final_ms"`
+	VisionMS            int64 `json:"vision_ms"`
 	LLMFirstTokenMS     int64 `json:"llm_first_token_ms"`
 	LLMFirstSentenceMS  int64 `json:"llm_first_sentence_ms"`
 	TTSFirstByteMS      int64 `json:"tts_first_byte_ms"`

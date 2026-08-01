@@ -15,6 +15,7 @@ import (
 	"github.com/mochi-ai/server/internal/config"
 	"github.com/mochi-ai/server/internal/emotion"
 	"github.com/mochi-ai/server/internal/text"
+	"github.com/mochi-ai/server/internal/vision"
 	"github.com/mochi-ai/server/pkg/dashscope"
 	"github.com/mochi-ai/server/pkg/opus"
 )
@@ -30,7 +31,8 @@ type Pipeline struct {
 	ep        dashscope.EndpointConfig
 	gate      *ResponseGate
 	noiseFillers map[rune]bool
-	acoustic  emotion.AcousticClient
+	acoustic     emotion.AcousticClient
+	vision       *vision.Service
 	asrSampleRate int
 }
 
@@ -56,6 +58,13 @@ func NewPipeline(chatSvc *chat.Service, cfg config.RealtimeConfig, appCfg *confi
 			time.Duration(appCfg.Emotion.Acoustic.TimeoutMS)*time.Millisecond,
 			cfg.ASR.SampleRate,
 		)
+	}
+	p.vision = vision.NewService(appCfg.AI, appCfg.Vision)
+	if appCfg.Vision.Enabled {
+		log.Printf("[vision] pipeline enabled model=%s timeout_ms=%d min_conf=%.2f auto_voice=%v",
+			appCfg.Vision.Model, appCfg.Vision.TimeoutMS, appCfg.Vision.MinExpressionConfidence, appCfg.Vision.AutoOnVoiceTurn)
+	} else {
+		log.Printf("[vision] pipeline disabled (config vision.enabled=false)")
 	}
 	asrEp := dashscope.EndpointConfig{WSURL: cfg.Dashscope.ASRWSURL}
 	if cfg.ASR.Provider == "dashscope" && apiKey != "" {
@@ -181,6 +190,7 @@ func (p *Pipeline) OnSpeechEnd(ctx context.Context, sess *Session, audio []byte,
 		text         string
 		asrErr       error
 		acousticHint emotion.AcousticHint
+		visualHint   vision.Hint
 		lastPartial  string
 	)
 
@@ -226,7 +236,13 @@ func (p *Pipeline) OnSpeechEnd(ctx context.Context, sess *Session, audio []byte,
 		text = lastPartial
 	}
 	sess.SetAcousticHint(acousticHint)
-
+	// Phase 2：等 ASR 文本后再路由 object/scene/owner_face
+	visualHint = p.runVisionForTurn(pipeCtx, sess, text)
+	if lat := sess.TurnLatency(); lat != nil {
+		lat.MarkVisionFinal()
+	}
+	sess.SetVisualHint(visualHint)
+	sess.ClearVisionFrame()
 	if lat := sess.TurnLatency(); lat != nil {
 		lat.MarkASRFinal()
 	}
@@ -270,11 +286,64 @@ func (p *Pipeline) ensureAcousticHint(ctx context.Context, sess *Session) emotio
 	return hint
 }
 
+// runVisionForTurn 在 ASR 文本就绪后路由并调用 VL（object/scene 需 userText）。
+func (p *Pipeline) runVisionForTurn(ctx context.Context, sess *Session, userText string) vision.Hint {
+	if p.vision == nil || !p.vision.Enabled() || !p.autoVisionOnVoiceTurn() {
+		if sess.HasVisionFrame() {
+			log.Printf("[realtime][vision] skip session=%s reason=service_off has_frame=true", sess.ID)
+		}
+		return vision.EmptyHint()
+	}
+	if !sess.HasVisionFrame() {
+		return vision.EmptyHint()
+	}
+	jpeg := sess.TurnVisionJPEG()
+	start := time.Now()
+	in := p.vision.BuildRouteInput(userText, "chat", true, len(jpeg) > 0)
+	hint := p.vision.RouteAndDescribe(ctx, jpeg, in, sess.ID)
+	log.Printf("[realtime][vision] after_asr session=%s text=%q focus=%s skipped=%v elapsed_ms=%d",
+		sess.ID, truncateVisionText(userText, 40), hint.Focus, hint.Skipped, time.Since(start).Milliseconds())
+	return hint
+}
+
+func truncateVisionText(s string, n int) string {
+	r := []rune(strings.TrimSpace(s))
+	if len(r) <= n {
+		return string(r)
+	}
+	return string(r[:n]) + "…"
+}
+
+// ensureVisualHint 对流式 ASR 路径补跑视觉（OnSpeechEnd 已跑则跳过）。
+func (p *Pipeline) ensureVisualHint(ctx context.Context, sess *Session, userText string) vision.Hint {
+	if sess.visualDone() {
+		h := sess.VisualHint()
+		log.Printf("[realtime][vision] reuse session=%s focus=%s skipped=%v note_len=%d",
+			sess.ID, h.Focus, h.Skipped, len(h.Note))
+		return h
+	}
+	hint := p.runVisionForTurn(ctx, sess, userText)
+	if lat := sess.TurnLatency(); lat != nil {
+		lat.MarkVisionFinal()
+	}
+	if hint.Focus != vision.FocusSkip || !hint.Skipped {
+		sess.SetVisualHint(hint)
+	}
+	sess.ClearVisionFrame()
+	return hint
+}
+
+func (p *Pipeline) autoVisionOnVoiceTurn() bool {
+	return p.vision != nil && p.vision.Enabled()
+}
+
 // onTranscriptWithMode: LLM streams tokens; voice turns pipe sentences to TTS as they complete.
 func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text string, send Sender, withVoice bool) {
 	acousticHint := emotion.EmptyAcousticHint()
+	visualHint := vision.EmptyHint()
 	if withVoice {
 		acousticHint = p.ensureAcousticHint(ctx, sess)
+		visualHint = p.ensureVisualHint(ctx, sess, text)
 	}
 	turnStarted := false
 	defer func() {
@@ -328,7 +397,7 @@ func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text
 	send.SendAnimation(StateThinking)
 	turnStarted = true
 
-	if ok := p.streamLLMAndVoice(ctx, sess, send, text, withVoice, acousticHint); !ok {
+	if ok := p.streamLLMAndVoice(ctx, sess, send, text, withVoice, acousticHint, visualHint); !ok {
 		turnStarted = false
 	}
 }
@@ -432,7 +501,7 @@ func (p *Pipeline) playSegmentResult(res segmentSynthResult, onChunk func([]byte
 }
 
 // streamLLMAndVoice runs LLM token streaming and pipes sentence chunks to TTS asynchronously.
-func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Sender, userText string, withVoice bool, acousticHint emotion.AcousticHint) bool {
+func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Sender, userText string, withVoice bool, acousticHint emotion.AcousticHint, visualHint vision.Hint) bool {
 	var tokenBuf strings.Builder
 	speaking := false
 	audioChunks := 0
@@ -452,7 +521,11 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		ttsSynth = p.tts
 		ttsFormat = p.ttsFormat
 	}
-	moodTracker := text.NewMoodTracker()
+	defaultMood, turnEmotion := buildTurnMoodContext(userText, acousticHint, visualHint)
+	moodTracker := text.NewMoodTrackerWithDefault(defaultMood)
+	log.Printf("[realtime][mood] default=%s empathy=%v intent=%s user_mood=%s",
+		defaultMood, turnEmotion.NeedsEmpathy, turnEmotion.Intent, turnEmotion.UserMood)
+	replyMoodAnimSent := false
 
 	var opusBridge *OpusBridge
 	var streamStartSent bool
@@ -550,6 +623,13 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		if tone.Text == "" {
 			return
 		}
+		if !replyMoodAnimSent && p.chat != nil {
+			if anim := animationForReplyMood(tone.Mood); anim != "" {
+				replyMoodAnimSent = true
+				p.chat.BroadcastReplyMood(ctx, sess.UserID, tone.Mood)
+				log.Printf("[realtime][mood_anim] session=%s mood=%s anim=%s", sess.ID, tone.Mood, anim)
+			}
+		}
 		opts := ProsodyForMood(tone.Mood, ttsBundle.baseline).ToSynthOptions()
 		if markSentence && lat != nil && !sentenceFlushed {
 			sentenceFlushed = true
@@ -603,7 +683,7 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		}()
 	}
 
-	reply, err := p.chat.StreamMessageVoice(ctx, sess.UserID, userText, acousticHint, func(token string) {
+	reply, err := p.chat.StreamMessageVoice(ctx, sess.UserID, userText, acousticHint, visualHint, func(token string) {
 		llmTokenMu.Lock()
 		if !llmTokenSeen {
 			llmTokenSeen = true
@@ -659,6 +739,10 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		return false
 	}
 	_ = send.Send(MsgLLMDone, LLMDone{Text: reply})
+	if compliance := text.MoodTagComplianceRate(reply); reply != "" {
+		log.Printf("[realtime][mood] compliance=%.0f%% tags=%d sentences=%d session=%s",
+			compliance*100, text.CountMoodTags(reply), text.CountSpeakSentences(reply), sess.ID)
+	}
 
 	if withVoice && p.tts != nil && segCh != nil {
 		if remainder := strings.TrimSpace(tokenBuf.String()); remainder != "" {
@@ -725,7 +809,11 @@ func (p *Pipeline) speakAudio(ctx context.Context, sess *Session, send Sender, r
 		}
 	}
 
-	tone := text.NewMoodTracker().Process(reply)
+	firstMood := text.ParseToneSegment(reply).Mood
+	if firstMood == "" {
+		firstMood = text.MoodCalm
+	}
+	tone := text.NewMoodTrackerWithDefault(firstMood).Process(reply)
 	speakText := tone.Text
 	if speakText == "" {
 		speakText = text.StripMoodTags(reply)
@@ -879,4 +967,24 @@ func (p *Pipeline) Interrupt(sess *Session, send Sender) {
 	_ = send.Send(MsgInterrupted, map[string]any{})
 	_ = send.Send(MsgTTSDone, map[string]any{})
 	p.setListening(sess, send)
+}
+
+func buildTurnMoodContext(userText string, acoustic emotion.AcousticHint, visual vision.Hint) (text.MoodTag, emotion.Hint) {
+	quick := emotion.QuickDetect(userText)
+	merged := emotion.MergeAcousticHint(emotion.Hint{}, quick, acoustic, 0.65)
+	merged = emotion.MergeVisualHint(merged, visual, 0.6)
+	return text.InferDefaultMood(merged.UserMood, merged.Intent, merged.NeedsEmpathy), merged
+}
+
+func animationForReplyMood(m text.MoodTag) string {
+	switch m {
+	case text.MoodSad, text.MoodGentle:
+		return "sad"
+	case text.MoodWorried:
+		return "worried"
+	case text.MoodExcited, text.MoodPlayful:
+		return "happy"
+	default:
+		return ""
+	}
 }

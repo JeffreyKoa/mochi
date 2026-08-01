@@ -2,6 +2,7 @@ package realtime
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -425,6 +426,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 			audioMu.Unlock()
 			vad.Reset()
 			resetASR()
+			sess.ClearTurnMedia()
 			sess.SetState(StateListening)
 			sender.SendAnimation(StateListening)
 			ensureASR()
@@ -515,7 +517,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 			audioMu.Unlock()
 			vad.Reset()
 			if len(buf) > 0 {
-				log.Printf("[realtime] audio_end session=%s bytes=%d", sessionID, len(buf))
+				log.Printf("[realtime] audio_end session=%s bytes=%d has_vision=%v", sessionID, len(buf), sess.HasVisionFrame())
 				_ = sender.Send(MsgVAD, VADEvent{Event: "speech_end"})
 				processSpeechEnd(buf)
 			} else if sess.State() == StateIdle {
@@ -527,6 +529,20 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 				sess.SetState(StateIdle)
 				sender.SendAnimation(StateIdle)
 			}
+
+		case MsgVisionFrame:
+			var in VisionFrameIn
+			if err := json.Unmarshal(data, &in); err != nil {
+				log.Printf("[realtime][vision] bad_message session=%s err=%v", sessionID, err)
+				break
+			}
+			jpeg, err := base64.StdEncoding.DecodeString(in.JPEG)
+			if err != nil || len(jpeg) == 0 {
+				log.Printf("[realtime][vision] decode_fail session=%s err=%v b64_len=%d", sessionID, err, len(in.JPEG))
+				break
+			}
+			sess.SetVisionFrame(jpeg)
+			log.Printf("[realtime][vision] frame_received session=%s jpeg_bytes=%d seq=%d", sessionID, len(jpeg), in.Seq)
 		}
 	}
 }

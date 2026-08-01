@@ -22,6 +22,7 @@ import (
 	"github.com/mochi-ai/server/internal/reflection"
 	"github.com/mochi-ai/server/internal/text"
 	"github.com/mochi-ai/server/internal/tools"
+	"github.com/mochi-ai/server/internal/vision"
 	"github.com/mochi-ai/server/pkg/ai"
 )
 
@@ -282,39 +283,65 @@ func (r *Runtime) DecideStyle(
 }
 
 // TransitionFSM calculates the next emotion state and numerical mood based on FSM rules.
-// petEmpathy gates negative transitions: low-empathy pets stay emotionally detached on vent.
-func TransitionFSM(oldState string, perception PerceptionResult, petEmpathy int) (string, uint8) {
+// holdState 非空时，neutral 输入不将 worried/sad decay 回 calm（Phase 3 整轮保持）。
+func TransitionFSM(oldState string, perception PerceptionResult, petEmpathy int, holdState string) (string, uint8) {
 	if oldState == "" {
 		oldState = "calm"
 	}
 	newState := oldState
 
 	isPositive := perception.Intent == "joke" || perception.UserMood == "happy"
-	isNegative := perception.Intent == "vent" || perception.UserMood == "stressed"
+	isNegative := perception.Intent == "vent" || perception.UserMood == "stressed" || perception.UserMood == "sad" || perception.NeedsEmpathy
 	empathyOK := petEmpathy >= 50
 
 	if isPositive {
-		if oldState == "calm" || oldState == "sad" {
-			newState = "happy"
-		} else if oldState == "happy" {
-			newState = "excited"
-		}
+		newState = transitionPositive(oldState)
 	} else if isNegative && empathyOK {
-		if oldState == "calm" || oldState == "happy" || oldState == "excited" {
-			newState = "worried"
-		} else if oldState == "worried" {
-			newState = "sad"
-		}
+		newState = transitionNegative(oldState)
 	} else {
-		// Normal decay back to calm
-		if oldState == "excited" {
-			newState = "happy"
-		} else if oldState == "happy" || oldState == "worried" || oldState == "sad" {
-			newState = "calm"
-		}
+		newState = transitionDecay(oldState, holdState)
 	}
 
 	return newState, moodForEmotionState(newState)
+}
+
+func transitionPositive(oldState string) string {
+	if oldState == "calm" || oldState == "sad" {
+		return "happy"
+	}
+	if oldState == "happy" {
+		return "excited"
+	}
+	return oldState
+}
+
+func transitionNegative(oldState string) string {
+	if oldState == "calm" || oldState == "happy" || oldState == "excited" {
+		return "worried"
+	}
+	if oldState == "worried" {
+		return "sad"
+	}
+	return oldState
+}
+
+func transitionDecay(oldState, holdState string) string {
+	if holdState != "" && (oldState == "worried" || oldState == "sad") && oldState == holdState {
+		return oldState
+	}
+	switch oldState {
+	case "excited":
+		return "happy"
+	case "happy":
+		return "calm"
+	case "sad":
+		// Phase 4：渐退 sad → worried → calm，避免一轮中性闲聊立刻回 idle 脸
+		return "worried"
+	case "worried":
+		return "calm"
+	default:
+		return oldState
+	}
 }
 
 func moodForEmotionState(state string) uint8 {
@@ -373,11 +400,19 @@ func (r *Runtime) UpdateEmotionFSM(
 		}
 	}
 
-	newState, mood := TransitionFSM(state.EmotionState, perception, petEmpathy)
+	newState, mood := TransitionFSM(state.EmotionState, perception, petEmpathy, r.emotionHoldState(ctx, petID))
 	state.EmotionState = newState
 	state.Mood = mood
 	state.UpdatedAt = time.Now()
 	r.db.WithContext(ctx).Save(&state)
+
+	if r.emotion != nil {
+		if newState == "worried" || newState == "sad" {
+			r.emotion.SetEmotionHold(ctx, petID, newState, 2*time.Minute)
+		} else if newState == "happy" || newState == "excited" || newState == "calm" {
+			r.emotion.ClearEmotionHold(ctx, petID)
+		}
+	}
 
 	animation := animationForEmotionState(newState)
 	if r.life != nil {
@@ -385,6 +420,27 @@ func (r *Runtime) UpdateEmotionFSM(
 	}
 
 	return newState, animation
+}
+
+func (r *Runtime) emotionHoldState(ctx context.Context, petID uint64) string {
+	if r.emotion == nil {
+		return ""
+	}
+	return r.emotion.GetEmotionHold(ctx, petID)
+}
+
+// BroadcastEmotionAnimation 推送回复侧 mood 对应宠物动画（Phase 3）。
+func (r *Runtime) BroadcastEmotionAnimation(ctx context.Context, petID uint64, animation string) {
+	if r.life == nil || animation == "" {
+		return
+	}
+	state, err := r.life.GetState(ctx, petID)
+	if err != nil {
+		log.Printf("[agent][fsm] broadcast_anim skip pet=%d err=%v", petID, err)
+		return
+	}
+	log.Printf("[agent][fsm] reply_mood_anim pet=%d anim=%s emotion_state=%s", petID, animation, state.EmotionState)
+	r.life.BroadcastStateDirect(petID, state, animation)
 }
 
 // Turn handles the full Agent turn execution, from Perceive -> Recall -> Prompt -> LLM -> PostTurn
@@ -433,7 +489,15 @@ func (r *Runtime) Turn(ctx context.Context, input TurnInput) (TurnOutput, error)
 
 	// 2. Recall (Context Preparation)
 	recallStart := time.Now()
-	agentCtx := r.orchestrator.PrepareChatContext(ctx, pet.ID, input.Message, input.AcousticHint)
+	agentCtx := r.orchestrator.PrepareChatContext(ctx, pet.ID, input.Message, input.AcousticHint, input.VisualHint)
+	if input.VisualHint.IsUsable() {
+		log.Printf("[agent][vision] turn pet=%d focus=%s expression=%s conf=%.2f note=%q visual_in_prompt=%v visual_focus=%s",
+			pet.ID, input.VisualHint.Focus, input.VisualHint.UserExpression,
+			input.VisualHint.ExpressionConfidence, input.VisualHint.Note,
+			agentCtx.EmotionHint.VisualNote != "", agentCtx.EmotionHint.VisualFocus)
+	} else if !input.VisualHint.Skipped && input.VisualHint.Focus != vision.FocusSkip {
+		log.Printf("[agent][vision] turn pet=%d hint_present but not_usable skip_reason=%q", pet.ID, input.VisualHint.SkipReason)
+	}
 	trace.MemoryHitCount = len(agentCtx.Memories)
 	trace.StepTimings.RecallMs = time.Since(recallStart).Milliseconds()
 

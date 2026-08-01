@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/mochi-ai/server/internal/emotion"
+	"github.com/mochi-ai/server/internal/vision"
 	"github.com/mochi-ai/server/pkg/ai"
 )
 
@@ -15,6 +16,7 @@ type TurnInput struct {
 	TriggerType     string                 `json:"trigger_type"`     // "user_chat" | "user_voice" | "system_proactive"
 	ActivityContext map[string]interface{} `json:"activity_context"` // Client activity context (active application, idle state, etc.)
 	AcousticHint    emotion.AcousticHint   `json:"acoustic_hint,omitempty"` // 语音 turn 的声学情绪（Phase 2）
+	VisualHint      vision.Hint            `json:"visual_hint,omitempty"`   // 语音 turn 的视觉感知（Phase 1）
 }
 
 // TurnOutput represents the output of a single Agent interaction turn, supporting streaming.
