@@ -127,6 +127,7 @@ type TurnMetrics struct {
 	AudioEndMS          int64 `json:"audio_end_ms"`
 	ASRFinalMS          int64 `json:"asr_final_ms"`
 	VisionMS            int64 `json:"vision_ms"`
+	PerceiveParallelMS  int64 `json:"perceive_parallel_ms"`
 	LLMFirstTokenMS     int64 `json:"llm_first_token_ms"`
 	LLMFirstSentenceMS  int64 `json:"llm_first_sentence_ms"`
 	TTSFirstByteMS      int64 `json:"tts_first_byte_ms"`

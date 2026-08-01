@@ -299,7 +299,7 @@ func (e *EmotionConfig) applyDefaults() {
 	}
 }
 
-// VisionConfig 视觉感知（Qwen-VL，V1 owner_face + V1.5 object/scene 路由）。
+// VisionConfig 视觉感知（Qwen-VL，V1 owner_face + V1.5 object/scene 路由 + V3 并行/早推）。
 type VisionConfig struct {
 	Enabled                 bool     `yaml:"enabled"`
 	Model                   string   `yaml:"model"`
@@ -309,6 +309,19 @@ type VisionConfig struct {
 	MinExpressionConfidence float64  `yaml:"min_expression_confidence"`
 	ObjectTriggerKeywords   []string `yaml:"object_trigger_keywords"`
 	SceneTriggerKeywords    []string `yaml:"scene_trigger_keywords"`
+	// V3a：vision_frame 到达即预跑 owner_face；false 则仅在 audio_end 并行。
+	PrefetchOnFrame bool `yaml:"prefetch_on_frame"`
+	// V3a：true 时 owner_face 与 ASR 串行（降级）；默认 false = 并行。
+	SequentialOwnerFace bool `yaml:"sequential_owner_face"`
+	// V3b：感知先到先推动画（LLM 之前）。
+	EarlyAnimation bool `yaml:"early_animation"`
+	// V3b：早推动画最低视觉置信（与 MinExpressionConfidence 取 max）。
+	EarlyAnimationMinConf float64 `yaml:"early_animation_min_conf"`
+	// V3c：Contextual Planner + 语义分类驱动二次 VL（禁用关键词路由）。
+	ContextualPlanner bool `yaml:"contextual_planner"`
+	ClassifyEnabled   bool `yaml:"classify_enabled"`
+	ClassifyModel     string `yaml:"classify_model"`
+	ClassifyTimeoutMS int    `yaml:"classify_timeout_ms"`
 }
 
 func (v *VisionConfig) applyDefaults() {
@@ -323,6 +336,12 @@ func (v *VisionConfig) applyDefaults() {
 	}
 	if v.MinExpressionConfidence == 0 {
 		v.MinExpressionConfidence = 0.6
+	}
+	if v.EarlyAnimationMinConf == 0 {
+		v.EarlyAnimationMinConf = 0.65
+	}
+	if v.ClassifyTimeoutMS == 0 {
+		v.ClassifyTimeoutMS = 800
 	}
 	if len(v.ObjectTriggerKeywords) == 0 {
 		v.ObjectTriggerKeywords = []string{

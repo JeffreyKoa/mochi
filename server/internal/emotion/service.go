@@ -32,6 +32,9 @@ type Service struct {
 	acoustic        AcousticClient
 	minAcousticConf float64
 	minVisualConf   float64
+	classifyEnabled bool
+	classifyModel   string
+	classifyTimeout time.Duration
 }
 
 func NewService(rdb *redis.Client, aiProvider ai.AIProvider) *Service {
@@ -64,6 +67,25 @@ func (s *Service) ConfigureVisual(minConfidence float64) {
 	if minConfidence > 0 {
 		s.minVisualConf = minConfidence
 	}
+}
+
+// ConfigureClassify V3c 同步语义分类配置。
+func (s *Service) ConfigureClassify(enabled bool, model string, timeoutMS int) {
+	if s == nil {
+		return
+	}
+	s.classifyEnabled = enabled
+	s.classifyModel = strings.TrimSpace(model)
+	if timeoutMS > 0 {
+		s.classifyTimeout = time.Duration(timeoutMS) * time.Millisecond
+	} else {
+		s.classifyTimeout = 800 * time.Millisecond
+	}
+}
+
+// ClassifyEnabled 是否启用 V3c 同步语义分类。
+func (s *Service) ClassifyEnabled() bool {
+	return s != nil && s.classifyEnabled
 }
 
 // AcousticClient 返回当前声学客户端。

@@ -179,3 +179,10 @@ vision:
     - "你看窗外"
     - "看看外面"
     - "你看房间"
+  prefetch_on_frame: true
+  sequential_owner_face: false
+  early_animation: true
+  early_animation_min_conf: 0.65
+  contextual_planner: true
+  classify_enabled: true
+  classify_timeout_ms: 800

@@ -43,6 +43,7 @@ type Session struct {
 	turnVisionJPEG []byte
 	visualHint     vision.Hint
 	visualReady    bool
+	visionPrefetching bool
 
 	onStateChange func(SessionState)
 }
@@ -208,6 +209,7 @@ func (s *Session) SetVisionFrame(jpeg []byte) {
 	s.turnVisionJPEG = append([]byte(nil), jpeg...)
 	s.visualReady = false
 	s.visualHint = vision.EmptyHint()
+	s.visionPrefetching = false
 	s.mu.Unlock()
 }
 
@@ -253,6 +255,53 @@ func (s *Session) visualDone() bool {
 	return s.visualReady
 }
 
+// TryBeginVisionPrefetch 尝试启动 vision_frame 预分析（同一 turn 仅一次）。
+func (s *Session) TryBeginVisionPrefetch() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.visualReady || s.visionPrefetching || len(s.turnVisionJPEG) == 0 {
+		return false
+	}
+	s.visionPrefetching = true
+	return true
+}
+
+// EndVisionPrefetch 预分析结束（成功或失败均需调用）。
+func (s *Session) EndVisionPrefetch() {
+	s.mu.Lock()
+	s.visionPrefetching = false
+	s.mu.Unlock()
+}
+
+// IsVisionPrefetching 是否正在预分析。
+func (s *Session) IsVisionPrefetching() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.visionPrefetching
+}
+
+// WaitForVisualHint 等待 prefetch 完成（V3a 流式路径避免重复 VL）。
+func (s *Session) WaitForVisualHint(ctx context.Context, timeout time.Duration) vision.Hint {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if s.visualDone() {
+			return s.VisualHint()
+		}
+		if !s.IsVisionPrefetching() {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return vision.EmptyHint()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if s.visualDone() {
+		return s.VisualHint()
+	}
+	return vision.EmptyHint()
+}
+
 // ClearTurnMedia 新一轮 utterance 开始时清除音视频缓存。
 func (s *Session) ClearTurnMedia() {
 	s.mu.Lock()
@@ -262,6 +311,7 @@ func (s *Session) ClearTurnMedia() {
 	s.acousticHint = emotion.EmptyAcousticHint()
 	s.visualReady = false
 	s.visualHint = vision.EmptyHint()
+	s.visionPrefetching = false
 	s.mu.Unlock()
 }
 

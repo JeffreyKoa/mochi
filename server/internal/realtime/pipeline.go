@@ -13,6 +13,7 @@ import (
 
 	"github.com/mochi-ai/server/internal/chat"
 	"github.com/mochi-ai/server/internal/config"
+	"github.com/mochi-ai/server/internal/agent"
 	"github.com/mochi-ai/server/internal/emotion"
 	"github.com/mochi-ai/server/internal/text"
 	"github.com/mochi-ai/server/internal/vision"
@@ -60,9 +61,10 @@ func NewPipeline(chatSvc *chat.Service, cfg config.RealtimeConfig, appCfg *confi
 		)
 	}
 	p.vision = vision.NewService(appCfg.AI, appCfg.Vision)
-	if appCfg.Vision.Enabled {
-		log.Printf("[vision] pipeline enabled model=%s timeout_ms=%d min_conf=%.2f auto_voice=%v",
-			appCfg.Vision.Model, appCfg.Vision.TimeoutMS, appCfg.Vision.MinExpressionConfidence, appCfg.Vision.AutoOnVoiceTurn)
+	if p.vision != nil && p.vision.Enabled() {
+		log.Printf("[vision] pipeline enabled model=%s timeout_ms=%d min_conf=%.2f prefetch=%v parallel=%v early_anim=%v",
+			appCfg.Vision.Model, appCfg.Vision.TimeoutMS, appCfg.Vision.MinExpressionConfidence,
+			appCfg.Vision.PrefetchOnFrame, !appCfg.Vision.SequentialOwnerFace, appCfg.Vision.EarlyAnimation)
 	} else {
 		log.Printf("[vision] pipeline disabled (config vision.enabled=false)")
 	}
@@ -190,9 +192,12 @@ func (p *Pipeline) OnSpeechEnd(ctx context.Context, sess *Session, audio []byte,
 		text         string
 		asrErr       error
 		acousticHint emotion.AcousticHint
-		visualHint   vision.Hint
+		faceHint     vision.Hint
 		lastPartial  string
+		faceMu       sync.Mutex
 	)
+
+	log.Printf("[perception] parallel_start session=%s has_vision=%v", sess.ID, sess.HasVisionFrame())
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -221,6 +226,26 @@ func (p *Pipeline) OnSpeechEnd(ctx context.Context, sess *Session, audio []byte,
 		}()
 	}
 
+	// V3a：owner_face 与 ASR 并行（prefetch 已完成则复用）
+	if p.autoVisionOnVoiceTurn() && sess.HasVisionFrame() {
+		if sess.visualDone() {
+			faceHint = sess.VisualHint()
+			log.Printf("[realtime][vision] prefetch_hit session=%s focus=%s", sess.ID, faceHint.Focus)
+		} else if p.vision != nil && p.vision.ParallelOwnerFace() {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				h := p.awaitOwnerFaceHint(pipeCtx, sess)
+				if !sess.visualDone() && h.Focus != vision.FocusSkip {
+					sess.SetVisualHint(h)
+				}
+				faceMu.Lock()
+				faceHint = h
+				faceMu.Unlock()
+			}()
+		}
+	}
+
 	wg.Wait()
 
 	if asrErr != nil {
@@ -236,17 +261,28 @@ func (p *Pipeline) OnSpeechEnd(ctx context.Context, sess *Session, audio []byte,
 		text = lastPartial
 	}
 	sess.SetAcousticHint(acousticHint)
-	// Phase 2：等 ASR 文本后再路由 object/scene/owner_face
-	visualHint = p.runVisionForTurn(pipeCtx, sess, text)
+
+	faceMu.Lock()
+	fh := faceHint
+	faceMu.Unlock()
+	if !fh.IsUsable() && fh.Focus == "" && sess.visualDone() {
+		fh = sess.VisualHint()
+	}
+
+	visualHint := p.finalizeParallelPerception(pipeCtx, sess, text, acousticHint, fh)
 	if lat := sess.TurnLatency(); lat != nil {
 		lat.MarkVisionFinal()
+		lat.MarkPerceiveParallel()
 	}
-	sess.SetVisualHint(visualHint)
+	log.Printf("[perception] parallel_done session=%s text=%q final_focus=%s mood=%s intent=%s",
+		sess.ID, truncateVisionText(text, 40), visualHint.Visual.Focus,
+		visualHint.Hint.UserMood, visualHint.Hint.Intent)
+	sess.SetVisualHint(visualHint.Visual)
 	sess.ClearVisionFrame()
 	if lat := sess.TurnLatency(); lat != nil {
 		lat.MarkASRFinal()
 	}
-	p.onTranscriptWithMode(pipeCtx, sess, text, send, true)
+	p.onTranscriptWithMode(pipeCtx, sess, text, send, true, visualHint)
 }
 
 func (p *Pipeline) OnTranscript(ctx context.Context, sess *Session, text string, send Sender) {
@@ -255,7 +291,7 @@ func (p *Pipeline) OnTranscript(ctx context.Context, sess *Session, text string,
 	if lat := sess.TurnLatency(); lat != nil {
 		lat.MarkASRFinal()
 	}
-	p.onTranscriptWithMode(pipeCtx, sess, text, send, true)
+	p.onTranscriptWithMode(pipeCtx, sess, text, send, true, nil)
 }
 
 func (p *Pipeline) OnTextInput(ctx context.Context, sess *Session, text string, send Sender, withVoice bool) {
@@ -264,7 +300,7 @@ func (p *Pipeline) OnTextInput(ctx context.Context, sess *Session, text string, 
 	if lat := sess.TurnLatency(); lat != nil {
 		lat.MarkASRFinal()
 	}
-	p.onTranscriptWithMode(pipeCtx, sess, text, send, withVoice)
+	p.onTranscriptWithMode(pipeCtx, sess, text, send, withVoice, nil)
 }
 
 // ensureAcousticHint 对流式 ASR 路径补跑声学识别（OnSpeechEnd 已并行则跳过）。
@@ -286,24 +322,209 @@ func (p *Pipeline) ensureAcousticHint(ctx context.Context, sess *Session) emotio
 	return hint
 }
 
-// runVisionForTurn 在 ASR 文本就绪后路由并调用 VL（object/scene 需 userText）。
-func (p *Pipeline) runVisionForTurn(ctx context.Context, sess *Session, userText string) vision.Hint {
-	if p.vision == nil || !p.vision.Enabled() || !p.autoVisionOnVoiceTurn() {
-		if sess.HasVisionFrame() {
-			log.Printf("[realtime][vision] skip session=%s reason=service_off has_frame=true", sess.ID)
+// PrefetchOwnerFace vision_frame 到达时预跑 owner_face（V3a，与录音并行）。
+func (p *Pipeline) PrefetchOwnerFace(ctx context.Context, sess *Session) {
+	if p.vision == nil || !p.vision.PrefetchOnFrame() || !sess.TryBeginVisionPrefetch() {
+		return
+	}
+	go func() {
+		defer sess.EndVisionPrefetch()
+		jpeg := sess.TurnVisionJPEG()
+		if len(jpeg) == 0 {
+			return
 		}
+		hint := p.vision.DescribeOwnerFace(ctx, jpeg, sess.ID)
+		sess.SetVisualHint(hint)
+		log.Printf("[realtime][vision] prefetch_done session=%s focus=%s skipped=%v conf=%.2f",
+			sess.ID, hint.Focus, hint.Skipped, hint.ExpressionConfidence)
+	}()
+}
+
+// finalizeParallelPerception ASR 完成后 classify + contextual refine + 融合（V3c）。
+func (p *Pipeline) finalizeParallelPerception(ctx context.Context, sess *Session, userText string, acoustic emotion.AcousticHint, faceHint vision.Hint) *emotion.PerceptionState {
+	jpeg := sess.TurnVisionJPEG()
+	if p.vision == nil || !p.vision.Enabled() || len(jpeg) == 0 {
+		state := emotion.BuildFinalPerception(userText, acoustic, vision.EmptyHint(),
+			p.classifyUtterance(ctx, userText, acoustic, faceHint), 0.65, 0.6)
+		return &state
+	}
+
+	if !p.vision.ParallelOwnerFace() && !faceHint.IsUsable() {
+		faceHint = p.vision.DescribeOwnerFace(ctx, jpeg, sess.ID)
+	} else if !faceHint.IsUsable() && sess.visualDone() {
+		faceHint = sess.VisualHint()
+	}
+
+	p.maybeEarlyPerceptionAnim(ctx, sess, acoustic, faceHint)
+
+	if strings.TrimSpace(userText) == "" {
+		state := emotion.BuildFinalPerception("", acoustic, faceHint,
+			emotion.FallbackInsight(acoustic, faceHint), 0.65, p.vision.MinVisualConf())
+		return &state
+	}
+	return p.buildPerceptionState(ctx, userText, acoustic, faceHint, jpeg, sess.ID)
+}
+
+// buildPerceptionState V3c：ClassifyUtterance → RefineContextual → BuildFinalPerception。
+func (p *Pipeline) buildPerceptionState(ctx context.Context, userText string, acoustic emotion.AcousticHint, faceHint vision.Hint, jpeg []byte, sessionID string) *emotion.PerceptionState {
+	minAcoustic := 0.65
+	minVisual := 0.6
+	if p.vision != nil {
+		minVisual = p.vision.MinVisualConf()
+	}
+
+	insight := p.classifyUtterance(ctx, userText, acoustic, faceHint)
+	visualHint := faceHint
+	if p.vision != nil && len(jpeg) > 0 {
+		if p.vision.ContextualPlannerEnabled() {
+			visualHint = p.vision.RefineContextual(ctx, jpeg, userText, faceHint, insight.VisualTask, insight.FaceTextClash, sessionID)
+		} else {
+			visualHint = p.vision.RefineAfterASR(ctx, jpeg, userText, faceHint, sessionID)
+		}
+	}
+
+	state := emotion.BuildFinalPerception(userText, acoustic, visualHint, insight, minAcoustic, minVisual)
+	log.Printf("[perception] final mood=%s intent=%s empathy=%v source=%s visual_task=%s",
+		state.Hint.UserMood, state.Hint.Intent, state.Hint.NeedsEmpathy, state.Source, insight.VisualTask)
+	return &state
+}
+
+func (p *Pipeline) classifyUtterance(ctx context.Context, userText string, acoustic emotion.AcousticHint, faceHint vision.Hint) emotion.UtteranceInsight {
+	if p.chat == nil {
+		return emotion.FallbackInsight(acoustic, faceHint)
+	}
+	emoSvc := p.chat.EmotionService()
+	if emoSvc == nil {
+		return emotion.FallbackInsight(acoustic, faceHint)
+	}
+	if p.vision != nil && p.vision.ContextualPlannerEnabled() && emoSvc.ClassifyEnabled() {
+		return emoSvc.ClassifyUtterance(ctx, userText, acoustic, faceHint)
+	}
+	return emotion.FallbackInsight(acoustic, faceHint)
+}
+
+// finalizeParallelVision 兼容旧调用：仅返回 visual Hint。
+func (p *Pipeline) finalizeParallelVision(ctx context.Context, sess *Session, userText string, acoustic emotion.AcousticHint, faceHint vision.Hint) vision.Hint {
+	state := p.finalizeParallelPerception(ctx, sess, userText, acoustic, faceHint)
+	if state == nil {
 		return vision.EmptyHint()
 	}
-	if !sess.HasVisionFrame() {
+	return state.Visual
+}
+
+// maybeEarlyPerceptionAnim V3b：声学/视觉先到 → FSM 动画先行。
+func (p *Pipeline) maybeEarlyPerceptionAnim(ctx context.Context, sess *Session, acoustic emotion.AcousticHint, visual vision.Hint) {
+	if p.vision == nil || !p.vision.EarlyAnimationEnabled() || p.chat == nil {
+		return
+	}
+	minAcoustic := 0.65
+	minVisual := p.vision.EarlyAnimationMinConf()
+	if p.vision.MinVisualConf() > minVisual {
+		minVisual = p.vision.MinVisualConf()
+	}
+	hint := emotion.BuildEarlyHint(acoustic, visual, minAcoustic, minVisual)
+	if !emotion.ShouldEarlyAnimate(hint, minVisual) {
+		return
+	}
+	perception := agent.PerceptionResultFromHint(hint)
+	p.chat.ApplyPerceptionFSM(ctx, sess.UserID, perception, true)
+	log.Printf("[realtime][perception_anim] early mood=%s empathy=%v intent=%s session=%s",
+		hint.UserMood, hint.NeedsEmpathy, hint.Intent, sess.ID)
+}
+
+// awaitOwnerFaceHint 等待 prefetch 或单次 VL（避免重复调用 DashScope）。
+func (p *Pipeline) awaitOwnerFaceHint(ctx context.Context, sess *Session) vision.Hint {
+	if p.vision == nil || !p.autoVisionOnVoiceTurn() || !sess.HasVisionFrame() {
 		return vision.EmptyHint()
+	}
+	if sess.visualDone() {
+		h := sess.VisualHint()
+		log.Printf("[realtime][vision] prefetch_hit session=%s focus=%s", sess.ID, h.Focus)
+		return h
+	}
+	timeout := p.vision.WaitTimeout()
+	if waited := sess.WaitForVisualHint(ctx, timeout); waited.IsUsable() || waited.Focus != vision.FocusSkip {
+		log.Printf("[realtime][vision] prefetch_hit session=%s focus=%s after_wait", sess.ID, waited.Focus)
+		return waited
 	}
 	jpeg := sess.TurnVisionJPEG()
-	start := time.Now()
-	in := p.vision.BuildRouteInput(userText, "chat", true, len(jpeg) > 0)
-	hint := p.vision.RouteAndDescribe(ctx, jpeg, in, sess.ID)
-	log.Printf("[realtime][vision] after_asr session=%s text=%q focus=%s skipped=%v elapsed_ms=%d",
-		sess.ID, truncateVisionText(userText, 40), hint.Focus, hint.Skipped, time.Since(start).Milliseconds())
+	if len(jpeg) == 0 {
+		return vision.EmptyHint()
+	}
+	hint := p.vision.DescribeOwnerFace(ctx, jpeg, sess.ID)
+	sess.SetVisualHint(hint)
 	return hint
+}
+
+// PrefetchAcoustic 在 audio_end 时与 ASR Finish 并行跑声学（流式路径）。
+func (p *Pipeline) PrefetchAcoustic(ctx context.Context, sess *Session, pcm []byte) {
+	if sess.acousticDone() || p.acoustic == nil || !p.acoustic.Enabled() || len(pcm) == 0 {
+		return
+	}
+	go func() {
+		hint, err := p.acoustic.Recognize(ctx, pcm, p.asrSampleRate)
+		if err != nil {
+			log.Printf("[realtime] acoustic prefetch error session=%s: %v", sess.ID, err)
+			return
+		}
+		sess.SetAcousticHint(hint)
+		log.Printf("[realtime] acoustic prefetch session=%s mood=%s conf=%.2f", sess.ID, hint.Mood, hint.Confidence)
+	}()
+}
+
+// resolveVisionForTurn 在已有 faceHint + acoustic 后 refine（finalizeParallelVision 内早推动画）。
+func (p *Pipeline) resolveVisionForTurn(ctx context.Context, sess *Session, userText string, acoustic emotion.AcousticHint, faceHint vision.Hint) vision.Hint {
+	if p.vision == nil || !p.autoVisionOnVoiceTurn() {
+		return faceHint
+	}
+	perceiveStart := time.Now()
+	hint := p.finalizeParallelVision(ctx, sess, userText, acoustic, faceHint)
+	if lat := sess.TurnLatency(); lat != nil {
+		lat.MarkVisionFinal()
+		lat.MarkPerceiveParallel()
+	}
+	log.Printf("[realtime][vision] resolve session=%s text=%q focus=%s elapsed_ms=%d",
+		sess.ID, truncateVisionText(userText, 40), hint.Focus, time.Since(perceiveStart).Milliseconds())
+	if hint.Focus != vision.FocusSkip || !hint.Skipped {
+		sess.SetVisualHint(hint)
+	}
+	sess.ClearVisionFrame()
+	return hint
+}
+
+// perceiveVoiceTurn 流式路径：acoustic ∥ owner_face → V3c 融合。
+func (p *Pipeline) perceiveVoiceTurn(ctx context.Context, sess *Session, userText string) *emotion.PerceptionState {
+	log.Printf("[perception] parallel_start session=%s has_vision=%v", sess.ID, sess.HasVisionFrame())
+	var (
+		wg           sync.WaitGroup
+		acousticHint emotion.AcousticHint
+		faceHint     vision.Hint
+	)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		acousticHint = p.ensureAcousticHint(ctx, sess)
+	}()
+	if p.autoVisionOnVoiceTurn() && sess.HasVisionFrame() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			faceHint = p.awaitOwnerFaceHint(ctx, sess)
+		}()
+	}
+	wg.Wait()
+	if lat := sess.TurnLatency(); lat != nil {
+		lat.MarkVisionFinal()
+		lat.MarkPerceiveParallel()
+	}
+	state := p.finalizeParallelPerception(ctx, sess, userText, acousticHint, faceHint)
+	if state != nil {
+		sess.SetVisualHint(state.Visual)
+	}
+	sess.ClearVisionFrame()
+	log.Printf("[perception] parallel_done session=%s text=%q final_focus=%s mood=%s",
+		sess.ID, truncateVisionText(userText, 40), state.Visual.Focus, state.Hint.UserMood)
+	return state
 }
 
 func truncateVisionText(s string, n int) string {
@@ -314,36 +535,20 @@ func truncateVisionText(s string, n int) string {
 	return string(r[:n]) + "…"
 }
 
-// ensureVisualHint 对流式 ASR 路径补跑视觉（OnSpeechEnd 已跑则跳过）。
-func (p *Pipeline) ensureVisualHint(ctx context.Context, sess *Session, userText string) vision.Hint {
-	if sess.visualDone() {
-		h := sess.VisualHint()
-		log.Printf("[realtime][vision] reuse session=%s focus=%s skipped=%v note_len=%d",
-			sess.ID, h.Focus, h.Skipped, len(h.Note))
-		return h
-	}
-	hint := p.runVisionForTurn(ctx, sess, userText)
-	if lat := sess.TurnLatency(); lat != nil {
-		lat.MarkVisionFinal()
-	}
-	if hint.Focus != vision.FocusSkip || !hint.Skipped {
-		sess.SetVisualHint(hint)
-	}
-	sess.ClearVisionFrame()
-	return hint
-}
-
 func (p *Pipeline) autoVisionOnVoiceTurn() bool {
 	return p.vision != nil && p.vision.Enabled()
 }
 
 // onTranscriptWithMode: LLM streams tokens; voice turns pipe sentences to TTS as they complete.
-func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text string, send Sender, withVoice bool) {
-	acousticHint := emotion.EmptyAcousticHint()
-	visualHint := vision.EmptyHint()
+// prePerception 非空时跳过 perceiveVoiceTurn（OnSpeechEnd 已感知完毕，V3c）。
+func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text string, send Sender, withVoice bool, prePerception *emotion.PerceptionState) {
+	var perception *emotion.PerceptionState
 	if withVoice {
-		acousticHint = p.ensureAcousticHint(ctx, sess)
-		visualHint = p.ensureVisualHint(ctx, sess, text)
+		if prePerception != nil {
+			perception = prePerception
+		} else {
+			perception = p.perceiveVoiceTurn(ctx, sess, text)
+		}
 	}
 	turnStarted := false
 	defer func() {
@@ -397,7 +602,7 @@ func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text
 	send.SendAnimation(StateThinking)
 	turnStarted = true
 
-	if ok := p.streamLLMAndVoice(ctx, sess, send, text, withVoice, acousticHint, visualHint); !ok {
+	if ok := p.streamLLMAndVoice(ctx, sess, send, text, withVoice, perception); !ok {
 		turnStarted = false
 	}
 }
@@ -501,7 +706,7 @@ func (p *Pipeline) playSegmentResult(res segmentSynthResult, onChunk func([]byte
 }
 
 // streamLLMAndVoice runs LLM token streaming and pipes sentence chunks to TTS asynchronously.
-func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Sender, userText string, withVoice bool, acousticHint emotion.AcousticHint, visualHint vision.Hint) bool {
+func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Sender, userText string, withVoice bool, perception *emotion.PerceptionState) bool {
 	var tokenBuf strings.Builder
 	speaking := false
 	audioChunks := 0
@@ -521,7 +726,7 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		ttsSynth = p.tts
 		ttsFormat = p.ttsFormat
 	}
-	defaultMood, turnEmotion := buildTurnMoodContext(userText, acousticHint, visualHint)
+	defaultMood, turnEmotion := buildTurnMoodFromPerception(perception, userText)
 	moodTracker := text.NewMoodTrackerWithDefault(defaultMood)
 	log.Printf("[realtime][mood] default=%s empathy=%v intent=%s user_mood=%s",
 		defaultMood, turnEmotion.NeedsEmpathy, turnEmotion.Intent, turnEmotion.UserMood)
@@ -683,7 +888,8 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		}()
 	}
 
-	reply, err := p.chat.StreamMessageVoice(ctx, sess.UserID, userText, acousticHint, visualHint, func(token string) {
+	var uiMoodStrip text.StreamMoodStripper
+	reply, err := p.chat.StreamMessageVoice(ctx, sess.UserID, userText, perceptionAcoustic(perception), perceptionVisual(perception), perception, func(token string) {
 		llmTokenMu.Lock()
 		if !llmTokenSeen {
 			llmTokenSeen = true
@@ -692,8 +898,13 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 			}
 		}
 		llmTokenMu.Unlock()
-		_ = send.Send(MsgLLMToken, LLMToken{Token: token})
-		tokenBuf.WriteString(token)
+		if token != "" {
+			ui := uiMoodStrip.Feed(token)
+			if ui != "" {
+				_ = send.Send(MsgLLMToken, LLMToken{Token: ui})
+			}
+			tokenBuf.WriteString(token)
+		}
 		if withVoice && p.tts != nil {
 			flushBuffer()
 		}
@@ -967,6 +1178,27 @@ func (p *Pipeline) Interrupt(sess *Session, send Sender) {
 	_ = send.Send(MsgInterrupted, map[string]any{})
 	_ = send.Send(MsgTTSDone, map[string]any{})
 	p.setListening(sess, send)
+}
+
+func buildTurnMoodFromPerception(state *emotion.PerceptionState, userText string) (text.MoodTag, emotion.Hint) {
+	if state != nil {
+		return text.InferDefaultMood(state.Hint.UserMood, state.Hint.Intent, state.Hint.NeedsEmpathy), state.Hint
+	}
+	return buildTurnMoodContext(userText, emotion.EmptyAcousticHint(), vision.EmptyHint())
+}
+
+func perceptionAcoustic(state *emotion.PerceptionState) emotion.AcousticHint {
+	if state == nil {
+		return emotion.EmptyAcousticHint()
+	}
+	return state.Acoustic
+}
+
+func perceptionVisual(state *emotion.PerceptionState) vision.Hint {
+	if state == nil {
+		return vision.EmptyHint()
+	}
+	return state.Visual
 }
 
 func buildTurnMoodContext(userText string, acoustic emotion.AcousticHint, visual vision.Hint) (text.MoodTag, emotion.Hint) {

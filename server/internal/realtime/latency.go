@@ -20,6 +20,7 @@ type TurnLatency struct {
 	playbackStart    time.Time
 	fillerPlayed     time.Time
 	visionFinal      time.Time
+	perceiveParallel time.Time
 }
 
 func NewTurnLatency(origin time.Time) *TurnLatency {
@@ -63,6 +64,10 @@ func (t *TurnLatency) MarkVisionFinal() {
 	t.mark(&t.visionFinal)
 }
 
+func (t *TurnLatency) MarkPerceiveParallel() {
+	t.mark(&t.perceiveParallel)
+}
+
 func (t *TurnLatency) MarkPlaybackStart() {
 	t.mark(&t.playbackStart)
 }
@@ -98,10 +103,11 @@ func (t *TurnLatency) ToMetrics() TurnMetrics {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return TurnMetrics{
-		AudioEndMS:         t.sinceOrigin(t.audioEnd),
-		ASRFinalMS:         t.sinceOrigin(t.asrFinal),
-		VisionMS:           t.sinceOrigin(t.visionFinal),
-		LLMFirstTokenMS:    t.sinceOrigin(t.llmFirstToken),
+		AudioEndMS:          t.sinceOrigin(t.audioEnd),
+		ASRFinalMS:          t.sinceOrigin(t.asrFinal),
+		VisionMS:            t.sinceOrigin(t.visionFinal),
+		PerceiveParallelMS:  t.sinceOrigin(t.perceiveParallel),
+		LLMFirstTokenMS:     t.sinceOrigin(t.llmFirstToken),
 		LLMFirstSentenceMS: t.sinceOrigin(t.llmFirstSentence),
 		TTSFirstByteMS:     t.sinceOrigin(t.ttsFirstByte),
 		PlaybackStartMS:    t.sinceOrigin(t.playbackStart),
@@ -112,11 +118,12 @@ func (t *TurnLatency) ToMetrics() TurnMetrics {
 func (t *TurnLatency) LogSummary(sessionID string) {
 	m := t.ToMetrics()
 	log.Printf(
-		"[realtime] latency session=%s audio_end=%dms asr=%dms vision=%dms llm_ttft=%dms llm_sentence=%dms tts_ttfb=%dms playback=%dms filler=%dms",
+		"[realtime] latency session=%s audio_end=%dms asr=%dms vision=%dms perceive_parallel=%dms llm_ttft=%dms llm_sentence=%dms tts_ttfb=%dms playback=%dms filler=%dms",
 		sessionID,
 		m.AudioEndMS,
 		m.ASRFinalMS,
 		m.VisionMS,
+		m.PerceiveParallelMS,
 		m.LLMFirstTokenMS,
 		m.LLMFirstSentenceMS,
 		m.TTSFirstByteMS,

@@ -40,7 +40,8 @@ type ChatResponse struct {
 }
 
 type ChatChunk struct {
-	Content string `json:"content"`
+	Content string `json:"content"` // 展示用（已剥离 mood tag）
+	Speech  string `json:"speech"`  // TTS/遵标用（保留 [mood:xxx]）；空则同 Content
 	Done    bool   `json:"done"`
 }
 

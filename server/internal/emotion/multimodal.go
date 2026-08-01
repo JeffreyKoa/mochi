@@ -14,6 +14,26 @@ func applyVisualEmpathy(h Hint, v vision.Hint, minConf float64) Hint {
 	}
 
 	expr := strings.ToLower(strings.TrimSpace(v.UserExpression))
+
+	// happy 脸 + 非 vent：数据驱动正向早推（V3c）
+	if expr == "happy" && h.Intent != "vent" && !h.NeedsEmpathy {
+		textMood := strings.ToLower(strings.TrimSpace(h.UserMood))
+		if textMood == "" || textMood == "neutral" || textMood == "happy" {
+			h.UserMood = "happy"
+			if h.Intent == "chat" {
+				h.Intent = "joke"
+			}
+			h.Temperature = 0.9
+			if h.VisualNote == "" && v.Note != "" {
+				h.VisualNote = v.Note
+			}
+			h.VisualFocus = string(vision.FocusOwnerFace)
+			log.Printf("[emotion][multimodal] visual_happy expression=%s conf=%.2f mood=%s",
+				expr, v.ExpressionConfidence, h.UserMood)
+		}
+		return h
+	}
+
 	moodFromVisual := expressionToMood(expr)
 	if moodFromVisual == "" {
 		return h

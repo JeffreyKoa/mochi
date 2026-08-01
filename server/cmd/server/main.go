@@ -66,6 +66,15 @@ func main() {
 	memSvc := memory.NewService(db, rdb, aiRouter, briefSvc)
 	emotionSvc := emotion.NewService(rdb, aiRouter)
 	emotionSvc.ConfigureVisual(cfg.Vision.MinExpressionConfidence)
+	classifyModel := cfg.Vision.ClassifyModel
+	if classifyModel == "" {
+		classifyModel = cfg.Realtime.Gate.Model
+	}
+	if classifyModel == "" {
+		classifyModel = cfg.AI.ModelCode
+	}
+	classifyOn := cfg.Vision.ClassifyEnabled || cfg.Vision.ContextualPlanner
+	emotionSvc.ConfigureClassify(classifyOn, classifyModel, cfg.Vision.ClassifyTimeoutMS)
 	hub := ws.NewHub(rdb)
 
 	lifeSvc := life.NewService(db, hub)

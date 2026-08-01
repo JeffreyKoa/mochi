@@ -113,20 +113,21 @@ func (s *Service) activityContextForUser(ctx context.Context, userID uint64) map
 	return wellness.ToActivityContext(act)
 }
 
-func (s *Service) turnMessage(ctx context.Context, userID uint64, message, triggerType string, acoustic emotion.AcousticHint, visual vision.Hint, onToken func(token string)) (string, error) {
+func (s *Service) turnMessage(ctx context.Context, userID uint64, message, triggerType string, acoustic emotion.AcousticHint, visual vision.Hint, pipeline *emotion.PerceptionState, onToken func(token string)) (string, error) {
 	pet, err := s.getPetByUser(ctx, userID)
 	if err != nil {
 		return "", err
 	}
 
 	input := agent.TurnInput{
-		UserID:          userID,
-		PetID:           pet.ID,
-		Message:         message,
-		TriggerType:     triggerType,
-		ActivityContext: s.activityContextForUser(ctx, userID),
-		AcousticHint:    acoustic,
-		VisualHint:      visual,
+		UserID:             userID,
+		PetID:              pet.ID,
+		Message:            message,
+		TriggerType:        triggerType,
+		ActivityContext:    s.activityContextForUser(ctx, userID),
+		AcousticHint:       acoustic,
+		VisualHint:         visual,
+		PipelinePerception: pipeline,
 	}
 
 	out, err := s.runtime.Turn(ctx, input)
@@ -134,32 +135,41 @@ func (s *Service) turnMessage(ctx context.Context, userID uint64, message, trigg
 		return "", err
 	}
 
-	var fullResponse strings.Builder
+	var fullSpeech strings.Builder
 	for {
 		select {
 		case <-ctx.Done():
-			return fullResponse.String(), ctx.Err()
+			return fullSpeech.String(), ctx.Err()
 		case chunk, ok := <-out.ReplyStream:
 			if !ok {
-				return fullResponse.String(), nil
+				return fullSpeech.String(), nil
 			}
 			if chunk.Done {
-				return fullResponse.String(), nil
+				return fullSpeech.String(), nil
 			}
-			fullResponse.WriteString(chunk.Content)
+			part := chunk.Speech
+			if part == "" {
+				part = chunk.Content
+			}
+			fullSpeech.WriteString(part)
 			if onToken != nil {
-				onToken(chunk.Content)
+				onToken(part)
 			}
 		}
 	}
 }
 
 func (s *Service) StreamMessage(ctx context.Context, userID uint64, message string, onToken func(token string)) (string, error) {
-	return s.turnMessage(ctx, userID, message, "user_chat", emotion.EmptyAcousticHint(), vision.EmptyHint(), onToken)
+	return s.turnMessage(ctx, userID, message, "user_chat", emotion.EmptyAcousticHint(), vision.EmptyHint(), nil, onToken)
 }
 
-func (s *Service) StreamMessageVoice(ctx context.Context, userID uint64, message string, acoustic emotion.AcousticHint, visual vision.Hint, onToken func(token string)) (string, error) {
-	return s.turnMessage(ctx, userID, message, "user_voice", acoustic, visual, onToken)
+func (s *Service) StreamMessageVoice(ctx context.Context, userID uint64, message string, acoustic emotion.AcousticHint, visual vision.Hint, pipeline *emotion.PerceptionState, onToken func(token string)) (string, error) {
+	return s.turnMessage(ctx, userID, message, "user_voice", acoustic, visual, pipeline, onToken)
+}
+
+// EmotionService 供 Pipeline V3c 调用语义分类。
+func (s *Service) EmotionService() *emotion.Service {
+	return s.emotion
 }
 
 func (s *Service) SendMessageStream(c *gin.Context, userID uint64, message string) {
@@ -208,11 +218,27 @@ func (s *Service) SendMessageStream(c *gin.Context, userID uint64, message strin
 }
 
 func (s *Service) CompleteMessage(ctx context.Context, userID uint64, message string) (string, error) {
-	return s.turnMessage(ctx, userID, message, "user_chat", emotion.EmptyAcousticHint(), vision.EmptyHint(), nil)
+	return s.turnMessage(ctx, userID, message, "user_chat", emotion.EmptyAcousticHint(), vision.EmptyHint(), nil, nil)
 }
 
 func (s *Service) Runtime() *agent.Runtime {
 	return s.runtime
+}
+
+// ApplyPerceptionFSM 推送感知融合后的 FSM 动画（V3b 早推或 refine）。
+func (s *Service) ApplyPerceptionFSM(ctx context.Context, userID uint64, perception agent.PerceptionResult, early bool) {
+	if s.runtime == nil {
+		return
+	}
+	pet, err := s.getPetByUser(ctx, userID)
+	if err != nil {
+		return
+	}
+	if early {
+		s.runtime.UpdateEmotionFSMEarly(ctx, pet.ID, perception)
+		return
+	}
+	s.runtime.UpdateEmotionFSM(ctx, pet.ID, perception)
 }
 
 // BroadcastReplyMood 首句 mood tag 触发宠物表情推送（Phase 3）。

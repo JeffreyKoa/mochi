@@ -17,6 +17,7 @@ type TurnInput struct {
 	ActivityContext map[string]interface{} `json:"activity_context"` // Client activity context (active application, idle state, etc.)
 	AcousticHint    emotion.AcousticHint   `json:"acoustic_hint,omitempty"` // 语音 turn 的声学情绪（Phase 2）
 	VisualHint      vision.Hint            `json:"visual_hint,omitempty"`   // 语音 turn 的视觉感知（Phase 1）
+	PipelinePerception *emotion.PerceptionState `json:"pipeline_perception,omitempty"` // V3c：Pipeline 融合唯一源
 }
 
 // TurnOutput represents the output of a single Agent interaction turn, supporting streaming.

@@ -37,7 +37,8 @@ func NewOrchestrator(memSvc *memory.Service, emoSvc *emotion.Service, briefSvc *
 }
 
 // PrepareChatContext 并行准备聊天上下文（情绪、记忆、画像、关系度）。
-func (o *Orchestrator) PrepareChatContext(ctx context.Context, petID uint64, userMsg string, acoustic emotion.AcousticHint, visual vision.Hint) AgentContext {
+// pipelineHint 非空时直接使用 Pipeline 融合结果，不再 QuickDetect（V3c）。
+func (o *Orchestrator) PrepareChatContext(ctx context.Context, petID uint64, userMsg string, acoustic emotion.AcousticHint, visual vision.Hint, pipelineHint *emotion.Hint) AgentContext {
 	var result AgentContext
 	var wg sync.WaitGroup
 
@@ -47,10 +48,19 @@ func (o *Orchestrator) PrepareChatContext(ctx context.Context, petID uint64, use
 	var userBrief string
 	var memories []models.Memory
 
+	memoryMood := "neutral"
+	if pipelineHint != nil {
+		memoryMood = pipelineHint.UserMood
+	}
+
 	// 1. 情绪判别（文本 + 声学融合）
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		if pipelineHint != nil {
+			emoHint = *pipelineHint
+			return
+		}
 		if o.emotion != nil {
 			emoHint = o.emotion.BuildHint(ctx, petID, userMsg, acoustic, visual)
 		} else {
@@ -89,8 +99,11 @@ func (o *Orchestrator) PrepareChatContext(ctx context.Context, petID uint64, use
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		quickMood := emotion.QuickDetect(userMsg).UserMood
-		if mems, err := o.memory.RetrieveRelevant(ctx, petID, userMsg, 5, quickMood); err == nil {
+		mood := memoryMood
+		if mood == "" {
+			mood = emotion.QuickDetect(userMsg).UserMood
+		}
+		if mems, err := o.memory.RetrieveRelevant(ctx, petID, userMsg, 5, mood); err == nil {
 			memories = mems
 		}
 	}()

@@ -291,7 +291,9 @@ func TransitionFSM(oldState string, perception PerceptionResult, petEmpathy int,
 	newState := oldState
 
 	isPositive := perception.Intent == "joke" || perception.UserMood == "happy"
-	isNegative := perception.Intent == "vent" || perception.UserMood == "stressed" || perception.UserMood == "sad" || perception.NeedsEmpathy
+	// stressed  alone（如 Redis 缓存）不触发负向；须 NeedsEmpathy 或 vent/sad
+	isNegative := perception.Intent == "vent" || perception.UserMood == "sad" ||
+		(perception.NeedsEmpathy && (perception.UserMood == "stressed" || perception.UserMood == "sad"))
 	empathyOK := petEmpathy >= 50
 
 	if isPositive {
@@ -429,6 +431,23 @@ func (r *Runtime) emotionHoldState(ctx context.Context, petID uint64) string {
 	return r.emotion.GetEmotionHold(ctx, petID)
 }
 
+// PerceptionResultFromHint 将融合 Hint 转为 FSM 输入（V3b 动画先行）。
+func PerceptionResultFromHint(h emotion.Hint) PerceptionResult {
+	return PerceptionResult{
+		UserMood:     h.UserMood,
+		NeedsEmpathy: h.NeedsEmpathy,
+		Intent:       h.Intent,
+		Topic:        h.Topic,
+	}
+}
+
+// UpdateEmotionFSMEarly 感知通道先到时的 FSM 更新（V3b，LLM 之前）。
+func (r *Runtime) UpdateEmotionFSMEarly(ctx context.Context, petID uint64, perception PerceptionResult) (string, string) {
+	log.Printf("[agent][fsm] perception_early pet=%d mood=%s empathy=%v intent=%s",
+		petID, perception.UserMood, perception.NeedsEmpathy, perception.Intent)
+	return r.UpdateEmotionFSM(ctx, petID, perception)
+}
+
 // BroadcastEmotionAnimation 推送回复侧 mood 对应宠物动画（Phase 3）。
 func (r *Runtime) BroadcastEmotionAnimation(ctx context.Context, petID uint64, animation string) {
 	if r.life == nil || animation == "" {
@@ -481,15 +500,32 @@ func (r *Runtime) Turn(ctx context.Context, input TurnInput) (TurnOutput, error)
 		return TurnOutput{Trace: trace}, err
 	}
 
-	// 1. Perceive
+	// 1. Perceive — V3c 语音 turn 使用 Pipeline 融合，跳过 QuickDetect
 	perceiveStart := time.Now()
-	perception := r.Perceive(input.Message)
+	var perception PerceptionResult
+	if input.PipelinePerception != nil {
+		perception = PerceptionResultFromHint(input.PipelinePerception.Hint)
+		if perception.Intensity == 0 {
+			perception.Intensity = 0.5
+			if perception.NeedsEmpathy {
+				perception.Intensity = 0.8
+			}
+		}
+		log.Printf("[agent] turn perception_from=pipeline skip_quick_detect=true mood=%s intent=%s empathy=%v",
+			perception.UserMood, perception.Intent, perception.NeedsEmpathy)
+	} else {
+		perception = r.Perceive(input.Message)
+	}
 	trace.Perception = perception
 	trace.StepTimings.PerceiveMs = time.Since(perceiveStart).Milliseconds()
 
 	// 2. Recall (Context Preparation)
 	recallStart := time.Now()
-	agentCtx := r.orchestrator.PrepareChatContext(ctx, pet.ID, input.Message, input.AcousticHint, input.VisualHint)
+	var pipelineHint *emotion.Hint
+	if input.PipelinePerception != nil {
+		pipelineHint = &input.PipelinePerception.Hint
+	}
+	agentCtx := r.orchestrator.PrepareChatContext(ctx, pet.ID, input.Message, input.AcousticHint, input.VisualHint, pipelineHint)
 	if input.VisualHint.IsUsable() {
 		log.Printf("[agent][vision] turn pet=%d focus=%s expression=%s conf=%.2f note=%q visual_in_prompt=%v visual_focus=%s",
 			pet.ID, input.VisualHint.Focus, input.VisualHint.UserExpression,
@@ -508,11 +544,25 @@ func (r *Runtime) Turn(ctx context.Context, input TurnInput) (TurnOutput, error)
 		Intent:       agentCtx.EmotionHint.Intent,
 		Topic:        agentCtx.EmotionHint.Topic,
 	}
-	if perceptionForFSM.UserMood == "" {
-		perceptionForFSM.UserMood = perception.UserMood
+	if input.PipelinePerception != nil {
+		// V3c：FSM 以 Pipeline 融合为准，避免 GetCached 二次 merge
+		perceptionForFSM = PerceptionResultFromHint(input.PipelinePerception.Hint)
+	} else {
+		if perceptionForFSM.UserMood == "" {
+			perceptionForFSM.UserMood = perception.UserMood
+		}
+		if perceptionForFSM.Intent == "" {
+			perceptionForFSM.Intent = perception.Intent
+		}
 	}
-	if perceptionForFSM.Intent == "" {
-		perceptionForFSM.Intent = perception.Intent
+	// 缓存 stressed 但本轮无共情时不应驱动 FSM 负向
+	if perceptionForFSM.UserMood == "stressed" && !perceptionForFSM.NeedsEmpathy {
+		perceptionForFSM.UserMood = "neutral"
+	}
+	// neutral 闲聊无共情：清除 hold，允许 decay（V3c）
+	if r.emotion != nil && !perceptionForFSM.NeedsEmpathy &&
+		perceptionForFSM.Intent == "chat" && perceptionForFSM.UserMood == "neutral" {
+		r.emotion.ClearEmotionHold(ctx, pet.ID)
 	}
 	r.UpdateEmotionFSM(ctx, pet.ID, perceptionForFSM)
 
@@ -534,7 +584,7 @@ func (r *Runtime) Turn(ctx context.Context, input TurnInput) (TurnOutput, error)
 		emotionState = "sad"
 	}
 
-	styleCfg := r.DecideStyle(pet, perception, agentCtx.BondProfile, emotionState, isFocusWorkMode)
+	styleCfg := r.DecideStyle(pet, perceptionForFSM, agentCtx.BondProfile, emotionState, isFocusWorkMode)
 	trace.PersonalityDecision = PersonalityDecision{
 		Strategy: styleCfg.SentenceLength,
 		Notes:    strings.Join(styleCfg.ToneModifiers, ","),
@@ -675,7 +725,7 @@ func (r *Runtime) Turn(ctx context.Context, input TurnInput) (TurnOutput, error)
 				cleaned = moodStrip.Feed(cleaned)
 				if cleaned != "" {
 					fullResponse.WriteString(cleaned)
-					outChan <- ai.ChatChunk{Content: cleaned}
+					outChan <- ai.ChatChunk{Content: cleaned, Speech: chunk.Content}
 				}
 			}
 		}

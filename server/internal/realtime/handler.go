@@ -329,6 +329,14 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 
 			asrMu.Lock()
 			activeASR := asrSess
+			asrMu.Unlock()
+
+			sess.SetTurnPCM(buf)
+			if h.pipeline != nil {
+				h.pipeline.PrefetchAcoustic(ctx, sess, buf)
+			}
+
+			asrMu.Lock()
 			asrSess = nil
 			asrMu.Unlock()
 
@@ -337,13 +345,18 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 				activeASR.Close()
 				if err != nil {
 					log.Printf("[realtime] streaming asr finish error session=%s: %v", sessionID, err)
+					if partial := strings.TrimSpace(lastPartial); partial != "" {
+						log.Printf("[realtime] asr fallback last_partial session=%s text=%q", sessionID, partial)
+						h.pipeline.OnTranscript(ctx, sess, partial, sender)
+						lastPartial = ""
+						return
+					}
 					h.pipeline.OnSpeechEnd(ctx, sess, buf, sender)
 					return
 				}
 				if text == "" {
 					text = lastPartial
 				}
-				sess.SetTurnPCM(buf)
 				h.pipeline.OnTranscript(ctx, sess, text, sender)
 				lastPartial = ""
 				return
@@ -543,6 +556,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 			}
 			sess.SetVisionFrame(jpeg)
 			log.Printf("[realtime][vision] frame_received session=%s jpeg_bytes=%d seq=%d", sessionID, len(jpeg), in.Seq)
+			h.pipeline.PrefetchOwnerFace(ctx, sess)
 		}
 	}
 }

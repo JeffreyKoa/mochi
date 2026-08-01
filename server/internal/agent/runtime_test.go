@@ -193,6 +193,12 @@ func TestTransitionFSM(t *testing.T) {
 	if state11 != "worried" || mood11 != 45 {
 		t.Errorf("sad decay -> worried, got %s (%d)", state11, mood11)
 	}
+
+	// E2E fix: cached stressed 无 NeedsEmpathy 不触发负向
+	state12, _ := TransitionFSM("calm", PerceptionResult{UserMood: "stressed", Intent: "ask", NeedsEmpathy: false}, highEmpathy, "")
+	if state12 != "calm" {
+		t.Errorf("stressed without empathy should not transition, got %s", state12)
+	}
 }
 
 func TestRuntime_Turn_triggersPostProcessAfterStream(t *testing.T) {
@@ -336,5 +342,42 @@ func TestRuntime_Turn_SystemProactive(t *testing.T) {
 
 	if reply != "该喝水啦！" {
 		t.Errorf("expected proactive reply '该喝水啦！', got %s", reply)
+	}
+}
+
+func TestRuntime_Turn_PipelinePerception(t *testing.T) {
+	mockAI := &mockStreamAI{
+		chunks: []ai.ChatChunk{{Content: "抱抱你", Speech: "抱抱你"}, {Done: true}},
+	}
+	rt := newTestRuntime(t, mockAI)
+
+	pipeline := &emotion.PerceptionState{
+		Hint: emotion.Hint{
+			UserMood:     "stressed",
+			Intent:       "vent",
+			NeedsEmpathy: true,
+			Temperature:  0.75,
+		},
+		Source: "pipeline_v3c",
+	}
+
+	out, err := rt.Turn(context.Background(), TurnInput{
+		UserID: 1, PetID: 1, Message: "年龄又大了一岁", TriggerType: "user_voice",
+		PipelinePerception: pipeline,
+	})
+	if err != nil {
+		t.Fatalf("Turn failed: %v", err)
+	}
+	for range out.ReplyStream {
+	}
+
+	if out.Trace.Perception.UserMood != "stressed" {
+		t.Errorf("trace mood=%s want stressed", out.Trace.Perception.UserMood)
+	}
+	if out.Trace.Perception.Intent != "vent" {
+		t.Errorf("trace intent=%s want vent", out.Trace.Perception.Intent)
+	}
+	if !out.Trace.Perception.NeedsEmpathy {
+		t.Error("expected needs_empathy true in trace")
 	}
 }

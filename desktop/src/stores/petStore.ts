@@ -158,13 +158,17 @@ export const usePetStore = defineStore('pet', () => {
     currentAnimation.value = anim
   }
 
-  /** 后端 state_update / proactive 推送的动画名（worried→sad 等映射）。 */
+  /** 后端 state_update / proactive / V3b 感知早推 动画名。 */
   function setServerAnimation(raw: string | undefined) {
     const anim = mapServerAnimation(raw)
     currentAnimation.value = anim
     if (anim === 'sad' || raw === 'worried') {
       heldEmotionAnim = anim
       emotionHoldUntil = Date.now() + EMOTION_HOLD_MS
+    } else if (anim === 'happy' && (raw === 'happy' || raw === 'excited')) {
+      // V3b：报喜早推时短暂保持，避免 processing 阶段被覆盖
+      heldEmotionAnim = anim
+      emotionHoldUntil = Date.now() + 30_000
     }
   }
 

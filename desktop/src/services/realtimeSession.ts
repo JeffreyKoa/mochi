@@ -29,6 +29,7 @@ export interface TurnMetrics {
   audioEndMs: number
   asrFinalMs: number
   visionMs: number
+  perceiveParallelMs: number
   llmFirstTokenMs: number
   llmFirstSentenceMs: number
   ttsFirstByteMs: number
@@ -244,6 +245,7 @@ export class RealtimeSession {
             audioEndMs: Number(data.audio_end_ms ?? -1),
             asrFinalMs: Number(data.asr_final_ms ?? -1),
             visionMs: Number(data.vision_ms ?? -1),
+            perceiveParallelMs: Number(data.perceive_parallel_ms ?? -1),
             llmFirstTokenMs: Number(data.llm_first_token_ms ?? -1),
             llmFirstSentenceMs: Number(data.llm_first_sentence_ms ?? -1),
             ttsFirstByteMs: Number(data.tts_first_byte_ms ?? -1),

@@ -1347,6 +1347,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
           if (ev.metrics.visionMs >= 0) {
             console.info('[realtime] vision_ms=%d', ev.metrics.visionMs)
           }
+          if (ev.metrics.perceiveParallelMs >= 0) {
+            console.info('[realtime] perceive_parallel_ms=%d', ev.metrics.perceiveParallelMs)
+          }
         }
         break
       case 'turn_ack':
