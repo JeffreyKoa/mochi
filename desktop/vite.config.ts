@@ -23,7 +23,7 @@ function readServerPort(): number {
 const backendPort = readServerPort()
 const backendTarget = `http://localhost:${backendPort}`
 
-export default defineConfig({
+export default defineConfig(() => ({
   plugins: [vue()],
   resolve: {
     alias: {
@@ -57,4 +57,4 @@ export default defineConfig({
     minify: !process.env.TAURI_DEBUG ? 'esbuild' : false,
     sourcemap: !!process.env.TAURI_DEBUG,
   },
-})
+}))

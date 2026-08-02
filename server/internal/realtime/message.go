@@ -60,8 +60,9 @@ type AudioIn struct {
 
 // VisionFrameIn 客户端上传的单帧 JPEG（语音 turn 前抓拍）。
 type VisionFrameIn struct {
-	JPEG string `json:"jpeg"` // base64 encoded JPEG，日志禁止打印
-	Seq  int64  `json:"seq,omitempty"`
+	JPEG   string `json:"jpeg"` // base64 encoded JPEG，日志禁止打印
+	Seq    int64  `json:"seq,omitempty"`
+	Reason string `json:"reason,omitempty"` // speech_start | audio_end
 }
 
 type TextInput struct {

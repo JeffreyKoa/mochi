@@ -76,6 +76,10 @@ export const usePetStore = defineStore('pet', () => {
   const stageHint = ref('')
   const skin = ref<PetSkin | null>(null)
   const currentAnimation = ref<Animation>('idle')
+  /** 递增触发「尾扇三连跳」标志性 happy 动作（PetCanvas 监听） */
+  const happyBurstSeq = ref(0)
+  let lastHappyBurstAt = 0
+  const HAPPY_BURST_COOLDOWN_MS = 6_000
   /** 共情 FSM 推送的 sad 等表情保持至 TTL，避免 TTS 结束后 syncAnimation 重置为 idle */
   let emotionHoldUntil = 0
   let heldEmotionAnim: Animation | null = null
@@ -158,6 +162,16 @@ export const usePetStore = defineStore('pet', () => {
     currentAnimation.value = anim
   }
 
+  /** 标志性高兴：尾扇三连跳 + 翘嘴定格（带冷却，避免连播） */
+  function triggerHappyBurst() {
+    if (currentAnimation.value === 'sad' || currentAnimation.value === 'sleep') return
+    const now = Date.now()
+    if (now - lastHappyBurstAt < HAPPY_BURST_COOLDOWN_MS) return
+    lastHappyBurstAt = now
+    happyBurstSeq.value += 1
+    currentAnimation.value = 'happy'
+  }
+
   /** 后端 state_update / proactive / V3b 感知早推 动画名。 */
   function setServerAnimation(raw: string | undefined) {
     const anim = mapServerAnimation(raw)
@@ -165,8 +179,8 @@ export const usePetStore = defineStore('pet', () => {
     if (anim === 'sad' || raw === 'worried') {
       heldEmotionAnim = anim
       emotionHoldUntil = Date.now() + EMOTION_HOLD_MS
-    } else if (anim === 'happy' && (raw === 'happy' || raw === 'excited')) {
-      // V3b：报喜早推时短暂保持，避免 processing 阶段被覆盖
+    } else if (anim === 'happy' && (raw === 'happy' || raw === 'excited' || raw === 'playful')) {
+      triggerHappyBurst()
       heldEmotionAnim = anim
       emotionHoldUntil = Date.now() + 30_000
     }
@@ -300,6 +314,7 @@ export const usePetStore = defineStore('pet', () => {
     footColor,
     earInnerColor,
     currentAnimation,
+    happyBurstSeq,
     ownerPresence,
     facing,
     isRoaming,
@@ -316,6 +331,7 @@ export const usePetStore = defineStore('pet', () => {
     updateLifecycle,
     applySkinFromSKU,
     setAnimation,
+    triggerHappyBurst,
     setServerAnimation,
     clearEmotionHold,
     setFacing,

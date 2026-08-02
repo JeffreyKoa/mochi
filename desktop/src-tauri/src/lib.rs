@@ -5,6 +5,7 @@ use tauri::{
 };
 
 mod activity;
+mod webview_permissions;
 
 const PET_W: f64 = 280.0;
 const PET_H: f64 = 280.0;
@@ -200,6 +201,23 @@ fn collapse_pet_chat(app: AppHandle, label: Option<String>) -> Result<(), String
     Ok(())
 }
 
+/// 重置 WebView2 内 localhost 麦克风权限（曾点「阻止」后从前端调用）
+#[tauri::command]
+fn reset_microphone_permission(app: AppHandle) -> Result<(), String> {
+    let mut wins = Vec::new();
+    if let Some(w) = resolve_pet_window(&app, None) {
+        wins.push(w);
+    }
+    if let Some(w) = app.get_webview_window("chat") {
+        wins.push(w);
+    }
+    if wins.is_empty() {
+        return Err("webview not found".into());
+    }
+    webview_permissions::reset_microphone_for_app(&wins);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -213,6 +231,7 @@ pub fn run() {
             expand_pet_for_chat,
             collapse_pet_chat,
             activity::get_activity_snapshot,
+            reset_microphone_permission,
         ])
         .setup(|app| {
             let pet = app
@@ -255,6 +274,18 @@ pub fn run() {
                         let _ = chat_for_close.hide();
                     }
                 });
+            }
+
+            // Windows：WebView2 预授权麦克风（避免桌宠 getUserMedia 默认被拒）
+            {
+                let mut mic_wins = Vec::new();
+                if let Some(w) = app.get_webview_window("pet").or_else(|| app.get_webview_window("main")) {
+                    mic_wins.push(w);
+                }
+                if let Some(w) = app.get_webview_window("chat") {
+                    mic_wins.push(w);
+                }
+                webview_permissions::allow_media_for_app(&mic_wins);
             }
 
             let show = MenuItem::with_id(app, "show", "显示 Mochi", true, None::<&str>)?;

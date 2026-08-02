@@ -322,6 +322,44 @@ type VisionConfig struct {
 	ClassifyEnabled   bool `yaml:"classify_enabled"`
 	ClassifyModel     string `yaml:"classify_model"`
 	ClassifyTimeoutMS int    `yaml:"classify_timeout_ms"`
+	// P0：会话级摄像头（客户端 startTalk 后保持流，turn 内快拍）。
+	SessionCamera bool `yaml:"session_camera"`
+	// P1：speech_start 时预拍一帧，拉长 prefetch 窗口。
+	SnapshotOnSpeechStart bool `yaml:"snapshot_on_speech_start"`
+	// audio_end 时抓拍（默认 true）。
+	SnapshotOnAudioEnd bool `yaml:"snapshot_on_audio_end"`
+	// P2：举物语义 detected 时客户端补拍 object_refresh 帧。
+	SnapshotOnObjectIntent bool `yaml:"snapshot_on_object_intent"`
+}
+
+// VisionPublicConfig 暴露给客户端的视觉配置（无密钥）。
+type VisionPublicConfig struct {
+	SessionCamera          bool `json:"session_camera"`
+	SnapshotOnSpeechStart  bool `json:"snapshot_on_speech_start"`
+	SnapshotOnAudioEnd     bool `json:"snapshot_on_audio_end"`
+	SnapshotOnObjectIntent bool `json:"snapshot_on_object_intent"`
+}
+
+// PublicClient 返回客户端可用的视觉开关。
+func (v *VisionConfig) PublicClient() VisionPublicConfig {
+	sessionCam := v.SessionCamera
+	snapSpeech := v.SnapshotOnSpeechStart
+	snapAudioEnd := v.SnapshotOnAudioEnd
+	snapObject := v.SnapshotOnObjectIntent
+	if v.Enabled {
+		if !sessionCam && !snapSpeech && !snapAudioEnd && !snapObject {
+			// yaml 未配置四项时 bool 全 false：使用 P0/P1/P2 默认
+			sessionCam = true
+			snapAudioEnd = true
+			snapObject = true
+		}
+	}
+	return VisionPublicConfig{
+		SessionCamera:          sessionCam,
+		SnapshotOnSpeechStart:  snapSpeech,
+		SnapshotOnAudioEnd:     snapAudioEnd,
+		SnapshotOnObjectIntent: snapObject,
+	}
 }
 
 func (v *VisionConfig) applyDefaults() {

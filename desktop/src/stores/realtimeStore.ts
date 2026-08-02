@@ -15,10 +15,15 @@ import { LocalSTT, isLocalSttSupported } from '@/services/localStt'
 import { SpeakerVerifier } from '@/services/speakerVerifier'
 import { SoundEventClassifier } from '@/services/soundEventClassifier'
 import { getRealtimeConfig, getVoiceprintConfig, getPresenceConfig, getClientConfig, initClientConfig, resolveSttMode } from '@/config'
+import { micPermissionDeniedMessage } from '@/utils/micPermission'
 import {
   captureOwnerFaceJPEG,
   isVisionCaptureEnabled,
   jpegToBase64,
+  startVisionSession,
+  stopVisionSession,
+  visionSession,
+  type VisionFrameReason,
 } from '@/services/visionCapture'
 import {
   bootstrapAmbientPresence as startAmbientPresenceService,
@@ -34,6 +39,7 @@ import {
   isChatWindowVisible,
 } from '@/services/voiceSessionOwner'
 import { isTauri } from '@/services/chatWindow'
+import { looksLikeObjectQuery } from '@/services/visionHeuristic'
 
 /**
  * Turn phases — like talking to a person:
@@ -212,6 +218,12 @@ export const useRealtimeStore = defineStore('realtime', () => {
   const soundClassifier = new SoundEventClassifier()
   let ownerEmbedding: Float32Array | null = null
   let wakeProbeInFlight = false
+  /** P2：本 turn 是否已发过 object_refresh 帧（partial 中途触发后 submit 仍可再发一次）。 */
+  let objectRefreshCountThisTurn = 0
+  /** 本 turn 是否已发 speech_start 帧（防 VAD 重复触发）。 */
+  let speechStartFrameSent = false
+  /** 举物补拍前留给用户对准摄像头的延迟（ms）。 */
+  const OBJECT_FRAME_HOLD_MS = 400
   let speechEndSubmitTimer: ReturnType<typeof setTimeout> | null = null
   const pcmRing = new Float32Array(PCM_RING_SAMPLES)
   let pcmRingWrite = 0
@@ -513,6 +525,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
         onPartial: (text) => {
           if (phase === 'processing' || phase === 'agent_speaking') return
           partialText.value = text
+          trackObjectIntentFromPartial(text)
           heardSpeech = true
           lastSpeechAt = Date.now()
           if (phase === 'resting') {
@@ -564,18 +577,19 @@ export const useRealtimeStore = defineStore('realtime', () => {
     replyText.value = ''
     startTtsWatchdog()
 
-    const sent = realtimeSession.sendTextInput(trimmed, { voiceReply: true })
-    if (!sent) {
-      submitLock = false
-      messages.value.pop()
-      enterResting()
-      statusText.value = '发送失败，请重试'
-      return
-    }
-
-    setTimeout(() => {
-      submitLock = false
-    }, 800)
+    void sendVisionFramesBeforeSubmit(trimmed).then(() => {
+      const sent = realtimeSession.sendTextInput(trimmed, { voiceReply: true })
+      if (!sent) {
+        submitLock = false
+        messages.value.pop()
+        enterResting()
+        statusText.value = '发送失败，请重试'
+        return
+      }
+      setTimeout(() => {
+        submitLock = false
+      }, 800)
+    })
   }
 
   function startSilenceWatch() {
@@ -613,6 +627,8 @@ export const useRealtimeStore = defineStore('realtime', () => {
     bargeAccumMs = 0
     wakeAccumMs = 0
     ttsStartedAt = 0
+    objectRefreshCountThisTurn = 0
+    speechStartFrameSent = false
     resetTurnTiming()
     chunksSent.value = 0
     resetPcmRing()
@@ -665,10 +681,13 @@ export const useRealtimeStore = defineStore('realtime', () => {
     heardSpeech = true
     lastSpeechAt = Date.now()
     utteranceStartedAt = Date.now()
+    objectRefreshCountThisTurn = 0
+    speechStartFrameSent = false
     chunksSent.value = 0
     partialText.value = ''
     ambientPresence.setOwnerSpeaking(true)
     realtimeSession.sendAudioStart()
+    sendVisionFrameOnSpeechStart()
     flushPreRollAudio()
     statusText.value = '正在听... 说完点「说完了」或稍停片刻'
   }
@@ -687,6 +706,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
       statusText.value = '正在听...'
       ambientPresence.setOwnerSpeaking(true)
       startLocalListening()
+      sendVisionFrameOnSpeechStart()
       return { ok: true }
     }
     if (!realtimeSession.isOpen()) {
@@ -717,25 +737,79 @@ export const useRealtimeStore = defineStore('realtime', () => {
     void submitUtteranceAsync(force)
   }
 
-  async function maybeSendVisionFrame() {
-    if (!isVisionCaptureEnabled() || !getClientConfig().visionEnabled) {
+  async function maybeSendVisionFrame(reason: VisionFrameReason = 'audio_end') {
+    const cfg = getClientConfig()
+    if (!cfg.visionEnabled) {
+      console.warn('[vision] skip_send reason=server_disabled trigger=%s', reason)
       return
     }
+    if (!isVisionCaptureEnabled()) {
+      console.warn('[vision] skip_send reason=client_opt_out trigger=%s', reason)
+      return
+    }
+    if (reason === 'speech_start' && !cfg.visionSnapshotOnSpeechStart) {
+      return
+    }
+    if (reason === 'audio_end' && cfg.visionSnapshotOnAudioEnd === false) {
+      return
+    }
+    if (reason === 'object_refresh' && cfg.visionSnapshotOnObjectIntent === false) {
+      return
+    }
+
     const start = Date.now()
-    const buf = await captureOwnerFaceJPEG()
+    const buf = visionSession.isActive()
+      ? await visionSession.grabSnapshot()
+      : await captureOwnerFaceJPEG()
     if (!buf) {
-      console.warn('[vision] skip_send reason=capture_failed elapsed_ms=%d', Date.now() - start)
+      console.warn(
+        '[vision] skip_send reason=capture_failed trigger=%s elapsed_ms=%d',
+        reason,
+        Date.now() - start,
+      )
       return
     }
     const b64 = jpegToBase64(buf)
-    const ok = realtimeSession.sendVisionFrame(b64)
+    const ok = realtimeSession.sendVisionFrame(b64, { reason })
     console.info(
-      '[vision] frame_sent ok=%s jpeg_bytes=%d b64_len=%d elapsed_ms=%d',
+      '[vision] frame_sent ok=%s trigger=%s jpeg_bytes=%d b64_len=%d elapsed_ms=%d',
       ok,
+      reason,
       buf.byteLength,
       b64.length,
       Date.now() - start,
     )
+  }
+
+  /** speech_start 预拍帧（每 turn 一次，不阻塞 VAD）。 */
+  function sendVisionFrameOnSpeechStart() {
+    if (speechStartFrameSent) return
+    speechStartFrameSent = true
+    void maybeSendVisionFrame('speech_start')
+  }
+
+  /** P2：ASR partial 命中举物语义时 mid-turn 补拍（延迟一拍，等用户举物对准镜头）。 */
+  function trackObjectIntentFromPartial(text: string) {
+    if (!text.trim() || objectRefreshCountThisTurn > 0) return
+    if (!getClientConfig().visionSnapshotOnObjectIntent) return
+    if (!looksLikeObjectQuery(text)) return
+    objectRefreshCountThisTurn++
+    setTimeout(() => {
+      void maybeSendVisionFrame('object_refresh')
+    }, OBJECT_FRAME_HOLD_MS)
+  }
+
+  /** P2：submit 前若像举物问句，留时间举物后再抓拍，最后 audio_end 帧覆盖。 */
+  async function sendVisionFramesBeforeSubmit(turnText: string) {
+    if (
+      getClientConfig().visionSnapshotOnObjectIntent &&
+      looksLikeObjectQuery(turnText)
+    ) {
+      await new Promise((r) => setTimeout(r, OBJECT_FRAME_HOLD_MS))
+      await maybeSendVisionFrame('object_refresh')
+      await new Promise((r) => setTimeout(r, 120))
+    }
+    await maybeSendVisionFrame('audio_end')
   }
 
   async function submitUtteranceAsync(force = false) {
@@ -784,7 +858,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     playbackMarked = false
     ttsPlayer.resetTurn()
 
-    await maybeSendVisionFrame()
+    await sendVisionFramesBeforeSubmit(partialText.value.trim())
 
     const sent = realtimeSession.sendAudioEnd()
     if (!sent) {
@@ -814,6 +888,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
       heardSpeech = true
       lastSpeechAt = Date.now()
       statusText.value = '正在听... 说完点「说完了」或稍停片刻'
+      sendVisionFrameOnSpeechStart()
       return
     }
 
@@ -906,6 +981,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     recording = false
     talking.value = false
     await capture.stop()
+    await stopVisionSession()
     setPhase('idle')
   }
 
@@ -1131,7 +1207,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     } catch (e) {
       const err = e as DOMException
       if (err?.name === 'NotAllowedError') {
-        statusText.value = '麦克风权限被拒绝，请在浏览器设置中允许'
+        statusText.value = micPermissionDeniedMessage()
       } else if (err?.name === 'NotFoundError') {
         statusText.value = '未检测到麦克风设备'
       } else {
@@ -1208,10 +1284,12 @@ export const useRealtimeStore = defineStore('realtime', () => {
 
     if (effectiveSttMode === 'local') {
       await startLocalTalk()
+      await startVisionSession().catch(() => {})
       return recording
     }
 
     await startCloudTalk()
+    await startVisionSession().catch(() => {})
     if (recording && phase === 'resting') {
       wakeOnSpeech()
     }
@@ -1246,6 +1324,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     if (capture.isActive) {
       await capture.stop()
     }
+    await stopVisionSession()
     statusText.value = connected.value ? '点击开始对话' : ''
     await resumeAmbientMicAfterTalk(ownerEmbedding)
   }
@@ -1267,6 +1346,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
         break
       case 'asr_partial':
         partialText.value = ev.text
+        trackObjectIntentFromPartial(ev.text)
         if (ev.text.trim() && !pet.isChatOpen) {
           pet.showVoiceBubble(`“${ev.text.trim()}”`)
         }

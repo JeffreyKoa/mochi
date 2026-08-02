@@ -554,9 +554,13 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 				log.Printf("[realtime][vision] decode_fail session=%s err=%v b64_len=%d", sessionID, err, len(in.JPEG))
 				break
 			}
-			sess.SetVisionFrame(jpeg)
-			log.Printf("[realtime][vision] frame_received session=%s jpeg_bytes=%d seq=%d", sessionID, len(jpeg), in.Seq)
-			h.pipeline.PrefetchOwnerFace(ctx, sess)
+			sess.SetVisionFrame(jpeg, in.Seq, in.Reason)
+			log.Printf("[realtime][vision] frame_received session=%s jpeg_bytes=%d seq=%d reason=%s",
+				sessionID, len(jpeg), in.Seq, in.Reason)
+			// 仅 speech_start 预跑 owner_face；object_refresh/audio_end 留给 contextual object VL
+			if in.Reason == "" || in.Reason == "speech_start" {
+				h.pipeline.PrefetchOwnerFace(ctx, sess)
+			}
 		}
 	}
 }

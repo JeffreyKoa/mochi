@@ -137,6 +137,7 @@ func main() {
 		WriteApproval:    cfg.Growth.WriteApproval,
 		GrowthEnabled:   cfg.Growth.Enabled,
 		VisionEnabled:   cfg.Vision.Enabled,
+		VisionPublic:    cfg.Vision.PublicClient(),
 	})
 
 	addr := ":" + cfg.ServerPort()

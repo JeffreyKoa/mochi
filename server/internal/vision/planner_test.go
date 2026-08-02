@@ -2,6 +2,22 @@ package vision
 
 import "testing"
 
+func TestPlanContextual_HeuristicObjectWhenClassifyNone(t *testing.T) {
+	plan := PlanContextual("你看我手里拿的是啥东西？", Hint{}, "none", false)
+	if !plan.NeedSecondVL || plan.Focus != FocusObject {
+		t.Fatalf("expected heuristic object refine, got %+v", plan)
+	}
+}
+
+func TestInferVisualTaskFromText(t *testing.T) {
+	if got := InferVisualTaskFromText("你看我手里拿的是啥"); got != "object" {
+		t.Fatalf("expected object, got %q", got)
+	}
+	if got := InferVisualTaskFromText("今天好累"); got != "" {
+		t.Fatalf("expected empty, got %q", got)
+	}
+}
+
 func TestPlanContextual_Object(t *testing.T) {
 	plan := PlanContextual("看我手里拿的这个是什么东西", Hint{}, "object", false)
 	if !plan.NeedSecondVL || plan.Focus != FocusObject {

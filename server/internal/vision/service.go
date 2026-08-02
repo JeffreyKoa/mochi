@@ -147,6 +147,18 @@ func (s *Service) RefineContextual(ctx context.Context, jpeg []byte, userText st
 	}
 	plan := PlanContextual(userText, faceHint, visualTask, faceTextClash)
 	if !plan.NeedSecondVL {
+		// V3c 分类超时/返回 none 时，再用 config 关键词兜底
+		kwPlan := PlanRefine(userText, s.cfg.ObjectTriggerKeywords, s.cfg.SceneTriggerKeywords)
+		if kwPlan.NeedSecondVL {
+			plan = kwPlan
+			if plan.Focus == FocusObject {
+				plan.DynamicPrompt = PromptContextualObject(userText)
+			} else if plan.Focus == FocusScene {
+				plan.DynamicPrompt = PromptContextualScene(userText)
+			}
+		}
+	}
+	if !plan.NeedSecondVL {
 		return faceHint
 	}
 	start := time.Now()

@@ -44,6 +44,9 @@ type Session struct {
 	visualHint     vision.Hint
 	visualReady    bool
 	visionPrefetching bool
+	lastVisionFrameAt time.Time
+	lastVisionSeq     int64
+	lastVisionReason  string
 
 	onStateChange func(SessionState)
 }
@@ -203,13 +206,20 @@ func (s *Session) acousticDone() bool {
 	return s.acousticReady
 }
 
-// SetVisionFrame 缓存本 turn 客户端上传的 JPEG。
-func (s *Session) SetVisionFrame(jpeg []byte) {
+// SetVisionFrame 缓存本 turn 客户端上传的 JPEG（后帧覆盖前帧）。
+// speech_start 才重置 prefetch；object_refresh/audio_end 只更新 JPEG，保留最新画面给 contextual VL。
+func (s *Session) SetVisionFrame(jpeg []byte, seq int64, reason string) {
 	s.mu.Lock()
 	s.turnVisionJPEG = append([]byte(nil), jpeg...)
-	s.visualReady = false
-	s.visualHint = vision.EmptyHint()
-	s.visionPrefetching = false
+	s.lastVisionFrameAt = time.Now()
+	s.lastVisionSeq = seq
+	s.lastVisionReason = reason
+	// 举物补帧 / 提交帧不应打断 owner_face prefetch，也不应重复触发 prefetch
+	if reason == "" || reason == "speech_start" {
+		s.visualReady = false
+		s.visualHint = vision.EmptyHint()
+		s.visionPrefetching = false
+	}
 	s.mu.Unlock()
 }
 

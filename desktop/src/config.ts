@@ -53,12 +53,27 @@ export interface RealtimeClientConfig {
   presence: RealtimePresenceConfig
 }
 
+/** 视觉客户端配置（来自 public config vision 块）。 */
+export interface VisionClientConfig {
+  /** 会话级摄像头：startTalk 后保持流，默认 true */
+  sessionCamera: boolean
+  /** speech_start 时预拍一帧，默认 false（服务端可开） */
+  snapshotOnSpeechStart: boolean
+  /** audio_end 时抓拍，默认 true */
+  snapshotOnAudioEnd: boolean
+}
+
 export interface ClientConfig {
   apiBase: string
   realtimeEnabled: boolean
   writeApproval: boolean
   growthEnabled: boolean
   visionEnabled: boolean
+  visionSessionCamera: boolean
+  visionSnapshotOnSpeechStart: boolean
+  /** P2：举物语义 detected 时 mid-turn / submit 前补拍 */
+  visionSnapshotOnObjectIntent: boolean
+  visionSnapshotOnAudioEnd: boolean
   realtime: RealtimeClientConfig
 }
 
@@ -111,7 +126,27 @@ let _clientConfig: ClientConfig = {
   writeApproval: false,
   growthEnabled: true,
   visionEnabled: false,
+  visionSessionCamera: true,
+  visionSnapshotOnSpeechStart: false,
+  visionSnapshotOnObjectIntent: true,
+  visionSnapshotOnAudioEnd: true,
   realtime: { ...DEFAULT_REALTIME },
+}
+
+function parseVisionBlock(data: Record<string, unknown>): Pick<
+  ClientConfig,
+  | 'visionSessionCamera'
+  | 'visionSnapshotOnSpeechStart'
+  | 'visionSnapshotOnObjectIntent'
+  | 'visionSnapshotOnAudioEnd'
+> {
+  const v = (data.vision ?? {}) as Record<string, unknown>
+  return {
+    visionSessionCamera: v.session_camera !== false,
+    visionSnapshotOnSpeechStart: !!v.snapshot_on_speech_start,
+    visionSnapshotOnObjectIntent: v.snapshot_on_object_intent !== false,
+    visionSnapshotOnAudioEnd: v.snapshot_on_audio_end !== false,
+  }
 }
 
 export function getApiBase(): string {
@@ -255,14 +290,21 @@ function applyPublicConfig(base: string, data: Record<string, unknown>) {
     writeApproval: !!data.write_approval,
     growthEnabled: data.growth_enabled !== false,
     visionEnabled: !!data.vision_enabled,
+    ...parseVisionBlock(data),
     realtime: parseRealtimeBlock(data.realtime),
+  }
+  // 服务端开启 vision 时，客户端默认 opt-in（用户可在设置里关）
+  if (_clientConfig.visionEnabled && typeof window !== 'undefined') {
+    void import('@/services/visionCapture').then(({ ensureVisionCaptureDefault }) => {
+      ensureVisionCaptureDefault()
+    })
   }
   return _clientConfig
 }
 
 /** 运行时从服务端 GET /api/v1/public/config 拉取客户端配置（不读本地 yaml）。 */
 export async function initClientConfig(): Promise<ClientConfig> {
-  if (typeof window !== 'undefined' && window.location.port === '1420') {
+  if (typeof window !== 'undefined' && (window.location.port === '1420' || window.location.port === '1421')) {
     setApiBase('')
     try {
       const res = await fetch('/api/v1/public/config')

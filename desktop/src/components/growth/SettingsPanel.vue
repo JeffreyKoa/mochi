@@ -46,6 +46,11 @@ import {
   setVisionCaptureEnabled,
 } from '@/services/visionCapture'
 import { hideSidePanelPopup, isTauri } from '@/services/chatWindow'
+import { listenTasksRefresh } from '@/services/proactiveSync'
+import {
+  micPermissionDeniedMessage,
+  resetTauriMicrophonePermission,
+} from '@/utils/micPermission'
 
 type TabId = 'bond' | 'memory' | 'pet' | 'tasks' | 'voice' | 'account'
 
@@ -92,6 +97,8 @@ const showTaskHistory = ref(false)
 const voiceprintStatus = ref<VoiceprintStatus | null>(null)
 const voiceprintLoading = ref(false)
 const voiceprintError = ref('')
+const micFixBusy = ref(false)
+const micFixMsg = ref('')
 const enrollingVoice = ref(false)
 const enrollProgress = ref('')
 const enrollCapture = new PCMCapture()
@@ -483,6 +490,20 @@ async function onDeleteVoiceprint() {
   }
 }
 
+/** 重置 Tauri WebView2 麦克风站点权限（配合 Windows 隐私设置） */
+async function onFixMicrophonePermission() {
+  micFixBusy.value = true
+  micFixMsg.value = ''
+  try {
+    const ok = await resetTauriMicrophonePermission()
+    micFixMsg.value = ok
+      ? '已重置应用内麦克风权限，请再试语音对话。'
+      : micPermissionDeniedMessage()
+  } finally {
+    micFixBusy.value = false
+  }
+}
+
 function openAccountTab() {
   tab.value = 'account'
   void loadPreferences()
@@ -865,7 +886,7 @@ onUnmounted(() => {
           </section>
           <section v-if="serverVisionEnabled" class="block flat">
             <label class="toggle-row">
-              <span>语音时看我表情</span>
+              <span>语音时看我（表情/举物）</span>
               <button
                 type="button"
                 class="toggle"
@@ -876,8 +897,9 @@ onUnmounted(() => {
               </button>
             </label>
             <p class="hint">
-              每次说完话前会短暂打开前置摄像头拍一帧，仅用于理解你的表情；照片不上传日志、不长期保存。
-              需服务端开启 vision（config.yaml）。
+              开始对话后 Mochi 会通过「眼睛」（前置摄像头，其感知外界的唯一来源）持续看你，
+              每轮说话时自动理解表情、手里拿的东西和周围场景；结束对话后关闭。
+              照片不上传日志、不长期保存。需服务端开启 vision（config.yaml）。
             </p>
           </section>
           <section class="block">
@@ -889,6 +911,22 @@ onUnmounted(() => {
             </select>
             <p class="hint">自动：设备支持时用本地识别，否则走云端。</p>
             <p v-if="prefsError" class="error">{{ prefsError }}</p>
+          </section>
+          <section v-if="isTauri()" class="block">
+            <h3>麦克风权限</h3>
+            <p class="hint">
+              桌宠语音走 Windows 系统麦克风 + 应用内 WebView 权限。若提示被拒绝，请先打开
+              Windows 设置 → 隐私 → 麦克风，开启「允许桌面应用访问你的麦克风」。
+            </p>
+            <button
+              type="button"
+              class="primary-sm full"
+              :disabled="micFixBusy"
+              @click="onFixMicrophonePermission"
+            >
+              {{ micFixBusy ? '处理中…' : '修复麦克风权限' }}
+            </button>
+            <p v-if="micFixMsg" class="hint">{{ micFixMsg }}</p>
           </section>
           <section class="block">
             <h3>主人声纹</h3>

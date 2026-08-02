@@ -12,6 +12,7 @@ export function mapServerAnimation(raw: string | undefined): Animation {
     case 'idle':
       return raw
     case 'excited':
+    case 'playful':
       return 'happy'
     case 'worried':
       return 'sad'

@@ -130,9 +130,17 @@ export class RealtimeSession {
     return this.send('audio_end', {})
   }
 
-  /** 上传语音 turn 前抓拍 JPEG（base64，不含 data: 前缀）。 */
-  sendVisionFrame(jpegBase64: string, seq?: number): boolean {
-    return this.send('vision_frame', { jpeg: jpegBase64, seq: seq ?? Date.now() })
+  /** 上传语音 turn JPEG（base64，不含 data: 前缀）。 */
+  sendVisionFrame(
+    jpegBase64: string,
+    options?: { seq?: number; reason?: 'speech_start' | 'audio_end' | 'object_refresh' },
+  ): boolean {
+    const payload: { jpeg: string; seq: number; reason?: string } = {
+      jpeg: jpegBase64,
+      seq: options?.seq ?? Date.now(),
+    }
+    if (options?.reason) payload.reason = options.reason
+    return this.send('vision_frame', payload)
   }
 
   sendInterrupt(): boolean {

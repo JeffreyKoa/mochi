@@ -13,13 +13,44 @@ type RefinePlan struct {
 	DynamicPrompt string // V3c：上下文 VL 用户 prompt
 }
 
-// PlanContextual V3c：由语义分类 visual_task 驱动二次 VL，不依赖关键词表。
+// InferVisualTaskFromText 分类超时/失败时的举物/场景启发式（仅 fallback，非主路径）。
+func InferVisualTaskFromText(userText string) string {
+	text := strings.TrimSpace(userText)
+	if text == "" {
+		return ""
+	}
+	lower := strings.ToLower(text)
+	objectCues := []string{
+		"手里", "拿着", "举起", "举起来", "这是什么", "啥东西", "什么东西",
+		"是什么", "认认", "看看这个", "帮我看看", "你再看", "拿的啥", "拿的是",
+	}
+	for _, cue := range objectCues {
+		if strings.Contains(lower, cue) {
+			return "object"
+		}
+	}
+	sceneCues := []string{"窗外", "外面", "房间", "环境", "看看外", "你看外"}
+	for _, cue := range sceneCues {
+		if strings.Contains(lower, cue) {
+			return "scene"
+		}
+	}
+	return ""
+}
+
+// PlanContextual V3c：由语义分类 visual_task 驱动二次 VL；分类缺失时用启发式 fallback。
 func PlanContextual(userText string, faceHint Hint, visualTask string, faceTextClash bool) RefinePlan {
 	text := strings.TrimSpace(userText)
 	if text == "" {
 		return RefinePlan{NeedSecondVL: false, Focus: FocusOwnerFace, Reason: "empty_text"}
 	}
 	task := strings.ToLower(strings.TrimSpace(visualTask))
+	if task == "" || task == "none" {
+		if inferred := InferVisualTaskFromText(text); inferred != "" {
+			task = inferred
+			log.Printf("[vision][planner] heuristic visual_task=%s text=%q", task, truncate(text, 40))
+		}
+	}
 	switch task {
 	case "object":
 		log.Printf("[vision][planner] contextual task=object text=%q", truncate(text, 40))

@@ -186,3 +186,8 @@ vision:
   contextual_planner: true
   classify_enabled: true
   classify_timeout_ms: 800
+  # P0/P1：会话级摄像头 + 双时机快照
+  session_camera: true
+  snapshot_on_speech_start: true
+  snapshot_on_audio_end: true
+  snapshot_on_object_intent: true

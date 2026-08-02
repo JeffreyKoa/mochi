@@ -37,6 +37,7 @@ type Handlers struct {
 	WriteApproval      bool
 	GrowthEnabled      bool
 	VisionEnabled      bool
+	VisionPublic       config.VisionPublicConfig
 }
 
 func Setup(mode string, h Handlers) *gin.Engine {
@@ -62,6 +63,7 @@ func Setup(mode string, h Handlers) *gin.Engine {
 			"write_approval":   h.WriteApproval,
 			"growth_enabled":   h.GrowthEnabled,
 			"vision_enabled":   h.VisionEnabled,
+			"vision":           h.VisionPublic,
 		})
 	})
 

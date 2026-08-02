@@ -50,7 +50,12 @@ func (s *Service) ClassifyUtterance(ctx context.Context, text string, acoustic A
 	})
 	if err != nil {
 		log.Printf("[emotion][classify] error err=%v elapsed_ms=%d", err, time.Since(start).Milliseconds())
-		return FallbackInsight(acoustic, face)
+		ins := FallbackInsight(acoustic, face)
+		if task := vision.InferVisualTaskFromText(text); task != "" {
+			ins.VisualTask = task
+			ins.Reason = "classify_error_heuristic"
+		}
+		return ins
 	}
 
 	ins := parseClassifyResponse(resp.Content)

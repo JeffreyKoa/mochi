@@ -25,7 +25,7 @@ func MergeVisualHint(h Hint, v vision.Hint, minConf float64) Hint {
 			return h
 		}
 		if h.VisualNote == "" && v.Note != "" {
-			h.VisualNote = v.Note
+			h.VisualNote = vision.SanitizeCompanionNote(v.Note)
 			h.VisualFocus = string(vision.FocusOwnerFace)
 		}
 		h = applyVisualEmpathy(h, v, minConf)
@@ -41,6 +41,13 @@ func MergeVisualHint(h Hint, v vision.Hint, minConf float64) Hint {
 			log.Printf("[emotion][visual] merge_skip focus=object empty_note")
 			return h
 		}
+		note = vision.SanitizeCompanionNote(note)
+		if summary := strings.TrimSpace(v.ObjectSummary); summary != "" {
+			summary = vision.SanitizeCompanionNote(summary)
+			if summary == "没看清楚" && !strings.Contains(note, "没看清楚") {
+				note = "我没看清楚：" + note
+			}
+		}
 		log.Printf("[emotion][visual] merge_ok focus=object note=%q mood_unchanged=%s intent_unchanged=%s",
 			note, h.UserMood, h.Intent)
 		h.VisualNote = note
@@ -55,6 +62,7 @@ func MergeVisualHint(h Hint, v vision.Hint, minConf float64) Hint {
 			log.Printf("[emotion][visual] merge_skip focus=scene empty_note")
 			return h
 		}
+		note = vision.SanitizeCompanionNote(note)
 		log.Printf("[emotion][visual] merge_ok focus=scene note=%q mood_unchanged=%s intent_unchanged=%s",
 			note, h.UserMood, h.Intent)
 		h.VisualNote = note

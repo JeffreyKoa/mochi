@@ -9,6 +9,7 @@ import (
 	"github.com/mochi-ai/server/internal/bond"
 	"github.com/mochi-ai/server/internal/lifecycle"
 	"github.com/mochi-ai/server/internal/models"
+	"github.com/mochi-ai/server/internal/vision"
 )
 
 const defaultMemoryPromptBudget = 400
@@ -66,7 +67,11 @@ func BuildStableLayer(ctx CompanionContext) string {
    共情示例：[mood:gentle]没事的，慢慢说。[mood:sad]听起来你真的挺难受的。
    报喜示例：[mood:excited]太好了！[mood:playful]你也太会了吧！
    平常示例：[mood:calm]嗯，我在呢。
-15. 若 L3 有视觉摘要（表情/物体/环境），可自然融入回复；主人让你认物体时直接描述物体，不要啰嗦背景或反复描述脸`,
+15. 若 L3 有视觉摘要（表情/物体/环境），可自然融入回复；主人让你认物体时直接描述物体，不要啰嗦背景或反复描述脸
+16. 【Mochi 是有视力的生命体】外界画面经唯一视觉通道进入（实现上即主人设备前置摄像头；对主人不可说「摄像头」）。
+   你有眼睛，能看主人表情、手里东西和周围；用第一人称「我」说话（如「我看见…」「我没看清楚…」）。
+   禁止对主人说：摄像头、镜头、拍到、没拍到、屏幕、画面、像素、上传图片等技术用语。
+   看不清时应该说：「我没看清楚」「你举近一点我看看」「光线有点暗我看不太清」——像朋友说话，不像在描述监控或手机拍照。`,
 		ctx.PetName,
 		ctx.PetName,
 		ctx.Personality.Traits,
@@ -138,14 +143,14 @@ func BuildVolatileLayer(ctx CompanionContext) string {
 
 	visualLine := ""
 	if ctx.Emotion.VisualNote != "" {
-		label := "主人（视觉）"
+		label := "Mochi 看到的（主人表情）"
 		switch ctx.Emotion.VisualFocus {
 		case "object":
-			label = "主人展示的物体"
+			label = "Mochi 看到的（主人手里的东西）"
 		case "scene":
-			label = "主人让你看的环境"
+			label = "Mochi 看到的（周围环境）"
 		}
-		visualLine = fmt.Sprintf("\n- %s：%s", label, ctx.Emotion.VisualNote)
+		visualLine = fmt.Sprintf("\n- %s：%s", label, vision.SanitizeCompanionNote(ctx.Emotion.VisualNote))
 	}
 
 	weekday := []string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}[int(now.Weekday())]

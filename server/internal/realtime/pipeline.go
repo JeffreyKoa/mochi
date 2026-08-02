@@ -949,7 +949,13 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		p.abortTurnSilent(sess, send)
 		return false
 	}
-	_ = send.Send(MsgLLMDone, LLMDone{Text: reply})
+	// 流式 stripper 尾部缓冲刷出，避免未闭合标记残留到 UI。
+	if tail := strings.TrimSpace(uiMoodStrip.Flush()); tail != "" {
+		_ = send.Send(MsgLLMToken, LLMToken{Token: tail})
+	}
+	// LLMDone 只发 UI 文本（剥离 [mood:xxx]）；TTS 仍用含标记的原始 reply。
+	uiReply := text.StripMoodTags(reply)
+	_ = send.Send(MsgLLMDone, LLMDone{Text: uiReply})
 	if compliance := text.MoodTagComplianceRate(reply); reply != "" {
 		log.Printf("[realtime][mood] compliance=%.0f%% tags=%d sentences=%d session=%s",
 			compliance*100, text.CountMoodTags(reply), text.CountSpeakSentences(reply), sess.ID)
@@ -986,7 +992,7 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 }
 
 func (p *Pipeline) speakReply(ctx context.Context, sess *Session, send Sender, reply string) {
-	_ = send.Send(MsgLLMDone, LLMDone{Text: reply})
+	_ = send.Send(MsgLLMDone, LLMDone{Text: text.StripMoodTags(reply)})
 
 	if p.tts == nil {
 		return

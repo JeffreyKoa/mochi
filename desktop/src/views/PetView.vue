@@ -24,6 +24,7 @@ import {
 } from '@/services/chatWindow'
 import { getClientConfig, initClientConfig } from '@/config'
 import PetCanvas from '@/components/pet/PetCanvas.vue'
+import { warmUpMicrophoneAccess, micPermissionDeniedMessage } from '@/utils/micPermission'
 import { onLipSync } from '@/services/voice'
 import {
   claimVoiceOwner,
@@ -241,6 +242,10 @@ onMounted(async () => {
     }
 
     startRoamer()
+  }
+
+  if (isTauri() && auth.isLoggedIn) {
+    void warmUpMicrophoneAccess()
   }
 
   if (auth.isLoggedIn) {
@@ -483,7 +488,7 @@ async function startVoiceInteraction() {
     }
     return true
   } catch {
-    pet.showSpeechBubble('无法启动麦克风，请检查权限', 6000)
+    pet.showSpeechBubble(micPermissionDeniedMessage(), 8000)
     pet.syncAnimationFromState()
     roamer?.resume()
     return false
@@ -597,6 +602,7 @@ async function onPlay() {
     const result = await interactWithRetry('play')
     pet.updateLifeState(result.state as Parameters<typeof pet.updateLifeState>[0])
     pet.setAnimation('happy')
+    pet.triggerHappyBurst()
     pet.showSpeechBubble('好开心！')
     setTimeout(() => {
       pet.syncAnimationFromState()
