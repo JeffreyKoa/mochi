@@ -931,7 +931,7 @@ onUnmounted(() => {
           <section class="block">
             <h3>主人声纹</h3>
             <p class="hint">
-              录入后 Mochi 只认你的声音，未录入无法开始语音对话。需自行下载 3D-Speaker CAM++ ONNX 放到
+              录入后 Mochi 只认你的声音：唤醒与整段对话都会验声纹。非主人直接说话会被告知「不是主人」；你正在说话时，他人声音会被静默过滤。需自行下载 3D-Speaker CAM++ ONNX 放到
               <code>public/models/speaker/campp.onnx</code>（ModelScope:
               iic/speech_campplus_sv_zh-cn_16k-common）。
             </p>

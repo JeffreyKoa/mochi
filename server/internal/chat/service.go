@@ -113,7 +113,7 @@ func (s *Service) activityContextForUser(ctx context.Context, userID uint64) map
 	return wellness.ToActivityContext(act)
 }
 
-func (s *Service) turnMessage(ctx context.Context, userID uint64, message, triggerType string, acoustic emotion.AcousticHint, visual vision.Hint, pipeline *emotion.PerceptionState, onToken func(token string)) (string, error) {
+func (s *Service) turnMessage(ctx context.Context, userID uint64, message, triggerType string, acoustic emotion.AcousticHint, visual vision.Hint, pipeline *emotion.PerceptionState, topicAnchor agent.TopicAnchorInput, onToken func(token string)) (string, error) {
 	pet, err := s.getPetByUser(ctx, userID)
 	if err != nil {
 		return "", err
@@ -128,6 +128,7 @@ func (s *Service) turnMessage(ctx context.Context, userID uint64, message, trigg
 		AcousticHint:       acoustic,
 		VisualHint:         visual,
 		PipelinePerception: pipeline,
+		TopicAnchor:        topicAnchor,
 	}
 
 	out, err := s.runtime.Turn(ctx, input)
@@ -160,11 +161,11 @@ func (s *Service) turnMessage(ctx context.Context, userID uint64, message, trigg
 }
 
 func (s *Service) StreamMessage(ctx context.Context, userID uint64, message string, onToken func(token string)) (string, error) {
-	return s.turnMessage(ctx, userID, message, "user_chat", emotion.EmptyAcousticHint(), vision.EmptyHint(), nil, onToken)
+	return s.turnMessage(ctx, userID, message, "user_chat", emotion.EmptyAcousticHint(), vision.EmptyHint(), nil, agent.TopicAnchorInput{}, onToken)
 }
 
-func (s *Service) StreamMessageVoice(ctx context.Context, userID uint64, message string, acoustic emotion.AcousticHint, visual vision.Hint, pipeline *emotion.PerceptionState, onToken func(token string)) (string, error) {
-	return s.turnMessage(ctx, userID, message, "user_voice", acoustic, visual, pipeline, onToken)
+func (s *Service) StreamMessageVoice(ctx context.Context, userID uint64, message string, acoustic emotion.AcousticHint, visual vision.Hint, pipeline *emotion.PerceptionState, topicAnchor agent.TopicAnchorInput, onToken func(token string)) (string, error) {
+	return s.turnMessage(ctx, userID, message, "user_voice", acoustic, visual, pipeline, topicAnchor, onToken)
 }
 
 // EmotionService 供 Pipeline V3c 调用语义分类。
@@ -218,7 +219,7 @@ func (s *Service) SendMessageStream(c *gin.Context, userID uint64, message strin
 }
 
 func (s *Service) CompleteMessage(ctx context.Context, userID uint64, message string) (string, error) {
-	return s.turnMessage(ctx, userID, message, "user_chat", emotion.EmptyAcousticHint(), vision.EmptyHint(), nil, nil)
+	return s.turnMessage(ctx, userID, message, "user_chat", emotion.EmptyAcousticHint(), vision.EmptyHint(), nil, agent.TopicAnchorInput{}, nil)
 }
 
 func (s *Service) Runtime() *agent.Runtime {

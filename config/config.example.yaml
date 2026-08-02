@@ -73,6 +73,12 @@ realtime:
     verify_window_sec: 4.0
     wake_probe_sec: 1.0
     stream_check_interval_ms: 500
+    reject_streak: 3
+    owner_recent_ms: 8000
+    non_owner_reply_cooldown_ms: 12000
+  topic_anchor:
+    enabled: true
+    sticky_turns: 3
   presence:
     enabled: true
     ambient_interval_ms: 2000

@@ -528,7 +528,10 @@ async function handlePetTap() {
             })
             break
           case 'not_owner':
-            pet.showSpeechBubble('我只听主人的声音哦~', 2500)
+            // TTS 拒答由 sendNonOwnerReply 触发，此处仅作无 WS 时的兜底
+            if (!rt.statusText) {
+              pet.showSpeechBubble('我只听主人的声音哦~', 2500)
+            }
             break
           case 'not_speech':
             break

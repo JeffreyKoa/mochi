@@ -31,6 +31,12 @@ export interface RealtimeVoiceprintConfig {
   verifyWindowSec: number
   wakeProbeSec: number
   streamCheckIntervalMs: number
+  /** 连续验声失败多少次视为非主人（场景①）。 */
+  rejectStreak: number
+  /** 此窗口内验失败 → 场景②静默过滤。 */
+  ownerRecentMs: number
+  /** 场景①拒答 TTS 冷却（毫秒）。 */
+  nonOwnerReplyCooldownMs: number
 }
 
 export interface RealtimePresenceConfig {
@@ -109,6 +115,9 @@ export const DEFAULT_REALTIME: RealtimeClientConfig = {
     verifyWindowSec: 4.0,
     wakeProbeSec: 1.0,
     streamCheckIntervalMs: 500,
+    rejectStreak: 3,
+    ownerRecentMs: 8000,
+    nonOwnerReplyCooldownMs: 12000,
   },
   presence: {
     enabled: true,
@@ -252,6 +261,12 @@ function parseRealtimeBlock(raw: unknown): RealtimeClientConfig {
       streamCheckIntervalMs: num(
         v.stream_check_interval_ms ?? v.streamCheckIntervalMs,
         base.voiceprint.streamCheckIntervalMs,
+      ),
+      rejectStreak: num(v.reject_streak ?? v.rejectStreak, base.voiceprint.rejectStreak),
+      ownerRecentMs: num(v.owner_recent_ms ?? v.ownerRecentMs, base.voiceprint.ownerRecentMs),
+      nonOwnerReplyCooldownMs: num(
+        v.non_owner_reply_cooldown_ms ?? v.nonOwnerReplyCooldownMs,
+        base.voiceprint.nonOwnerReplyCooldownMs,
       ),
     }
   }

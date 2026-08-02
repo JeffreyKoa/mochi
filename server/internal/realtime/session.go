@@ -36,6 +36,8 @@ type Session struct {
 	preferMP3      bool
 	echoGuardMS    int // 0 = 使用服务端默认
 
+	topicAnchor TopicAnchor
+
 	turnPCM        []byte
 	acousticHint   emotion.AcousticHint
 	acousticReady  bool
@@ -340,4 +342,19 @@ func (s *Session) EffectiveEchoGuardMS(defaultMS int) int {
 		return s.echoGuardMS
 	}
 	return defaultMS
+}
+
+// TopicAnchor 返回当前会话话题锚点副本。
+func (s *Session) TopicAnchor() TopicAnchor {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.topicAnchor
+}
+
+// ApplyTopicAnchor 根据本 turn classify 结果更新锚点并返回快照。
+func (s *Session) ApplyTopicAnchor(userText string, insight emotion.UtteranceInsight, cfg TopicAnchorConfig) TopicAnchor {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.topicAnchor = UpdateTopicAnchor(s.topicAnchor, userText, insight, cfg)
+	return s.topicAnchor
 }

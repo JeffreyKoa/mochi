@@ -8,6 +8,12 @@ import (
 	"github.com/mochi-ai/server/pkg/ai"
 )
 
+// TopicAnchorInput 会话级话题锚点（P1），注入 LLM L3。
+type TopicAnchorInput struct {
+	CurrentTopic string `json:"current_topic,omitempty"`
+	OpenQuestion string `json:"open_question,omitempty"`
+}
+
 // TurnInput represents the input parameters for a single Agent interaction turn.
 type TurnInput struct {
 	UserID          uint64                 `json:"user_id"`
@@ -18,6 +24,7 @@ type TurnInput struct {
 	AcousticHint    emotion.AcousticHint   `json:"acoustic_hint,omitempty"` // 语音 turn 的声学情绪（Phase 2）
 	VisualHint      vision.Hint            `json:"visual_hint,omitempty"`   // 语音 turn 的视觉感知（Phase 1）
 	PipelinePerception *emotion.PerceptionState `json:"pipeline_perception,omitempty"` // V3c：Pipeline 融合唯一源
+	TopicAnchor     TopicAnchorInput       `json:"topic_anchor,omitempty"`
 }
 
 // TurnOutput represents the output of a single Agent interaction turn, supporting streaming.

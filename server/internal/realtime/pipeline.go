@@ -403,6 +403,34 @@ func (p *Pipeline) classifyUtterance(ctx context.Context, userText string, acous
 	return emotion.FallbackInsight(acoustic, faceHint)
 }
 
+func (p *Pipeline) topicAnchorConfig() TopicAnchorConfig {
+	return TopicAnchorConfig{
+		Enabled:     p.cfg.TopicAnchor.Enabled,
+		StickyTurns: p.cfg.TopicAnchor.StickyTurns,
+	}
+}
+
+// applyTopicAnchor 更新会话锚点并返回供 LLM L3 注入的快照。
+func (p *Pipeline) applyTopicAnchor(ctx context.Context, sess *Session, userText string, perception *emotion.PerceptionState) agent.TopicAnchorInput {
+	cfg := p.topicAnchorConfig()
+	if !cfg.Enabled || strings.TrimSpace(userText) == "" {
+		return agent.TopicAnchorInput{}
+	}
+	var insight emotion.UtteranceInsight
+	if perception != nil {
+		insight = perception.Insight
+	} else {
+		insight = p.classifyUtterance(ctx, userText, emotion.EmptyAcousticHint(), vision.EmptyHint())
+	}
+	anchor := sess.ApplyTopicAnchor(userText, insight, cfg)
+	log.Printf("[topic_anchor] session=%s topic=%q open=%q sticky=%d",
+		sess.ID, anchor.CurrentTopic, anchor.OpenQuestion, anchor.StickyUntilTurn)
+	return agent.TopicAnchorInput{
+		CurrentTopic: anchor.CurrentTopic,
+		OpenQuestion: anchor.OpenQuestion,
+	}
+}
+
 // finalizeParallelVision 兼容旧调用：仅返回 visual Hint。
 func (p *Pipeline) finalizeParallelVision(ctx context.Context, sess *Session, userText string, acoustic emotion.AcousticHint, faceHint vision.Hint) vision.Hint {
 	state := p.finalizeParallelPerception(ctx, sess, userText, acoustic, faceHint)
@@ -602,7 +630,9 @@ func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text
 	send.SendAnimation(StateThinking)
 	turnStarted = true
 
-	if ok := p.streamLLMAndVoice(ctx, sess, send, text, withVoice, perception); !ok {
+	topicAnchor := p.applyTopicAnchor(ctx, sess, text, perception)
+
+	if ok := p.streamLLMAndVoice(ctx, sess, send, text, withVoice, perception, topicAnchor); !ok {
 		turnStarted = false
 	}
 }
@@ -706,7 +736,7 @@ func (p *Pipeline) playSegmentResult(res segmentSynthResult, onChunk func([]byte
 }
 
 // streamLLMAndVoice runs LLM token streaming and pipes sentence chunks to TTS asynchronously.
-func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Sender, userText string, withVoice bool, perception *emotion.PerceptionState) bool {
+func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Sender, userText string, withVoice bool, perception *emotion.PerceptionState, topicAnchor agent.TopicAnchorInput) bool {
 	var tokenBuf strings.Builder
 	speaking := false
 	audioChunks := 0
@@ -889,7 +919,7 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 	}
 
 	var uiMoodStrip text.StreamMoodStripper
-	reply, err := p.chat.StreamMessageVoice(ctx, sess.UserID, userText, perceptionAcoustic(perception), perceptionVisual(perception), perception, func(token string) {
+	reply, err := p.chat.StreamMessageVoice(ctx, sess.UserID, userText, perceptionAcoustic(perception), perceptionVisual(perception), perception, topicAnchor, func(token string) {
 		llmTokenMu.Lock()
 		if !llmTokenSeen {
 			llmTokenSeen = true
@@ -1001,6 +1031,15 @@ func (p *Pipeline) speakReply(ctx context.Context, sess *Session, send Sender, r
 	sess.SetState(StateSpeaking)
 	send.SendAnimation(StateSpeaking)
 	_ = p.speakAudio(ctx, sess, send, reply)
+}
+
+// OnNonOwnerTurn 场景①：非主人直接对 Mochi 说话，口语拒答（不经 ASR/LLM）。
+func (p *Pipeline) OnNonOwnerTurn(ctx context.Context, sess *Session, send Sender) {
+	reply := "你好像不是主人呢，我只能听主人的话哦。"
+	log.Printf("[realtime] non_owner_turn session=%s", sess.ID)
+	p.speakReply(ctx, sess, send, reply)
+	_ = send.Send(MsgTTSDone, map[string]any{})
+	p.setListening(sess, send)
 }
 
 func (p *Pipeline) speakAudio(ctx context.Context, sess *Session, send Sender, reply string) bool {

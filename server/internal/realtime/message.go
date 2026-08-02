@@ -13,7 +13,9 @@ const (
 	MsgPrewarm      = "prewarm"
 	MsgPlaybackMark = "playback_mark"
 	MsgClientCaps   = "client_caps"
-	MsgVisionFrame  = "vision_frame"
+	MsgVisionFrame     = "vision_frame"
+	MsgNonOwnerTurn    = "non_owner_turn"
+	MsgUtteranceCancel = "utterance_cancel"
 )
 
 // Server → Client message types

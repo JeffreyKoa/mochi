@@ -171,6 +171,16 @@ export class RealtimeSession {
     return this.send('playback_mark', { at_ms: atMs })
   }
 
+  /** 场景①：非主人直接对 Mochi 说话，请求服务端 TTS 拒答。 */
+  sendNonOwnerTurn(): boolean {
+    return this.send('non_owner_turn', {})
+  }
+
+  /** 取消已 audio_start 但未上传有效音频的 utterance。 */
+  sendUtteranceCancel(): boolean {
+    return this.send('utterance_cancel', {})
+  }
+
   sendTurnAck(): boolean {
     return this.send('turn_ack', {})
   }

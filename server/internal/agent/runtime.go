@@ -612,6 +612,10 @@ func (r *Runtime) Turn(ctx context.Context, input TurnInput) (TurnOutput, error)
 		Memories:           agentCtx.Memories,
 		ShortHistory:       agentCtx.ShortHistory,
 		Emotion:            agentCtx.EmotionHint,
+		TopicAnchor: prompt.TopicAnchorContext{
+			CurrentTopic: input.TopicAnchor.CurrentTopic,
+			OpenQuestion: input.TopicAnchor.OpenQuestion,
+		},
 		Now:                time.Now(),
 		MemoryPromptBudget: memBudget,
 		LifeStage:          ageInfo.Stage,
@@ -621,6 +625,10 @@ func (r *Runtime) Turn(ctx context.Context, input TurnInput) (TurnOutput, error)
 		StyleConfig:        styleCfg,
 		IsFocusWorkMode:    isFocusWorkMode,
 	})
+	if input.TopicAnchor.CurrentTopic != "" || input.TopicAnchor.OpenQuestion != "" {
+		log.Printf("[topic_anchor] prompt pet=%d topic=%q open=%q",
+			pet.ID, input.TopicAnchor.CurrentTopic, input.TopicAnchor.OpenQuestion)
+	}
 	if input.TriggerType == "system_proactive" {
 		messages = append(messages, ai.Message{
 			Role:    "system",

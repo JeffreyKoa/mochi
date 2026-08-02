@@ -18,6 +18,7 @@ type CompanionContext struct {
 	Memories           []models.Memory
 	ShortHistory       []models.ChatMessage
 	Emotion            emotion.Hint
+	TopicAnchor        TopicAnchorContext
 	Now                time.Time
 	MemoryPromptBudget int
 	LifeStage          string
@@ -26,6 +27,12 @@ type CompanionContext struct {
 	Species            string
 	StyleConfig        models.StyleConfig
 	IsFocusWorkMode    bool
+}
+
+// TopicAnchorContext 跨 turn 话题锚点（P1），注入 L3。
+type TopicAnchorContext struct {
+	CurrentTopic string
+	OpenQuestion string
 }
 
 func BuildCompanionPrompt(ctx CompanionContext) []ai.Message {

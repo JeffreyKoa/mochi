@@ -166,13 +166,14 @@ func BuildVolatileLayer(ctx CompanionContext) string {
 	}
 
 	moodDirective := moodTagDirective(ctx.Emotion)
+	topicBlock := formatTopicAnchorBlock(ctx)
 
 	return fmt.Sprintf(`【此刻】
 - 时间：%s %d点
 - 自身：心情%s（%d/100）| 亲密度 %d/100 | 饥饿 %d/100 | 精力 %d/100%s
 - 主人：%s%s
 - 策略：%s
-- %s`,
+- %s%s`,
 		weekday, now.Hour(),
 		moodDesc, ctx.State.Mood,
 		ctx.State.Love, ctx.State.Hungry, ctx.State.Energy,
@@ -181,7 +182,29 @@ func BuildVolatileLayer(ctx CompanionContext) string {
 		visualLine,
 		emotionGuide,
 		moodDirective,
+		topicBlock,
 	)
+}
+
+// formatTopicAnchorBlock L3 话题锚点：优先回答待回答问句，减少跑题（P1）。
+func formatTopicAnchorBlock(ctx CompanionContext) string {
+	ta := ctx.TopicAnchor
+	if ta.CurrentTopic == "" && ta.OpenQuestion == "" {
+		return ""
+	}
+	var lines []string
+	if ta.CurrentTopic != "" {
+		lines = append(lines, fmt.Sprintf("- 当前话题：%s", ta.CurrentTopic))
+	}
+	if ta.OpenQuestion != "" {
+		lines = append(lines, fmt.Sprintf("- 待回答：%s", ta.OpenQuestion))
+	}
+	rule := "- 话题规则：优先直接回答「待回答」；勿被无关插话带跑；若主人明确换题则跟随新题"
+	if ta.CurrentTopic == "辨认物品" && ctx.Emotion.VisualFocus == "object" && ctx.Emotion.VisualNote != "" {
+		rule += "；主人问手里东西时，先根据上方视觉摘要答物体，再闲聊"
+	}
+	lines = append(lines, rule)
+	return "\n" + strings.Join(lines, "\n")
 }
 
 const daysPerYear = 365

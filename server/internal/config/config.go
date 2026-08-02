@@ -96,6 +96,7 @@ type RealtimeConfig struct {
 	Gate           RealtimeGate           `yaml:"gate"`
 	Voiceprint     RealtimeVoiceprint     `yaml:"voiceprint"`
 	Presence       RealtimePresence       `yaml:"presence"`
+	TopicAnchor    RealtimeTopicAnchor    `yaml:"topic_anchor"`
 }
 
 type RealtimeDashscope struct {
@@ -134,11 +135,14 @@ type RealtimeBargeIn struct {
 }
 
 type RealtimeVoiceprint struct {
-	Required               bool    `yaml:"required"`
-	Threshold              float64 `yaml:"threshold"`
-	VerifyWindowSec        float64 `yaml:"verify_window_sec"`
-	WakeProbeSec           float64 `yaml:"wake_probe_sec"`
-	StreamCheckIntervalMS  int     `yaml:"stream_check_interval_ms"`
+	Required                 bool    `yaml:"required"`
+	Threshold                float64 `yaml:"threshold"`
+	VerifyWindowSec          float64 `yaml:"verify_window_sec"`
+	WakeProbeSec             float64 `yaml:"wake_probe_sec"`
+	StreamCheckIntervalMS    int     `yaml:"stream_check_interval_ms"`
+	RejectStreak             int     `yaml:"reject_streak"`
+	OwnerRecentMS            int     `yaml:"owner_recent_ms"`
+	NonOwnerReplyCooldownMS  int     `yaml:"non_owner_reply_cooldown_ms"`
 }
 
 type RealtimePresence struct {
@@ -148,6 +152,12 @@ type RealtimePresence struct {
 	SpeechThreshold     float64 `yaml:"speech_threshold"`
 	AmbientEnergyFloor  float64 `yaml:"ambient_energy_floor"`
 	OwnerPresenceTTLSec int     `yaml:"owner_presence_ttl_sec"`
+}
+
+// RealtimeTopicAnchor 会话级话题锚点（P1）。
+type RealtimeTopicAnchor struct {
+	Enabled     bool `yaml:"enabled"`
+	StickyTurns int  `yaml:"sticky_turns"`
 }
 
 // RealtimePublicConfig is exposed via GET /api/v1/public/config (no secrets).
@@ -176,11 +186,14 @@ type RealtimePublicConfig struct {
 		BargeInMS     int     `json:"barge_in_ms"`
 	} `json:"barge_in"`
 	Voiceprint struct {
-		Required              bool    `json:"required"`
-		Threshold             float64 `json:"threshold"`
-		VerifyWindowSec       float64 `json:"verify_window_sec"`
-		WakeProbeSec          float64 `json:"wake_probe_sec"`
-		StreamCheckIntervalMS int     `json:"stream_check_interval_ms"`
+		Required                bool    `json:"required"`
+		Threshold               float64 `json:"threshold"`
+		VerifyWindowSec         float64 `json:"verify_window_sec"`
+		WakeProbeSec            float64 `json:"wake_probe_sec"`
+		StreamCheckIntervalMS   int     `json:"stream_check_interval_ms"`
+		RejectStreak            int     `json:"reject_streak"`
+		OwnerRecentMS           int     `json:"owner_recent_ms"`
+		NonOwnerReplyCooldownMS int     `json:"non_owner_reply_cooldown_ms"`
 	} `json:"voiceprint"`
 	Presence struct {
 		Enabled            bool    `json:"enabled"`
@@ -631,6 +644,15 @@ func (r *RealtimeConfig) applyDefaults() {
 	if r.Voiceprint.StreamCheckIntervalMS == 0 {
 		r.Voiceprint.StreamCheckIntervalMS = 500
 	}
+	if r.Voiceprint.RejectStreak == 0 {
+		r.Voiceprint.RejectStreak = 3
+	}
+	if r.Voiceprint.OwnerRecentMS == 0 {
+		r.Voiceprint.OwnerRecentMS = 8000
+	}
+	if r.Voiceprint.NonOwnerReplyCooldownMS == 0 {
+		r.Voiceprint.NonOwnerReplyCooldownMS = 12000
+	}
 	if r.Presence.AmbientIntervalMS == 0 {
 		r.Presence.AmbientIntervalMS = 2000
 		r.Presence.Enabled = true
@@ -646,6 +668,9 @@ func (r *RealtimeConfig) applyDefaults() {
 	}
 	if r.Presence.OwnerPresenceTTLSec == 0 {
 		r.Presence.OwnerPresenceTTLSec = 30
+	}
+	if r.TopicAnchor.StickyTurns == 0 {
+		r.TopicAnchor.StickyTurns = 3
 	}
 	if r.ThinkingFiller.Enabled {
 		if r.ThinkingFiller.ThresholdMS == 0 {
@@ -761,6 +786,9 @@ func (r RealtimeConfig) PublicClient() RealtimePublicConfig {
 	out.Voiceprint.VerifyWindowSec = r.Voiceprint.VerifyWindowSec
 	out.Voiceprint.WakeProbeSec = r.Voiceprint.WakeProbeSec
 	out.Voiceprint.StreamCheckIntervalMS = r.Voiceprint.StreamCheckIntervalMS
+	out.Voiceprint.RejectStreak = r.Voiceprint.RejectStreak
+	out.Voiceprint.OwnerRecentMS = r.Voiceprint.OwnerRecentMS
+	out.Voiceprint.NonOwnerReplyCooldownMS = r.Voiceprint.NonOwnerReplyCooldownMS
 	out.Presence.Enabled = r.Presence.Enabled
 	out.Presence.AmbientIntervalMS = r.Presence.AmbientIntervalMS
 	out.Presence.AwayTimeoutSec = r.Presence.AwayTimeoutSec

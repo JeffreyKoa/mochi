@@ -561,6 +561,21 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 			if in.Reason == "" || in.Reason == "speech_start" {
 				h.pipeline.PrefetchOwnerFace(ctx, sess)
 			}
+
+		case MsgNonOwnerTurn:
+			if h.pipeline != nil {
+				h.pipeline.OnNonOwnerTurn(ctx, sess, sender)
+			}
+
+		case MsgUtteranceCancel:
+			audioMu.Lock()
+			audioBuf = audioBuf[:0]
+			audioMu.Unlock()
+			vad.Reset()
+			resetASR()
+			sess.ClearTurnMedia()
+			sess.SetState(StateIdle)
+			sender.SendAnimation(StateIdle)
 		}
 	}
 }
