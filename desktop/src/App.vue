@@ -61,6 +61,20 @@ async function applyPopupPanelMode(mode: 'chat' | 'settings', token?: string | n
   }
 }
 
+/** 从 pending / 事件同步侧栏模式（chat 弹窗专用） */
+function syncPopupPanelFromPending() {
+  const pending = consumeSidePanelPending()
+  if (!pending) return false
+  popupPanelMode.value = pending.mode
+  if (pending.token && !auth.isLoggedIn) {
+    auth.setToken(pending.token)
+  }
+  if (pending.mode === 'settings') {
+    growth.openSettings()
+  }
+  return true
+}
+
 const isBrowserDev = computed(() => !isTauri())
 const isChatWindow = computed(() => winLabel.value === 'chat')
 const isPetShell = computed(() => isBrowserDev.value || isPetWindowLabel(winLabel.value))
@@ -304,6 +318,8 @@ onMounted(async () => {
   if (isChatWindow.value) {
     auth.syncFromStorage()
     await initClientConfig().catch((e) => console.warn('[chat] config', e))
+    // 先恢复 pending mode，避免 v-else 误挂载 ChatPanel
+    const hadPending = syncPopupPanelFromPending()
     loading.value = false
     unlistenProactive = await listenProactive((payload) => {
       rt.appendAssistantMessage(payload.message)
@@ -312,11 +328,18 @@ onMounted(async () => {
       const { listen } = await import('@tauri-apps/api/event')
       await listen('side-panel-opened', async (event) => {
         const payload = event.payload as { mode?: 'chat' | 'settings'; token?: string | null } | undefined
-        await applyPopupPanelMode(payload?.mode ?? 'chat', payload?.token)
+        const mode = payload?.mode ?? 'chat'
+        await applyPopupPanelMode(mode, payload?.token)
       })
       await listen('chat-opened', async (event) => {
         const payload = event.payload as { mode?: 'chat' | 'settings'; token?: string | null } | undefined
-        await applyPopupPanelMode(payload?.mode ?? 'chat', payload?.token)
+        if (payload?.mode === 'settings') return
+        await applyPopupPanelMode('chat', payload?.token)
+      })
+      await listen('side-panel-closed', (event) => {
+        const mode = (event.payload as { mode?: string } | undefined)?.mode
+        if (mode === 'settings') growth.closeSettings()
+        popupPanelMode.value = null
       })
       await listen('side-panel-side-changed', (event) => {
         sidePanelOnLeft.value = !!event.payload
@@ -324,10 +347,11 @@ onMounted(async () => {
     } catch (e) {
       console.warn('[chat] init listener failed', e)
     }
-    const pending = consumeSidePanelPending()
-    if (pending) {
-      await applyPopupPanelMode(pending.mode, pending.token)
-    } else if (auth.isLoggedIn) {
+    if (!hadPending && popupPanelMode.value === 'chat' && auth.isLoggedIn) {
+      void loadUserData()
+    } else if (!hadPending && popupPanelMode.value === null && auth.isLoggedIn) {
+      // 弹窗被 show 但未带 pending（不应出现）→ 默认聊天
+      popupPanelMode.value = 'chat'
       void loadUserData()
     }
     return
@@ -436,7 +460,7 @@ onUnmounted(() => {
     <!-- Tauri side panel popup (chat / settings) -->
     <template v-else-if="isChatWindow && ready">
       <SettingsPanel v-if="popupPanelMode === 'settings'" :class="{ 'panel-on-left': sidePanelOnLeft }" />
-      <ChatPanel v-else floating :class="{ 'panel-on-left': sidePanelOnLeft }" />
+      <ChatPanel v-else-if="popupPanelMode === 'chat'" floating :class="{ 'panel-on-left': sidePanelOnLeft }" />
     </template>
 
     <!-- Tauri pet window -->

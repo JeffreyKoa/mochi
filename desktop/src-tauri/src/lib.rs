@@ -14,6 +14,11 @@ const CHAT_H: f64 = 440.0;
 const CHAT_GAP: f64 = 8.0;
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+static LAST_CHAT_SYNC: Mutex<Option<Instant>> = Mutex::new(None);
+const CHAT_SYNC_MIN_MS: u64 = 100;
 
 static LAST_ON_LEFT: AtomicBool = AtomicBool::new(false);
 
@@ -201,6 +206,12 @@ fn collapse_pet_chat(app: AppHandle, label: Option<String>) -> Result<(), String
     Ok(())
 }
 
+/// 拖拽结束后一次性对齐聊天窗（Moved 事件节流期间可能略滞后）
+#[tauri::command]
+fn sync_chat_beside_pet(app: AppHandle) -> Result<(), String> {
+    place_chat_beside_pet(&app, None)
+}
+
 /// 重置 WebView2 内 localhost 麦克风权限（曾点「阻止」后从前端调用）
 #[tauri::command]
 fn reset_microphone_permission(app: AppHandle) -> Result<(), String> {
@@ -232,6 +243,7 @@ pub fn run() {
             collapse_pet_chat,
             activity::get_activity_snapshot,
             reset_microphone_permission,
+            sync_chat_beside_pet,
         ])
         .setup(|app| {
             let pet = app
@@ -255,7 +267,15 @@ pub fn run() {
                         tauri::WindowEvent::Moved(pos) => {
                             if let Some(chat) = app_for_move.get_webview_window("chat") {
                                 if chat.is_visible().unwrap_or(false) {
-                                    let _ = place_chat_beside_pet_pos(&app_for_move, None, Some(*pos));
+                                    let now = Instant::now();
+                                    let mut last = LAST_CHAT_SYNC.lock().unwrap();
+                                    let due = last
+                                        .map(|t| now.duration_since(t) >= Duration::from_millis(CHAT_SYNC_MIN_MS))
+                                        .unwrap_or(true);
+                                    if due {
+                                        let _ = place_chat_beside_pet_pos(&app_for_move, None, Some(*pos));
+                                        *last = Some(now);
+                                    }
                                 }
                             }
                             let _ = app_for_move.emit("pet-window-moved", ());

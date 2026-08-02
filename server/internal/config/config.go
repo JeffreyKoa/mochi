@@ -95,6 +95,7 @@ type RealtimeConfig struct {
 	ThinkingFiller RealtimeThinkingFiller `yaml:"thinking_filler"`
 	Gate           RealtimeGate           `yaml:"gate"`
 	Voiceprint     RealtimeVoiceprint     `yaml:"voiceprint"`
+	Faceprint      RealtimeFaceprint      `yaml:"faceprint"`
 	Presence       RealtimePresence       `yaml:"presence"`
 	TopicAnchor    RealtimeTopicAnchor    `yaml:"topic_anchor"`
 }
@@ -143,6 +144,18 @@ type RealtimeVoiceprint struct {
 	RejectStreak             int     `yaml:"reject_streak"`
 	OwnerRecentMS            int     `yaml:"owner_recent_ms"`
 	NonOwnerReplyCooldownMS  int     `yaml:"non_owner_reply_cooldown_ms"`
+}
+
+// RealtimeFaceprint 主人人脸识别（P2，客户端 ONNX）。
+type RealtimeFaceprint struct {
+	Enabled            bool    `yaml:"enabled"`
+	Required           bool    `yaml:"required"`
+	MatchThreshold     float64 `yaml:"match_threshold"`
+	GrayZoneLow        float64 `yaml:"gray_zone_low"`
+	ProbeOnSpeechStart bool    `yaml:"probe_on_speech_start"`
+	CheckIntervalMS    int     `yaml:"check_interval_ms"`
+	OwnerRecentMS      int     `yaml:"owner_recent_ms"`
+	EnrollSamples      int     `yaml:"enroll_samples"`
 }
 
 type RealtimePresence struct {
@@ -195,6 +208,16 @@ type RealtimePublicConfig struct {
 		OwnerRecentMS           int     `json:"owner_recent_ms"`
 		NonOwnerReplyCooldownMS int     `json:"non_owner_reply_cooldown_ms"`
 	} `json:"voiceprint"`
+	Faceprint struct {
+		Enabled            bool    `json:"enabled"`
+		Required           bool    `json:"required"`
+		MatchThreshold     float64 `json:"match_threshold"`
+		GrayZoneLow        float64 `json:"gray_zone_low"`
+		ProbeOnSpeechStart bool    `json:"probe_on_speech_start"`
+		CheckIntervalMS    int     `json:"check_interval_ms"`
+		OwnerRecentMS      int     `json:"owner_recent_ms"`
+		EnrollSamples      int     `json:"enroll_samples"`
+	} `json:"faceprint"`
 	Presence struct {
 		Enabled            bool    `json:"enabled"`
 		AmbientIntervalMS  int     `json:"ambient_interval_ms"`
@@ -653,6 +676,24 @@ func (r *RealtimeConfig) applyDefaults() {
 	if r.Voiceprint.NonOwnerReplyCooldownMS == 0 {
 		r.Voiceprint.NonOwnerReplyCooldownMS = 12000
 	}
+	if r.Faceprint.MatchThreshold == 0 {
+		r.Faceprint.MatchThreshold = 0.42
+	}
+	if r.Faceprint.GrayZoneLow == 0 {
+		r.Faceprint.GrayZoneLow = 0.28
+	}
+	if r.Faceprint.CheckIntervalMS == 0 {
+		r.Faceprint.CheckIntervalMS = 2000
+	}
+	if r.Faceprint.OwnerRecentMS == 0 {
+		r.Faceprint.OwnerRecentMS = r.Voiceprint.OwnerRecentMS
+		if r.Faceprint.OwnerRecentMS == 0 {
+			r.Faceprint.OwnerRecentMS = 8000
+		}
+	}
+	if r.Faceprint.EnrollSamples == 0 {
+		r.Faceprint.EnrollSamples = 3
+	}
 	if r.Presence.AmbientIntervalMS == 0 {
 		r.Presence.AmbientIntervalMS = 2000
 		r.Presence.Enabled = true
@@ -789,6 +830,14 @@ func (r RealtimeConfig) PublicClient() RealtimePublicConfig {
 	out.Voiceprint.RejectStreak = r.Voiceprint.RejectStreak
 	out.Voiceprint.OwnerRecentMS = r.Voiceprint.OwnerRecentMS
 	out.Voiceprint.NonOwnerReplyCooldownMS = r.Voiceprint.NonOwnerReplyCooldownMS
+	out.Faceprint.Enabled = r.Faceprint.Enabled
+	out.Faceprint.Required = r.Faceprint.Required
+	out.Faceprint.MatchThreshold = r.Faceprint.MatchThreshold
+	out.Faceprint.GrayZoneLow = r.Faceprint.GrayZoneLow
+	out.Faceprint.ProbeOnSpeechStart = r.Faceprint.ProbeOnSpeechStart
+	out.Faceprint.CheckIntervalMS = r.Faceprint.CheckIntervalMS
+	out.Faceprint.OwnerRecentMS = r.Faceprint.OwnerRecentMS
+	out.Faceprint.EnrollSamples = r.Faceprint.EnrollSamples
 	out.Presence.Enabled = r.Presence.Enabled
 	out.Presence.AmbientIntervalMS = r.Presence.AmbientIntervalMS
 	out.Presence.AwayTimeoutSec = r.Presence.AwayTimeoutSec

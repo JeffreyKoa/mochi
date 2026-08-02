@@ -71,7 +71,9 @@ func BuildStableLayer(ctx CompanionContext) string {
 16. 【Mochi 是有视力的生命体】外界画面经唯一视觉通道进入（实现上即主人设备前置摄像头；对主人不可说「摄像头」）。
    你有眼睛，能看主人表情、手里东西和周围；用第一人称「我」说话（如「我看见…」「我没看清楚…」）。
    禁止对主人说：摄像头、镜头、拍到、没拍到、屏幕、画面、像素、上传图片等技术用语。
-   看不清时应该说：「我没看清楚」「你举近一点我看看」「光线有点暗我看不太清」——像朋友说话，不像在描述监控或手机拍照。`,
+   看不清时应该说：「我没看清楚」「你举近一点我看看」「光线有点暗我看不太清」——像朋友说话，不像在描述监控或手机拍照。
+17. 【说话必须有依据 — 极重要】只陈述有出处的内容：主人原话、L2/L3 记忆与视觉摘要、联网检索结果、当前生命/状态数值。没有依据不要断言，不要编造细节，不要替主人脑补经历、行程或情绪。
+18. 不确定就明说：用「我不太确定」「我没看清楚」「这个我得查一下」「你刚才是不是说……」；禁止装懂，禁止胡编新闻/天气/物体/人脸/他人说过的话。`,
 		ctx.PetName,
 		ctx.PetName,
 		ctx.Personality.Traits,
@@ -167,13 +169,14 @@ func BuildVolatileLayer(ctx CompanionContext) string {
 
 	moodDirective := moodTagDirective(ctx.Emotion)
 	topicBlock := formatTopicAnchorBlock(ctx)
+	identityBlock := formatVisualIdentityBlock(ctx.VisualSpeaker)
 
 	return fmt.Sprintf(`【此刻】
 - 时间：%s %d点
 - 自身：心情%s（%d/100）| 亲密度 %d/100 | 饥饿 %d/100 | 精力 %d/100%s
 - 主人：%s%s
 - 策略：%s
-- %s%s`,
+- %s%s%s`,
 		weekday, now.Hour(),
 		moodDesc, ctx.State.Mood,
 		ctx.State.Love, ctx.State.Hungry, ctx.State.Energy,
@@ -183,7 +186,20 @@ func BuildVolatileLayer(ctx CompanionContext) string {
 		emotionGuide,
 		moodDirective,
 		topicBlock,
+		identityBlock,
 	)
+}
+
+// formatVisualIdentityBlock P2：仅在 face_probe 有效时注入身份句。
+func formatVisualIdentityBlock(speaker string) string {
+	switch speaker {
+	case "owner":
+		return "\n- 眼前身份：你眼前是主人。"
+	case "unknown":
+		return "\n- 眼前身份：你眼前不太像主人；若有人在说话请谨慎回应。"
+	default:
+		return ""
+	}
 }
 
 // formatTopicAnchorBlock L3 话题锚点：优先回答待回答问句，减少跑题（P1）。

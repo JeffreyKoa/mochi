@@ -19,6 +19,7 @@ type CompanionContext struct {
 	ShortHistory       []models.ChatMessage
 	Emotion            emotion.Hint
 	TopicAnchor        TopicAnchorContext
+	VisualSpeaker      string // P2: owner | unknown | 空=不注入
 	Now                time.Time
 	MemoryPromptBudget int
 	LifeStage          string
@@ -122,7 +123,7 @@ func intentStrategy(intent string, rapport uint8, needsEmpathy bool) string {
 		}
 		return "轻松接梗，保持友好。"
 	case "ask":
-		return "主人有问题：直接简短回答。"
+		return "主人有问题：只回答有依据的内容；需要事实时先检索或依据记忆/视觉；没有依据不要猜，不知道就直说不知道。"
 	case "plan":
 		return "主人在说安排：可调用 reminder/todo 工具；确认要短、像伙伴答应，不是助手播报。"
 	default:

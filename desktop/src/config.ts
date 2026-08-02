@@ -39,6 +39,18 @@ export interface RealtimeVoiceprintConfig {
   nonOwnerReplyCooldownMs: number
 }
 
+/** P2 主人人脸认人配置 */
+export interface RealtimeFaceprintConfig {
+  enabled: boolean
+  required: boolean
+  matchThreshold: number
+  grayZoneLow: number
+  probeOnSpeechStart: boolean
+  checkIntervalMs: number
+  ownerRecentMs: number
+  enrollSamples: number
+}
+
 export interface RealtimePresenceConfig {
   enabled: boolean
   ambientIntervalMs: number
@@ -56,6 +68,7 @@ export interface RealtimeClientConfig {
   vad: RealtimeVadConfig
   bargeIn: RealtimeBargeInConfig
   voiceprint: RealtimeVoiceprintConfig
+  faceprint: RealtimeFaceprintConfig
   presence: RealtimePresenceConfig
 }
 
@@ -119,6 +132,16 @@ export const DEFAULT_REALTIME: RealtimeClientConfig = {
     ownerRecentMs: 8000,
     nonOwnerReplyCooldownMs: 12000,
   },
+  faceprint: {
+    enabled: true,
+    required: false,
+    matchThreshold: 0.42,
+    grayZoneLow: 0.28,
+    probeOnSpeechStart: true,
+    checkIntervalMs: 2000,
+    ownerRecentMs: 8000,
+    enrollSamples: 3,
+  },
   presence: {
     enabled: true,
     ambientIntervalMs: 2000,
@@ -174,6 +197,10 @@ export function getVoiceprintConfig(): RealtimeVoiceprintConfig {
   return _clientConfig.realtime.voiceprint
 }
 
+export function getFaceprintConfig(): RealtimeFaceprintConfig {
+  return _clientConfig.realtime.faceprint
+}
+
 export function getPresenceConfig(): RealtimePresenceConfig {
   return _clientConfig.realtime.presence
 }
@@ -205,6 +232,7 @@ function parseRealtimeBlock(raw: unknown): RealtimeClientConfig {
     vad: { ...DEFAULT_REALTIME.vad, silero: { ...DEFAULT_REALTIME.vad.silero } },
     bargeIn: { ...DEFAULT_REALTIME.bargeIn },
     voiceprint: { ...DEFAULT_REALTIME.voiceprint },
+    faceprint: { ...DEFAULT_REALTIME.faceprint },
     presence: { ...DEFAULT_REALTIME.presence },
   }
   if (!raw || typeof raw !== 'object') return base
@@ -268,6 +296,21 @@ function parseRealtimeBlock(raw: unknown): RealtimeClientConfig {
         v.non_owner_reply_cooldown_ms ?? v.nonOwnerReplyCooldownMs,
         base.voiceprint.nonOwnerReplyCooldownMs,
       ),
+    }
+  }
+
+  const fp = r.faceprint
+  if (fp && typeof fp === 'object') {
+    const f = fp as Record<string, unknown>
+    base.faceprint = {
+      enabled: f.enabled !== false,
+      required: !!f.required,
+      matchThreshold: num(f.match_threshold ?? f.matchThreshold, base.faceprint.matchThreshold),
+      grayZoneLow: num(f.gray_zone_low ?? f.grayZoneLow, base.faceprint.grayZoneLow),
+      probeOnSpeechStart: f.probe_on_speech_start !== false && f.probeOnSpeechStart !== false,
+      checkIntervalMs: num(f.check_interval_ms ?? f.checkIntervalMs, base.faceprint.checkIntervalMs),
+      ownerRecentMs: num(f.owner_recent_ms ?? f.ownerRecentMs, base.faceprint.ownerRecentMs),
+      enrollSamples: num(f.enroll_samples ?? f.enrollSamples, base.faceprint.enrollSamples),
     }
   }
 

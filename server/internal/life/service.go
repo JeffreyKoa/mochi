@@ -17,9 +17,15 @@ type StateBroadcaster interface {
 	SendProactive(userID uint64, message, animation string) bool
 }
 
+// ProactiveBrain 生命临界主动关怀：台词由 agent Runtime 生成，life 层只负责阈值检测。
+type ProactiveBrain interface {
+	GenerateLifeNudge(ctx context.Context, userID, petID uint64, triggerType string, state models.LifeState) (string, error)
+}
+
 type Service struct {
 	db              *gorm.DB
 	hub             StateBroadcaster
+	brain           ProactiveBrain
 	done            chan struct{}
 	mu              sync.Mutex
 	lastTriggerSent map[string]time.Time
@@ -32,6 +38,11 @@ func NewService(db *gorm.DB, hub StateBroadcaster) *Service {
 		done:            make(chan struct{}),
 		lastTriggerSent: make(map[string]time.Time),
 	}
+}
+
+// SetProactiveBrain 注入大脑（agent.Runtime 实现）；未注入时不发主动台词。
+func (s *Service) SetProactiveBrain(b ProactiveBrain) {
+	s.brain = b
 }
 
 func (s *Service) GetState(ctx context.Context, petID uint64) (models.LifeState, error) {
@@ -218,25 +229,26 @@ func (s *Service) tick(state *models.LifeState) {
 
 const triggerCooldown = 30 * time.Minute
 
-// checkTriggers 检查生命数值临界阈值 (Hungry>=80, Sleep>=80, Love<=20)，带 30 分钟冷却控制
+// checkTriggers 检查生命数值临界阈值 (Hungry>=80, Sleep>=80, Love<=20)，带 30 分钟冷却；台词由大脑生成。
 func (s *Service) checkTriggers(userID uint64, state models.LifeState) {
-	if s.hub == nil {
+	if s.hub == nil || s.brain == nil {
 		return
 	}
 
-	var triggerType, message, animation string
+	if s.db != nil {
+		var user models.User
+		if s.db.First(&user, userID).Error != nil || !user.ProactiveEnabled {
+			return
+		}
+	}
+
+	var triggerType string
 	if state.Hungry >= 80 {
 		triggerType = "hungry"
-		message = "主人，肚肚咕咕叫了，想吃好吃的..."
-		animation = "sad"
 	} else if state.Sleep >= 80 {
 		triggerType = "sleep"
-		message = "眼睛快睁不开了，需要抱抱睡觉 zzz..."
-		animation = "sleep"
 	} else if state.Love <= 20 {
 		triggerType = "love"
-		message = "主人...好久没理我了，是不是不爱我了..."
-		animation = "sad"
 	} else {
 		return
 	}
@@ -247,10 +259,36 @@ func (s *Service) checkTriggers(userID uint64, state models.LifeState) {
 		s.mu.Unlock()
 		return
 	}
-	s.lastTriggerSent[key] = time.Now()
 	s.mu.Unlock()
 
-	s.hub.SendProactive(userID, message, animation)
+	petID := state.PetID
+	animation := s.animationForState(state, triggerType)
+
+	// 异步调用大脑，避免阻塞 5 分钟 tick
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+
+		msg, err := s.brain.GenerateLifeNudge(ctx, userID, petID, triggerType, state)
+		if err != nil || msg == "" {
+			if err != nil {
+				log.Printf("[LifeEngine] life nudge brain failed user=%d trigger=%s: %v", userID, triggerType, err)
+			}
+			return
+		}
+
+		s.mu.Lock()
+		if last, ok := s.lastTriggerSent[key]; ok && time.Since(last) < triggerCooldown {
+			s.mu.Unlock()
+			return
+		}
+		s.lastTriggerSent[key] = time.Now()
+		s.mu.Unlock()
+
+		if s.hub.SendProactive(userID, msg, animation) {
+			log.Printf("[LifeEngine] proactive sent user=%d trigger=%s", userID, triggerType)
+		}
+	}()
 }
 
 func clampInt(v int) uint8 {

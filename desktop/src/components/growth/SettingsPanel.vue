@@ -16,14 +16,19 @@ import {
   getVoiceprintStatus,
   enrollVoiceprint,
   deleteVoiceprint,
+  getFaceprintStatus,
+  enrollFaceprint,
+  deleteFaceprint,
   type ReminderItem,
   type TodoItem,
   type LearningPreferences,
   type VoiceprintStatus,
+  type FaceprintStatus,
 } from '@/services/api'
 import { PCMCapture } from '@/services/pcmCapture'
 import { pcmToFloat } from '@/services/sileroSpeechVad'
 import { SpeakerVerifier } from '@/services/speakerVerifier'
+import { FaceVerifier } from '@/services/faceVerifier'
 import {
   CATEGORY_LABELS,
   parseInsideJokes,
@@ -40,10 +45,13 @@ import {
 } from '@/constants/lifecycle'
 import { resolveVoiceLabel } from '@/constants/voiceProfile'
 import { formatMemoryTime } from '@/utils/date'
-import { getClientConfig, initClientConfig } from '@/config'
+import { getClientConfig, getFaceprintConfig, initClientConfig } from '@/config'
 import {
   isVisionCaptureEnabled,
   setVisionCaptureEnabled,
+  startVisionSession,
+  stopVisionSession,
+  visionSession,
 } from '@/services/visionCapture'
 import { hideSidePanelPopup, isTauri } from '@/services/chatWindow'
 import { listenTasksRefresh } from '@/services/proactiveSync'
@@ -51,13 +59,14 @@ import {
   micPermissionDeniedMessage,
   resetTauriMicrophonePermission,
 } from '@/utils/micPermission'
+import SettingsCard from '@/components/settings/SettingsCard.vue'
 
-type TabId = 'bond' | 'memory' | 'pet' | 'tasks' | 'voice' | 'account'
+type TabId = 'mochi' | 'voice' | 'memory' | 'tasks' | 'me'
 
 const growth = useGrowthStore()
 const pet = usePetStore()
 const auth = useAuthStore()
-const tab = ref<TabId>('bond')
+const tab = ref<TabId>('mochi')
 const petNameDraft = ref('')
 const savingName = ref(false)
 const nameError = ref('')
@@ -93,16 +102,23 @@ const noUnsolicitedAdvice = ref(true)
 const savingLearning = ref(false)
 const learningError = ref('')
 const showTaskHistory = ref(false)
+const voiceAdvancedOpen = ref(false)
 
 const voiceprintStatus = ref<VoiceprintStatus | null>(null)
 const voiceprintLoading = ref(false)
 const voiceprintError = ref('')
+const faceprintStatus = ref<FaceprintStatus | null>(null)
+const faceprintLoading = ref(false)
+const faceprintError = ref('')
+const enrollingFace = ref(false)
+const faceEnrollProgress = ref('')
 const micFixBusy = ref(false)
 const micFixMsg = ref('')
 const enrollingVoice = ref(false)
 const enrollProgress = ref('')
 const enrollCapture = new PCMCapture()
 const enrollVerifier = new SpeakerVerifier()
+const enrollFaceVerifier = new FaceVerifier()
 const ENROLL_PROMPTS = [
   '你好 Mochi，我是你的主人。',
   '今天天气不错，我想和你聊聊天。',
@@ -126,12 +142,11 @@ const lastMoodLabel = computed(() => {
 })
 
 const tabs: { id: TabId; label: string }[] = [
-  { id: 'bond', label: '关系' },
-  { id: 'memory', label: '记忆' },
-  { id: 'tasks', label: '小事' },
-  { id: 'pet', label: '宠物' },
+  { id: 'mochi', label: 'Mochi' },
   { id: 'voice', label: '声音' },
-  { id: 'account', label: '我的' },
+  { id: 'memory', label: '记忆' },
+  { id: 'tasks', label: '待办' },
+  { id: 'me', label: '我的' },
 ]
 
 const topicOptions = [
@@ -382,16 +397,30 @@ function close() {
   growth.closeSettings()
 }
 
-function openPetTab() {
-  tab.value = 'pet'
+function openMochiTab() {
+  tab.value = 'mochi'
   petNameDraft.value = pet.petName
-  void loadLearningPrefs()
 }
 
 function openVoiceTab() {
   tab.value = 'voice'
   void loadPreferences()
   void loadVoiceprintStatus()
+  void loadFaceprintStatus()
+}
+
+function openMeTab() {
+  tab.value = 'me'
+  void loadPreferences()
+  void loadLearningPrefs()
+}
+
+function selectTab(id: TabId) {
+  if (id === 'mochi') openMochiTab()
+  else if (id === 'me') openMeTab()
+  else if (id === 'tasks') openTasksTab()
+  else if (id === 'voice') openVoiceTab()
+  else tab.value = id
 }
 
 async function loadVoiceprintStatus() {
@@ -404,6 +433,19 @@ async function loadVoiceprintStatus() {
     voiceprintError.value = e instanceof Error ? e.message : '加载失败'
   } finally {
     voiceprintLoading.value = false
+  }
+}
+
+async function loadFaceprintStatus() {
+  faceprintLoading.value = true
+  faceprintError.value = ''
+  try {
+    faceprintStatus.value = await getFaceprintStatus()
+  } catch (e) {
+    faceprintStatus.value = null
+    faceprintError.value = e instanceof Error ? e.message : '加载失败'
+  } finally {
+    faceprintLoading.value = false
   }
 }
 
@@ -490,6 +532,78 @@ async function onDeleteVoiceprint() {
   }
 }
 
+/** P2：主人面容录入（3 张快照，需开启「语音时看我」）。 */
+async function startFaceprintEnroll() {
+  if (enrollingFace.value) return
+  if (!serverVisionEnabled.value) {
+    faceprintError.value = '服务端未开启视觉能力'
+    return
+  }
+  if (!isVisionCaptureEnabled()) {
+    setVisionCaptureEnabled(true)
+    visionEnabled.value = true
+  }
+  enrollingFace.value = true
+  faceprintError.value = ''
+  faceEnrollProgress.value = '初始化面容模型…'
+  try {
+    await enrollFaceVerifier.init()
+    if (!enrollFaceVerifier.available) {
+      faceprintError.value =
+        '面容模型未就绪。请将 rec.onnx 放到 public/models/face/rec.onnx'
+      return
+    }
+    const samples = getFaceprintConfig().enrollSamples || 3
+    faceEnrollProgress.value = '打开 Mochi 的眼睛…'
+    const visionResult = await startVisionSession()
+    if (visionResult !== 'ok') {
+      faceprintError.value = '无法看清画面，请允许摄像头并在设置中打开「语音时看我」'
+      return
+    }
+    const jpegs: ArrayBuffer[] = []
+    for (let i = 0; i < samples; i++) {
+      faceEnrollProgress.value = `请正对 Mochi（${i + 1}/${samples}）…`
+      await sleep(800)
+      const buf = await visionSession.grabSnapshot()
+      if (!buf) {
+        faceprintError.value = `第 ${i + 1} 张抓拍失败，请调整光线后重试`
+        return
+      }
+      jpegs.push(buf)
+    }
+    faceEnrollProgress.value = '分析面容…'
+    const avg = await enrollFaceVerifier.enrollFromFrames(jpegs)
+    if (!avg) {
+      faceprintError.value = '面容分析失败，请正对镜头、光线充足后重试'
+      return
+    }
+    faceEnrollProgress.value = '上传面容…'
+    const status = await enrollFaceprint({
+      embedding: Array.from(avg),
+      samples: jpegs.length,
+    })
+    faceprintStatus.value = status
+    faceEnrollProgress.value = '录入成功'
+  } catch (e) {
+    faceprintError.value = e instanceof Error ? e.message : '录入失败'
+  } finally {
+    await stopVisionSession().catch(() => {})
+    enrollingFace.value = false
+    faceEnrollProgress.value = ''
+  }
+}
+
+async function onDeleteFaceprint() {
+  if (!confirm('确定删除已录入的主人面容吗？')) return
+  faceprintError.value = ''
+  try {
+    await deleteFaceprint()
+    faceprintStatus.value = { enrolled: false }
+  } catch (e) {
+    faceprintError.value = e instanceof Error ? e.message : '删除失败'
+  }
+}
+
 /** 重置 Tauri WebView2 麦克风站点权限（配合 Windows 隐私设置） */
 async function onFixMicrophonePermission() {
   micFixBusy.value = true
@@ -502,19 +616,6 @@ async function onFixMicrophonePermission() {
   } finally {
     micFixBusy.value = false
   }
-}
-
-function openAccountTab() {
-  tab.value = 'account'
-  void loadPreferences()
-}
-
-function selectTab(id: TabId) {
-  if (id === 'pet') openPetTab()
-  else if (id === 'account') openAccountTab()
-  else if (id === 'tasks') openTasksTab()
-  else if (id === 'voice') openVoiceTab()
-  else tab.value = id
 }
 
 async function savePetName() {
@@ -557,6 +658,7 @@ let unlistenTasksRefresh: (() => void) | null = null
 
 onMounted(async () => {
   void loadServerVisionFlag()
+  openMochiTab()
   unlistenTasksRefresh = await listenTasksRefresh(() => {
     if (tab.value === 'tasks') void loadTasks()
   })
@@ -589,11 +691,23 @@ onUnmounted(() => {
       </nav>
 
       <div class="panel-body">
-        <div v-if="growth.loading && !['account', 'voice', 'tasks'].includes(tab)" class="loading">加载中…</div>
+        <div v-if="growth.loading && !['me', 'voice', 'tasks'].includes(tab)" class="loading">加载中…</div>
 
-        <!-- 关系 -->
-        <template v-else-if="tab === 'bond' && growth.bond">
-          <section class="stats">
+        <!-- Mochi：生命 + 关系 -->
+        <template v-else-if="tab === 'mochi'">
+          <SettingsCard title="概览">
+            <div class="pet-head">
+              <span class="gender-badge">{{ genderLabel(pet.gender) }}</span>
+              <span v-if="pet.skuName" class="sku-tag">{{ pet.skuName }}</span>
+            </div>
+            <p class="life-line">
+              {{ pet.lifecycle.life_stage_label }}
+              · {{ pet.lifecycle.age_years }}岁{{ pet.lifecycle.age_days_in_year }}天
+            </p>
+            <p class="hint">还可陪伴 {{ pet.lifecycle.remaining_days }} 天</p>
+          </SettingsCard>
+
+          <SettingsCard v-if="growth.bond" title="你们的关系">
             <div class="stat">
               <span class="label">投缘度</span>
               <div class="bar-wrap">
@@ -612,55 +726,71 @@ onUnmounted(() => {
               已聊 {{ growth.bond.total_turns }} 轮
               <template v-if="growth.bond.streak_days > 1"> · 连续 {{ growth.bond.streak_days }} 天</template>
             </p>
-          </section>
-
-          <section v-if="lastMoodLabel" class="block flat">
-            <h3>最近感受到你</h3>
-            <p>{{ lastMoodLabel }}</p>
-          </section>
-
-          <section class="block flat">
-            <h3>这个阶段 TA 会…</h3>
-            <p class="hint">{{ stageCompanionHint }}</p>
-          </section>
-
-          <section v-if="nicknames.user_calls_pet || nicknames.pet_calls_user" class="block">
-            <h3>称呼</h3>
-            <p>
-              你叫 TA「{{ nicknames.user_calls_pet || pet.petName }}」，
-              TA 叫你「{{ nicknames.pet_calls_user || '主人' }}」
-            </p>
-          </section>
-
-          <section v-if="topics.length" class="block">
-            <h3>常聊话题</h3>
-            <div class="tags">
+            <template v-if="lastMoodLabel">
+              <p class="hint">最近感受到你：{{ lastMoodLabel }}</p>
+            </template>
+            <template v-if="nicknames.user_calls_pet || nicknames.pet_calls_user">
+              <p class="hint">
+                你叫 TA「{{ nicknames.user_calls_pet || pet.petName }}」，TA 叫你「{{
+                  nicknames.pet_calls_user || '主人'
+                }}」
+              </p>
+            </template>
+            <div v-if="topics.length" class="tags">
               <span v-for="t in topics" :key="t" class="tag">{{ t }}</span>
             </div>
-          </section>
+            <p v-if="jokes.length" class="joke">你们的梗：{{ jokes[jokes.length - 1].content }}</p>
+          </SettingsCard>
 
-          <section v-if="jokes.length" class="block">
-            <h3>你们的梗</h3>
-            <p class="joke">{{ jokes[jokes.length - 1].content }}</p>
-          </section>
+          <SettingsCard title="生命曲线">
+            <div class="life-axis">
+              <div
+                v-for="(node, i) in LIFE_AXIS"
+                :key="node.id"
+                class="axis-node"
+                :class="{ active: i === lifeAxisIndex, past: i < lifeAxisIndex }"
+              >
+                <span class="dot" />
+                <span class="axis-label">{{ node.label }}</span>
+              </div>
+            </div>
+            <p class="hint">{{ stageCompanionHint }} · {{ stageTeachingHint }}</p>
+          </SettingsCard>
+
+          <SettingsCard title="当前状态">
+            <p class="life-line">
+              心情 {{ pet.lifeState.mood }} · 亲密度 {{ pet.lifeState.love }} · 饥饿 {{ pet.lifeState.hungry }} ·
+              精力 {{ pet.lifeState.energy }}
+            </p>
+          </SettingsCard>
+
+          <SettingsCard v-if="pet.personality.traits || pet.personality.speech_style" title="人格">
+            <p v-if="pet.personality.traits">性格：{{ pet.personality.traits }}</p>
+            <p v-if="pet.personality.speech_style" class="hint">说话：{{ pet.personality.speech_style }}</p>
+          </SettingsCard>
+
+          <SettingsCard title="名字">
+            <div class="name-row">
+              <input v-model="petNameDraft" type="text" maxlength="32" placeholder="宠物名字" />
+              <button type="button" class="primary-sm" :disabled="savingName" @click="savePetName">
+                {{ savingName ? '…' : '保存' }}
+              </button>
+            </div>
+            <p v-if="nameError" class="error">{{ nameError }}</p>
+          </SettingsCard>
         </template>
 
         <!-- 记忆 -->
         <template v-else-if="tab === 'memory'">
-          <section v-if="growth.brief" class="block flat">
-            <h3>长期画像</h3>
+          <SettingsCard v-if="growth.brief" title="长期画像">
             <div class="bar-wrap brief-bar">
-              <div
-                class="bar"
-                :style="{ width: Math.min(100, (briefUsedChars / briefBudget) * 100) + '%' }"
-              />
+              <div class="bar" :style="{ width: Math.min(100, (briefUsedChars / briefBudget) * 100) + '%' }" />
             </div>
             <p class="hint">约 {{ briefUsedChars }} / {{ briefBudget }} 字</p>
-          </section>
+          </SettingsCard>
 
-          <section v-if="growth.writeApproval && growth.pendingBriefEntries.length" class="block flat pending-block">
-            <h3>待确认画像</h3>
-            <p class="hint">AI 想记住这些，确认后才会写入长期画像</p>
+          <SettingsCard v-if="growth.writeApproval && growth.pendingBriefEntries.length" title="待确认画像">
+            <p class="hint">确认后才会写入长期画像</p>
             <ul class="brief-list">
               <li v-for="e in growth.pendingBriefEntries" :key="e.id" class="pending-item">
                 <div class="mem-meta">
@@ -674,10 +804,9 @@ onUnmounted(() => {
                 </div>
               </li>
             </ul>
-          </section>
+          </SettingsCard>
 
-          <section v-if="growth.briefEntries.length" class="block flat">
-            <h3>它记得关于你</h3>
+          <SettingsCard v-if="growth.briefEntries.length" title="它记得关于你">
             <ul class="brief-list">
               <li v-for="e in growth.briefEntries" :key="e.id" class="chip-item">
                 <div class="mem-meta">
@@ -687,10 +816,9 @@ onUnmounted(() => {
                 {{ e.content }}
               </li>
             </ul>
-          </section>
+          </SettingsCard>
 
-          <section v-if="growth.memories.length" class="block flat">
-            <h3>记忆片段</h3>
+          <SettingsCard v-if="growth.memories.length" title="记忆片段">
             <ul class="mem-list">
               <li v-for="m in growth.memories.slice(0, 12)" :key="m.id" class="mem-item">
                 <div class="mem-bubble">
@@ -703,21 +831,20 @@ onUnmounted(() => {
                 <button type="button" class="del" title="删除" @click="onDeleteMemory(m.id)">×</button>
               </li>
             </ul>
-          </section>
+          </SettingsCard>
 
           <p v-if="!growth.briefEntries.length && !growth.memories.length" class="empty">
             多聊几句，{{ pet.petName }} 会渐渐更懂你~
           </p>
         </template>
 
-        <!-- 小事 -->
+        <!-- 待办 -->
         <template v-else-if="tab === 'tasks'">
           <div v-if="tasksLoading" class="loading">加载中…</div>
           <template v-else>
             <p v-if="tasksError" class="error">{{ tasksError }}</p>
 
-            <section class="block flat">
-              <h3>待提醒</h3>
+            <SettingsCard title="待提醒">
               <ul v-if="reminders.length" class="brief-list">
                 <li v-for="r in reminders" :key="r.id" class="task-item">
                   <div>
@@ -728,10 +855,9 @@ onUnmounted(() => {
                 </li>
               </ul>
               <p v-else class="hint">暂无提醒，聊天里跟 TA 说「明天9点提醒我…」</p>
-            </section>
+            </SettingsCard>
 
-            <section class="block">
-              <h3>待办</h3>
+            <SettingsCard title="待办">
               <ul v-if="todos.length" class="brief-list">
                 <li v-for="t in todos" :key="t.id" class="task-item">
                   <div>
@@ -742,205 +868,40 @@ onUnmounted(() => {
                 </li>
               </ul>
               <p v-else class="hint">暂无待办，可以说「帮我把买牛奶记下来」</p>
-            </section>
+            </SettingsCard>
 
-            <section class="block">
+            <SettingsCard title="最近完成">
               <button type="button" class="link-btn" @click="showTaskHistory = !showTaskHistory">
-                {{ showTaskHistory ? '收起' : '查看' }}最近完成
+                {{ showTaskHistory ? '收起' : '展开' }}
               </button>
               <template v-if="showTaskHistory">
                 <ul v-if="doneReminders.length || doneTodos.length" class="brief-list history-list">
-                  <li v-for="r in doneReminders" :key="'r' + r.id" class="chip-item muted">
-                    ⏰ {{ r.title }}
-                  </li>
-                  <li v-for="t in doneTodos" :key="'t' + t.id" class="chip-item muted">
-                    ✓ {{ t.title }}
-                  </li>
+                  <li v-for="r in doneReminders" :key="'r' + r.id" class="chip-item muted">⏰ {{ r.title }}</li>
+                  <li v-for="t in doneTodos" :key="'t' + t.id" class="chip-item muted">✓ {{ t.title }}</li>
                 </ul>
                 <p v-else class="hint">还没有完成记录~</p>
               </template>
-            </section>
+            </SettingsCard>
           </template>
-        </template>
-
-        <!-- 宠物 -->
-        <template v-else-if="tab === 'pet'">
-          <section class="block flat">
-            <div class="pet-head">
-              <span class="gender-badge">{{ genderLabel(pet.gender) }}</span>
-              <span v-if="pet.skuName" class="sku-tag">{{ pet.skuName }}</span>
-            </div>
-          </section>
-
-          <section class="block flat">
-            <h3>生命曲线</h3>
-            <div class="life-axis">
-              <div
-                v-for="(node, i) in LIFE_AXIS"
-                :key="node.id"
-                class="axis-node"
-                :class="{ active: i === lifeAxisIndex, past: i < lifeAxisIndex }"
-              >
-                <span class="dot" />
-                <span class="axis-label">{{ node.label }}</span>
-              </div>
-            </div>
-            <p class="life-line">
-              {{ pet.lifecycle.life_stage_label }}
-              · {{ pet.lifecycle.age_years }}岁{{ pet.lifecycle.age_days_in_year }}天
-            </p>
-            <p class="hint">还可陪伴 {{ pet.lifecycle.remaining_days }} 天</p>
-          </section>
-
-          <section class="block flat">
-            <h3>这个阶段</h3>
-            <p>{{ pet.stageHint || stageTeachingHint }}</p>
-            <p class="hint">相处：{{ stageCompanionHint }} · 教学：{{ stageTeachingHint }}</p>
-          </section>
-
-          <section v-if="pet.personality.traits || pet.personality.speech_style" class="block flat">
-            <h3>人格</h3>
-            <p v-if="pet.personality.traits">性格：{{ pet.personality.traits }}</p>
-            <p v-if="pet.personality.speech_style" class="hint">说话：{{ pet.personality.speech_style }}</p>
-          </section>
-
-          <section class="block flat">
-            <h3>名字</h3>
-            <div class="name-row">
-              <input v-model="petNameDraft" type="text" maxlength="32" placeholder="宠物名字" />
-              <button type="button" class="primary-sm" :disabled="savingName" @click="savePetName">
-                {{ savingName ? '…' : '保存' }}
-              </button>
-            </div>
-            <p v-if="nameError" class="error">{{ nameError }}</p>
-          </section>
-
-          <section class="block">
-            <h3>当前状态</h3>
-            <p class="life-line">
-              心情 {{ pet.lifeState.mood }} · 亲密度 {{ pet.lifeState.love }} ·
-              饥饿 {{ pet.lifeState.hungry }} · 精力 {{ pet.lifeState.energy }}
-            </p>
-          </section>
-
-          <section class="block">
-            <h3>想学什么</h3>
-            <div class="tags selectable">
-              <button
-                v-for="opt in topicOptions"
-                :key="opt.id"
-                type="button"
-                class="tag tag-btn"
-                :class="{ on: learningTopics.includes(opt.id) }"
-                @click="toggleLearningTopic(opt.id)"
-              >
-                {{ opt.label }}
-              </button>
-            </div>
-            <div class="radio-row">
-              <span class="radio-label">英语</span>
-              <label v-for="lv in englishLevels" :key="lv.id" class="radio-item">
-                <input v-model="englishLevel" type="radio" :value="lv.id" />
-                {{ lv.label }}
-              </label>
-            </div>
-            <label class="toggle-row">
-              <span>吐槽时不讲大道理</span>
-              <button
-                type="button"
-                class="toggle"
-                :class="{ on: noUnsolicitedAdvice }"
-                @click="noUnsolicitedAdvice = !noUnsolicitedAdvice"
-              >
-                {{ noUnsolicitedAdvice ? '开' : '关' }}
-              </button>
-            </label>
-            <button type="button" class="primary-sm full" :disabled="savingLearning" @click="saveLearningPrefs">
-              {{ savingLearning ? '…' : '保存学习偏好' }}
-            </button>
-            <p v-if="learningError" class="error">{{ learningError }}</p>
-          </section>
         </template>
 
         <!-- 声音 -->
         <template v-else-if="tab === 'voice'">
-          <section class="block flat">
-            <h3>当前声音</h3>
+          <SettingsCard title="当前声音" hint="声音会随 TA 长大慢慢变化，不能手动换音色">
             <p class="life-line">{{ voiceProfile.title }}</p>
             <p class="hint">{{ voiceProfile.desc }}</p>
-            <p class="hint">声音会随 TA 长大慢慢变化，不能手动换音色哦~</p>
-          </section>
-          <section class="block flat">
-            <label class="toggle-row">
-              <span>默认语音回复</span>
-              <button
-                type="button"
-                class="toggle"
-                :class="{ on: voiceReplyDefault }"
-                :disabled="savingProactive"
-                @click="onVoiceReplyToggle"
-              >
-                {{ voiceReplyDefault ? '开' : '关' }}
-              </button>
-            </label>
-          </section>
-          <section v-if="serverVisionEnabled" class="block flat">
-            <label class="toggle-row">
-              <span>语音时看我（表情/举物）</span>
-              <button
-                type="button"
-                class="toggle"
-                :class="{ on: visionEnabled }"
-                @click="onVisionToggle"
-              >
-                {{ visionEnabled ? '开' : '关' }}
-              </button>
-            </label>
-            <p class="hint">
-              开始对话后 Mochi 会通过「眼睛」（前置摄像头，其感知外界的唯一来源）持续看你，
-              每轮说话时自动理解表情、手里拿的东西和周围场景；结束对话后关闭。
-              照片不上传日志、不长期保存。需服务端开启 vision（config.yaml）。
-            </p>
-          </section>
-          <section class="block">
-            <h3>语音识别</h3>
-            <select v-model="sttMode" class="select-sm" @change="onSttModeChange">
-              <option value="auto">自动</option>
-              <option value="local">本地</option>
-              <option value="cloud">云端</option>
-            </select>
-            <p class="hint">自动：设备支持时用本地识别，否则走云端。</p>
-            <p v-if="prefsError" class="error">{{ prefsError }}</p>
-          </section>
-          <section v-if="isTauri()" class="block">
-            <h3>麦克风权限</h3>
-            <p class="hint">
-              桌宠语音走 Windows 系统麦克风 + 应用内 WebView 权限。若提示被拒绝，请先打开
-              Windows 设置 → 隐私 → 麦克风，开启「允许桌面应用访问你的麦克风」。
-            </p>
-            <button
-              type="button"
-              class="primary-sm full"
-              :disabled="micFixBusy"
-              @click="onFixMicrophonePermission"
-            >
-              {{ micFixBusy ? '处理中…' : '修复麦克风权限' }}
-            </button>
-            <p v-if="micFixMsg" class="hint">{{ micFixMsg }}</p>
-          </section>
-          <section class="block">
-            <h3>主人声纹</h3>
-            <p class="hint">
-              录入后 Mochi 只认你的声音：唤醒与整段对话都会验声纹。非主人直接说话会被告知「不是主人」；你正在说话时，他人声音会被静默过滤。需自行下载 3D-Speaker CAM++ ONNX 放到
-              <code>public/models/speaker/campp.onnx</code>（ModelScope:
-              iic/speech_campplus_sv_zh-cn_16k-common）。
-            </p>
+          </SettingsCard>
+
+          <SettingsCard
+            title="主人声纹"
+            :badge="voiceprintStatus?.enrolled ? '已录入' : undefined"
+            hint="对话时会持续验证你的声音；非主人会被拒答，你说话时会过滤他人声音"
+          >
             <p v-if="voiceprintLoading" class="hint">加载声纹状态…</p>
             <p v-else-if="voiceprintStatus?.enrolled" class="hint">
-              已录入 · {{ voiceprintStatus.samples ?? 0 }} 段样本 · 维度
-              {{ voiceprintStatus.dim ?? 192 }}
+              {{ voiceprintStatus.samples ?? 0 }} 段样本 · 维度 {{ voiceprintStatus.dim ?? 192 }}
             </p>
-            <p v-else class="hint">尚未录入 — 无法开始语音对话，请先录入。</p>
+            <p v-else class="hint">尚未录入 — 无法开始语音对话</p>
             <p v-if="enrollProgress" class="hint">{{ enrollProgress }}</p>
             <button
               type="button"
@@ -953,29 +914,107 @@ onUnmounted(() => {
             <button
               v-if="voiceprintStatus?.enrolled"
               type="button"
-              class="reject-btn full"
-              style="margin-top: 8px; width: 100%"
+              class="reject-btn full enroll-del"
               :disabled="enrollingVoice"
               @click="onDeleteVoiceprint"
             >
               删除声纹
             </button>
             <p v-if="voiceprintError" class="error">{{ voiceprintError }}</p>
-          </section>
-          <section class="block">
-            <h3>在场声音感知</h3>
-            <p class="hint">
-              通过麦克风感知是否有人在场（不启用摄像头）。需 YAMNet 模型
-              <code>public/models/audio/yamnet.onnx</code>；关闭后不影响声纹校验，仅无 ambient 状态。
+          </SettingsCard>
+
+          <SettingsCard
+            title="主人面容"
+            :badge="faceprintStatus?.enrolled ? '已录入' : undefined"
+            hint="与声纹配合认人；需开启「语音时看我」。看不清脸时不影响纯声纹对话"
+          >
+            <p v-if="faceprintLoading" class="hint">加载面容状态…</p>
+            <p v-else-if="faceprintStatus?.enrolled" class="hint">
+              {{ faceprintStatus.samples ?? 0 }} 张样本 · 维度 {{ faceprintStatus.dim ?? 512 }}
             </p>
-            <p class="hint">当前状态：{{ pet.ownerPresence }}</p>
-          </section>
+            <p v-else class="hint">尚未录入 — 可选，用于降低声纹误拒</p>
+            <p v-if="faceEnrollProgress" class="hint">{{ faceEnrollProgress }}</p>
+            <button
+              type="button"
+              class="primary-sm full"
+              :disabled="enrollingFace || !serverVisionEnabled"
+              @click="startFaceprintEnroll"
+            >
+              {{ enrollingFace ? '录入中…' : faceprintStatus?.enrolled ? '重新录入' : '录入主人面容' }}
+            </button>
+            <button
+              v-if="faceprintStatus?.enrolled"
+              type="button"
+              class="reject-btn full enroll-del"
+              :disabled="enrollingFace"
+              @click="onDeleteFaceprint"
+            >
+              删除面容
+            </button>
+            <p v-if="faceprintError" class="error">{{ faceprintError }}</p>
+          </SettingsCard>
+
+          <SettingsCard title="对话方式">
+            <label class="toggle-row">
+              <span>默认语音回复</span>
+              <button
+                type="button"
+                class="toggle"
+                :class="{ on: voiceReplyDefault }"
+                :disabled="savingProactive"
+                @click="onVoiceReplyToggle"
+              >
+                {{ voiceReplyDefault ? '开' : '关' }}
+              </button>
+            </label>
+            <template v-if="serverVisionEnabled">
+              <label class="toggle-row">
+                <span>语音时看我</span>
+                <button type="button" class="toggle" :class="{ on: visionEnabled }" @click="onVisionToggle">
+                  {{ visionEnabled ? '开' : '关' }}
+                </button>
+              </label>
+              <p class="hint">通过「眼睛」理解表情、手里东西和周围；结束对话后关闭</p>
+            </template>
+          </SettingsCard>
+
+          <SettingsCard v-if="isTauri()" title="麦克风" hint="若权限被拒绝，请检查 Windows 隐私 → 麦克风">
+            <button
+              type="button"
+              class="primary-sm full"
+              :disabled="micFixBusy"
+              @click="onFixMicrophonePermission"
+            >
+              {{ micFixBusy ? '处理中…' : '修复麦克风权限' }}
+            </button>
+            <p v-if="micFixMsg" class="hint">{{ micFixMsg }}</p>
+          </SettingsCard>
+
+          <SettingsCard>
+            <button type="button" class="settings-advanced-toggle" @click="voiceAdvancedOpen = !voiceAdvancedOpen">
+              <span>高级</span>
+              <span>{{ voiceAdvancedOpen ? '▲' : '▼' }}</span>
+            </button>
+            <div v-if="voiceAdvancedOpen" class="settings-advanced-body">
+              <p class="hint">语音识别模式</p>
+              <select v-model="sttMode" class="select-sm" @change="onSttModeChange">
+                <option value="auto">自动</option>
+                <option value="local">本地</option>
+                <option value="cloud">云端</option>
+              </select>
+              <p v-if="prefsError" class="error">{{ prefsError }}</p>
+              <p class="hint advanced-gap">在场声音感知 · 当前：{{ pet.ownerPresence }}</p>
+              <p class="hint">
+                模型路径：<code>public/models/speaker/campp.onnx</code>、
+                <code>public/models/audio/yamnet.onnx</code>
+              </p>
+            </div>
+          </SettingsCard>
         </template>
 
         <!-- 我的 -->
-        <template v-else-if="tab === 'account'">
-          <section class="block flat">
-            <h3>陪伴</h3>
+        <template v-else-if="tab === 'me'">
+          <SettingsCard title="陪伴" hint="深夜我不吵你，重要提醒除外">
             <label class="toggle-row">
               <span>主动陪伴</span>
               <button
@@ -1024,7 +1063,6 @@ onUnmounted(() => {
                 {{ reminderVoice ? '开' : '关' }}
               </button>
             </label>
-            <p class="hint">深夜我不吵你，重要提醒除外~</p>
             <div class="quiet-row">
               <label>
                 勿扰从
@@ -1040,12 +1078,11 @@ onUnmounted(() => {
               </label>
             </div>
             <p v-if="prefsError" class="error">{{ prefsError }}</p>
-          </section>
-          <section class="block flat">
-            <h3>生活照护</h3>
-            <p class="hint">根据电脑键鼠使用情况提醒休息、喝水、吃饭，不读取聊天内容、不记录按键。</p>
+          </SettingsCard>
+
+          <SettingsCard title="生活照护" hint="根据键鼠使用情况提醒，不读取聊天内容">
             <label class="toggle-row">
-              <span>生活照护总开关</span>
+              <span>总开关</span>
               <button
                 type="button"
                 class="toggle"
@@ -1107,22 +1144,58 @@ onUnmounted(() => {
               </label>
             </div>
             <label class="quiet-row">
-              每日照护上限
+              每日上限
               <select v-model.number="wellnessDailyMax" class="select-xs" :disabled="!wellnessEnabled" @change="onWellnessMaxChange">
                 <option v-for="n in 4" :key="'wm' + n" :value="n">{{ n }} 条</option>
               </select>
             </label>
-            <p class="hint">需保持 Mochi 桌面端运行以启用生活照护。</p>
-          </section>
-          <section class="block flat">
-            <h3>账号</h3>
-            <p class="hint">当前已登录。退出后需重新登录。</p>
+          </SettingsCard>
+
+          <SettingsCard title="学习偏好">
+            <div class="tags selectable">
+              <button
+                v-for="opt in topicOptions"
+                :key="opt.id"
+                type="button"
+                class="tag tag-btn"
+                :class="{ on: learningTopics.includes(opt.id) }"
+                @click="toggleLearningTopic(opt.id)"
+              >
+                {{ opt.label }}
+              </button>
+            </div>
+            <div class="radio-row">
+              <span class="radio-label">英语</span>
+              <label v-for="lv in englishLevels" :key="lv.id" class="radio-item">
+                <input v-model="englishLevel" type="radio" :value="lv.id" />
+                {{ lv.label }}
+              </label>
+            </div>
+            <label class="toggle-row">
+              <span>吐槽时不讲大道理</span>
+              <button
+                type="button"
+                class="toggle"
+                :class="{ on: noUnsolicitedAdvice }"
+                @click="noUnsolicitedAdvice = !noUnsolicitedAdvice"
+              >
+                {{ noUnsolicitedAdvice ? '开' : '关' }}
+              </button>
+            </label>
+            <button type="button" class="primary-sm full" :disabled="savingLearning" @click="saveLearningPrefs">
+              {{ savingLearning ? '…' : '保存学习偏好' }}
+            </button>
+            <p v-if="learningError" class="error">{{ learningError }}</p>
+          </SettingsCard>
+
+          <SettingsCard title="关于我">
+            <p class="hint">Mochi · v0.2</p>
+          </SettingsCard>
+
+          <SettingsCard title="账号" variant="danger">
+            <p class="hint">当前已登录</p>
             <button type="button" class="danger" @click="logout">退出登录</button>
-          </section>
-          <section class="block">
-            <h3>关于</h3>
-            <p class="hint">Mochi 桌面跟屁虫 · v0.2</p>
-          </section>
+          </SettingsCard>
         </template>
       </div>
     </div>
@@ -1186,25 +1259,27 @@ onUnmounted(() => {
 
 .tabs button {
   flex: 1;
-  padding: 6px 4px;
+  padding: 8px 2px;
   border: none;
-  border-radius: 8px;
+  border-radius: 0;
   background: transparent;
-  font-size: 12px;
+  font-size: 11px;
   color: #888;
   cursor: pointer;
 }
 
 .tabs button.active {
-  background: #fff0f3;
-  color: #e05;
+  background: transparent;
+  color: var(--mochi-pink, #ff8fab);
   font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--mochi-pink, #ff8fab);
 }
 
 .panel-body {
   flex: 1;
   overflow-y: auto;
-  padding: 14px;
+  padding: 12px 14px 14px;
+  background: var(--mochi-bg, #fafafa);
 }
 
 .loading {
@@ -1670,8 +1745,16 @@ onUnmounted(() => {
   font-size: 11px;
 }
 
-.tabs button {
-  padding: 6px 2px;
-  font-size: 11px;
+.enroll-del {
+  margin-top: 8px;
+  width: 100%;
+}
+
+.advanced-gap {
+  margin-top: 10px;
+}
+
+.toggle-row + .toggle-row {
+  margin-top: 8px;
 }
 </style>

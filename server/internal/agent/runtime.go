@@ -616,6 +616,7 @@ func (r *Runtime) Turn(ctx context.Context, input TurnInput) (TurnOutput, error)
 			CurrentTopic: input.TopicAnchor.CurrentTopic,
 			OpenQuestion: input.TopicAnchor.OpenQuestion,
 		},
+		VisualSpeaker: input.VisualSpeaker,
 		Now:                time.Now(),
 		MemoryPromptBudget: memBudget,
 		LifeStage:          ageInfo.Stage,
@@ -632,7 +633,7 @@ func (r *Runtime) Turn(ctx context.Context, input TurnInput) (TurnOutput, error)
 	if input.TriggerType == "system_proactive" {
 		messages = append(messages, ai.Message{
 			Role:    "system",
-			Content: fmt.Sprintf("【系统指令 - 主动关怀】结合当前状态，以当前风格写下一句主动关心/提醒主人（无需称呼你好，字数限制在20字内，口语自然）。指令内容：%s", input.Message),
+			Content: fmt.Sprintf("【系统指令 - 主动关怀】结合当前状态与已知依据，以当前风格写下一句主动关心/提醒主人（无需称呼你好，字数限制在20字内，口语自然；无依据不要编造）。指令内容：%s", input.Message),
 		})
 	} else if input.Message != "" {
 		messages = append(messages, ai.Message{Role: "user", Content: input.Message})

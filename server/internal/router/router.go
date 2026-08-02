@@ -14,6 +14,7 @@ import (
 	"github.com/mochi-ai/server/internal/subscribe"
 	"github.com/mochi-ai/server/internal/tools"
 	"github.com/mochi-ai/server/internal/voice"
+	"github.com/mochi-ai/server/internal/faceprint"
 	"github.com/mochi-ai/server/internal/voiceprint"
 	"github.com/mochi-ai/server/internal/wellness"
 	"github.com/mochi-ai/server/internal/ws"
@@ -29,6 +30,7 @@ type Handlers struct {
 	Tools           *tools.Handler
 	Wellness        *wellness.Handler
 	Voiceprint      *voiceprint.Handler
+	Faceprint       *faceprint.Handler
 	Hub             *ws.Hub
 	AuthSvc       *auth.Service
 	ClientAPIBase      string
@@ -107,6 +109,11 @@ func Setup(mode string, h Handlers) *gin.Engine {
 				protected.POST("/voiceprint/enroll", h.Voiceprint.Enroll)
 				protected.GET("/voiceprint/status", h.Voiceprint.Status)
 				protected.DELETE("/voiceprint", h.Voiceprint.Delete)
+			}
+			if h.Faceprint != nil {
+				protected.POST("/faceprint/enroll", h.Faceprint.Enroll)
+				protected.GET("/faceprint/status", h.Faceprint.Status)
+				protected.DELETE("/faceprint", h.Faceprint.Delete)
 			}
 			protected.POST("/pet/onboarding", h.Pet.Onboarding)
 			protected.POST("/subscribe/adopt", h.Subscribe.Adopt)

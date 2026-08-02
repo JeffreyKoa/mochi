@@ -175,7 +175,6 @@ const (
 	triggerEventFollowUp   triggerKind = "event_followup"
 	triggerMissYou         triggerKind = "miss_you"
 	triggerMorning         triggerKind = "morning"
-	triggerLifeState       triggerKind = "life_state"
 )
 
 func (s *Scheduler) pickTrigger(ctx context.Context, pet models.Pet, state models.LifeState, bondProfile models.BondProfile, user models.User) (triggerKind, string, string) {
@@ -196,10 +195,6 @@ func (s *Scheduler) pickTrigger(ctx context.Context, pet models.Pet, state model
 		if followUp {
 			return triggerEventFollowUp, eventMem.Content, "happy"
 		}
-	}
-
-	if state.Hungry > 80 || state.Energy < 20 {
-		return triggerLifeState, fmt.Sprintf("hungry=%d energy=%d", state.Hungry, state.Energy), "sad"
 	}
 
 	hour := now.Hour()
@@ -272,8 +267,6 @@ func (s *Scheduler) fallbackMessage(trigger triggerKind, petName string, bond mo
 		return "之前你说的事怎么样了？我一直记得呢。"
 	case triggerMorning:
 		return "早啊～今天打算干嘛？"
-	case triggerLifeState:
-		return "我有点饿了…不过你忙的话先忙就好。"
 	default:
 		if bond.RapportLevel >= 60 {
 			return "好久没聊了，有点想你。"

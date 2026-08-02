@@ -33,7 +33,8 @@ import {
   releaseVoiceOwner,
   setupVoiceOwnerListener,
 } from '@/services/voiceSessionOwner'
-import type { UnlistenFn } from '@tauri-apps/api/event'
+import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
 const { sidePanelOpen = false } = defineProps<{ sidePanelOpen?: boolean }>()
 
@@ -57,6 +58,32 @@ const lastHeadlessBubbleIndex = ref(0)
 
 const DRAG_THRESHOLD = 5
 
+/** 单击 Mochi 唤醒时的唯一提示语；之后仅展示 ASR 实时识别文字。 */
+const PET_WAKE_GREETING = '在呢，主人！'
+
+/** manual wake 失败时给用户可见反馈（避免「点了没反应」）。 */
+async function showWakeFailure(reason: string | undefined) {
+  switch (reason) {
+    case 'voiceprint_missing':
+      pet.showSpeechBubble('请先在设置中录入主人声纹~', 4000)
+      break
+    case 'disconnected':
+      pet.showSpeechBubble('连接断开，正在重连…', 3000)
+      await rt.connectIfOwner().catch(() => {})
+      break
+    case 'not_owner':
+      if (!rt.statusText) {
+        pet.showSpeechBubble('我没听清是不是你，请再说一遍~', 2500)
+      }
+      break
+    case 'not_ready':
+      pet.showSpeechBubble('还没准备好，请再点一次~', 2500)
+      break
+    default:
+      break
+  }
+}
+
 let dragWindow: ReturnType<typeof getCurrentWindow> | null = null
 let clickTimer: ReturnType<typeof setTimeout> | null = null
 let suppressClick = false
@@ -66,6 +93,7 @@ let unlistenVoiceOwner: UnlistenFn | null = null
 
 let dragPointerId = -1
 let dragWindowBase = { x: 0, y: 0 }
+let dragBaseReady = false
 let dragPointerStart = { x: 0, y: 0 }
 let dragRaf = 0
 let dragPendingPos: PhysicalPosition | null = null
@@ -111,7 +139,7 @@ function scheduleWindowMove(x: number, y: number) {
 }
 
 function onWindowPointerMove(e: PointerEvent) {
-  if (!isDragging.value || e.pointerId !== dragPointerId || !dragWindow) return
+  if (!isDragging.value || e.pointerId !== dragPointerId || !dragWindow || !dragBaseReady) return
   const dx = e.screenX - dragPointerStart.x
   const dy = e.screenY - dragPointerStart.y
   if (!dragMoved.value && Math.hypot(dx, dy) < DRAG_THRESHOLD) return
@@ -146,29 +174,43 @@ async function onWindowPointerUp(e: PointerEvent) {
   }
 
   if (dragMoved.value && dragWindow) {
-    await saveWindowPosition(dragWindow)
+    void saveWindowPosition(dragWindow)
+    if (isTauri()) {
+      void invoke('sync_chat_beside_pet').catch(() => {})
+    }
   }
 
   setTimeout(() => {
     dragMoved.value = false
     didDragWindow.value = false
-    if (!pet.isChatOpen && !rt.talking && !rt.processing) roamer?.resume()
-  }, 50)
+    dragBaseReady = false
+    if (!pet.isChatOpen && !rt.talking && !rt.processing && !menuVisible.value) roamer?.resume()
+  }, 30)
 }
 
-function onDragStart(e: PointerEvent) {
+async function onDragStart(e: PointerEvent) {
   if (e.button !== 0 || !dragWindow) return
 
   isDragging.value = true
   dragMoved.value = false
   didDragWindow.value = false
+  dragBaseReady = false
   dragPointerId = e.pointerId
   dragPointerStart = { x: e.screenX, y: e.screenY }
   roamer?.pause()
+  closeMenu()
 
-  void dragWindow.outerPosition().then((pos) => {
+  try {
+    const pos = await dragWindow.outerPosition()
     dragWindowBase = { x: pos.x, y: pos.y }
-  })
+    dragBaseReady = true
+  } catch {
+    dragBaseReady = false
+    isDragging.value = false
+    dragPointerId = -1
+    roamer?.resume()
+    return
+  }
 
   window.addEventListener('pointermove', onWindowPointerMove)
   window.addEventListener('pointerup', onWindowPointerUp)
@@ -186,6 +228,7 @@ function startRoamer() {
         isDragging.value,
         sidePanelOpen || growth.showSettings,
         rt.talking || rt.processing,
+        menuVisible.value,
       ),
     onWalkStart: (facing) => {
       pet.setFacing(facing)
@@ -281,10 +324,12 @@ onMounted(async () => {
     await listen('side-panel-closed', async (event) => {
       const mode = (event.payload as { mode?: string } | undefined)?.mode
       if (mode === 'settings') growth.closeSettings()
-      if (mode === 'chat' || !mode) {
-        pet.isChatOpen = false
-        pet.chatInline = false
-        chatExternal.value = false
+      if (mode === 'chat' || mode === 'settings' || !mode) {
+        if (mode !== 'settings') {
+          pet.isChatOpen = false
+          pet.chatInline = false
+          chatExternal.value = false
+        }
         if (auth.isLoggedIn && isTauri()) {
           await claimVoiceOwner('pet')
           await rt.connectIfOwner()
@@ -313,6 +358,7 @@ onUnmounted(() => {
   window.removeEventListener('pointermove', onWindowPointerMove)
   window.removeEventListener('pointerup', onWindowPointerUp)
   window.removeEventListener('pointercancel', onWindowPointerUp)
+  window.removeEventListener('pointerdown', onDocumentPointerDown, true)
   if (dragRaf) cancelAnimationFrame(dragRaf)
 })
 
@@ -379,9 +425,11 @@ watch(
 watch(
   () => rt.partialText,
   (text) => {
-    if (pet.isChatOpen || !rt.talking || !rt.userSpeaking || pet.isReminderBubbleActive()) return
-    const trimmed = text.trim() ? `“${text.trim()}”` : '正在听…'
-    pet.showPersistentBubble(trimmed)
+    if (pet.isChatOpen || !rt.talking || pet.isReminderBubbleActive()) return
+    if (!rt.userSpeaking && !rt.processing) return
+    const trimmed = text.trim()
+    if (!trimmed) return
+    pet.showPersistentBubble(`“${trimmed}”`)
   },
 )
 
@@ -389,9 +437,8 @@ watch(
   () => rt.userSpeaking,
   (speaking) => {
     if (pet.isChatOpen || !rt.talking || pet.isReminderBubbleActive()) return
-    if (speaking) {
-      const trimmed = rt.partialText.trim() ? `“${rt.partialText.trim()}”` : '正在听…'
-      pet.showPersistentBubble(trimmed)
+    if (speaking && rt.partialText.trim()) {
+      pet.showPersistentBubble(`“${rt.partialText.trim()}”`)
     }
   },
 )
@@ -418,7 +465,7 @@ async function closeChatSurface(collapse = true) {
 }
 
 async function openChat() {
-  menuVisible.value = false
+  closeMenu(false)
 
   if (pet.isChatOpen) {
     await closeChatSurface(true)
@@ -474,7 +521,6 @@ async function startVoiceInteraction() {
   }
 
   pet.setAnimation('happy')
-  pet.showSpeechBubble('我在听，主人说~', 2500)
 
   try {
     await rt.connect()
@@ -485,6 +531,15 @@ async function startVoiceInteraction() {
       pet.syncAnimationFromState()
       roamer?.resume()
       return false
+    }
+    // 单击即问候 + 立即进入实时聆听（manual wake → 流式 ASR）
+    if (rt.resting) {
+      const wake = await rt.wakeListening({ manual: true })
+      if (wake.ok) {
+        pet.showPersistentBubble(PET_WAKE_GREETING)
+      } else {
+        await showWakeFailure(wake.reason)
+      }
     }
     return true
   } catch {
@@ -511,33 +566,11 @@ async function handlePetTap() {
 
   if (rt.talking) {
     if (rt.resting) {
-      const wake = await rt.wakeListening()
+      const wake = await rt.wakeListening({ manual: true })
       if (wake.ok) {
-        pet.showSpeechBubble('我在听，主人说~', 2500)
+        pet.showPersistentBubble(PET_WAKE_GREETING)
       } else {
-        switch (wake.reason) {
-          case 'voiceprint_missing':
-            pet.showSpeechBubble('请先在设置中录入主人声纹~', 4000)
-            break
-          case 'disconnected':
-            pet.showSpeechBubble('连接断开，正在重连…', 3000)
-            void rt.connectIfOwner().then(async () => {
-              if (!(await rt.startTalk())) {
-                pet.showSpeechBubble(rt.statusText || '重连失败，请稍后再试', 4000)
-              }
-            })
-            break
-          case 'not_owner':
-            // TTS 拒答由 sendNonOwnerReply 触发，此处仅作无 WS 时的兜底
-            if (!rt.statusText) {
-              pet.showSpeechBubble('我只听主人的声音哦~', 2500)
-            }
-            break
-          case 'not_speech':
-            break
-          default:
-            break
-        }
+        await showWakeFailure(wake.reason)
       }
       return
     }
@@ -546,10 +579,8 @@ async function handlePetTap() {
       return
     }
     if (rt.processing) {
-      pet.showSpeechBubble('我在想呢，稍等~', 2500)
       return
     }
-    pet.showSpeechBubble('正在说话呢~', 2500)
     return
   }
 
@@ -562,7 +593,7 @@ async function onPetClick() {
   clickTimer = setTimeout(async () => {
     clickTimer = null
     await handlePetTap()
-  }, 200)
+  }, 80)
 }
 
 async function startVoiceFromMenu() {
@@ -581,7 +612,7 @@ async function endVoiceFromMenu() {
 }
 
 async function onFeed() {
-  menuVisible.value = false
+  closeMenu(false)
   roamer?.pause()
   try {
     const result = await interactWithRetry('feed')
@@ -599,7 +630,7 @@ async function onFeed() {
 }
 
 async function onPlay() {
-  menuVisible.value = false
+  closeMenu(false)
   roamer?.pause()
   try {
     const result = await interactWithRetry('play')
@@ -626,15 +657,14 @@ async function openSettingsFromMenu() {
     return
   }
 
-  if (pet.isChatOpen || chatExternal.value) {
-    pet.isChatOpen = false
-    pet.chatInline = false
-    chatExternal.value = false
-    setPopupChatFollowsPet(false)
-    await hideSidePanelPopup()
-  }
-
+  // 打开设置：必须关闭聊天态，避免侧栏仍显示 ChatPanel
+  pet.isChatOpen = false
+  pet.chatInline = false
+  chatExternal.value = false
+  setPopupChatFollowsPet(false)
   if (isTauri()) {
+    await hideSidePanelPopup()
+    await claimVoiceOwner('pet')
     growth.openSettings()
     const ok = await showSidePanelPopup('settings')
     if (!ok) {
@@ -692,12 +722,22 @@ function clampMenuPos(clientX: number, clientY: number, menuW: number, menuH: nu
   return { x, y }
 }
 
+function onDocumentPointerDown(e: PointerEvent) {
+  if (!menuVisible.value) return
+  const el = menuEl.value
+  if (el && !el.contains(e.target as Node)) {
+    closeMenu()
+  }
+}
+
 async function onContextMenu(e: MouseEvent) {
   e.preventDefault()
+  roamer?.pause()
   menuPosReady.value = false
   // 先用估算尺寸预定位，避免贴边时被窗口裁切
   menuPos.value = clampMenuPos(e.clientX, e.clientY, 108, rt.talking ? 168 : 168)
   menuVisible.value = true
+  window.addEventListener('pointerdown', onDocumentPointerDown, true)
 
   await nextTick()
   const el = menuEl.value
@@ -710,9 +750,13 @@ async function onContextMenu(e: MouseEvent) {
   menuPosReady.value = true
 }
 
-function closeMenu() {
+function closeMenu(resumeRoam = true) {
   menuVisible.value = false
   menuPosReady.value = true
+  window.removeEventListener('pointerdown', onDocumentPointerDown, true)
+  if (resumeRoam && !isDragging.value && !pet.isChatOpen && !rt.talking && !rt.processing) {
+    roamer?.resume()
+  }
 }
 
 function onDblClick() {

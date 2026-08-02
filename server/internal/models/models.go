@@ -240,3 +240,14 @@ type Voiceprint struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+// Faceprint stores the owner's averaged face embedding for client-side verification (P2).
+type Faceprint struct {
+	ID        uint64    `gorm:"primaryKey" json:"id"`
+	UserID    uint64    `gorm:"uniqueIndex" json:"user_id"`
+	Embedding string    `gorm:"type:text" json:"-"`
+	Dim       int       `json:"dim"`
+	Samples   int       `json:"samples"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}

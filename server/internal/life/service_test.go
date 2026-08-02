@@ -1,6 +1,7 @@
 package life
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -17,9 +18,23 @@ func (m *mockHub) SendProactive(userID uint64, message, animation string) bool {
 	return true
 }
 
+type mockBrain struct {
+	msg string
+	ch  chan struct{}
+}
+
+func (b *mockBrain) GenerateLifeNudge(ctx context.Context, userID, petID uint64, triggerType string, state models.LifeState) (string, error) {
+	if b.ch != nil {
+		close(b.ch)
+	}
+	return b.msg, nil
+}
+
 func TestLifeService_CheckTriggersAndCooldown(t *testing.T) {
 	hub := &mockHub{}
+	done := make(chan struct{})
 	svc := NewService(nil, hub)
+	svc.SetProactiveBrain(&mockBrain{msg: "brain-generated", ch: done})
 
 	state := models.LifeState{
 		PetID:  1,
@@ -29,13 +44,35 @@ func TestLifeService_CheckTriggersAndCooldown(t *testing.T) {
 	}
 
 	svc.checkTriggers(100, state)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("brain not invoked")
+	}
+	// 异步发送，稍等 hub 收到
+	time.Sleep(50 * time.Millisecond)
 	if len(hub.proactiveMsgs) != 1 {
 		t.Fatalf("expected 1 proactive message, got %d", len(hub.proactiveMsgs))
 	}
+	if hub.proactiveMsgs[0] != "brain-generated" {
+		t.Fatalf("expected brain message, got %q", hub.proactiveMsgs[0])
+	}
 
 	svc.checkTriggers(100, state)
+	time.Sleep(50 * time.Millisecond)
 	if len(hub.proactiveMsgs) != 1 {
 		t.Errorf("expected cooldown to prevent duplicate message, got count %d", len(hub.proactiveMsgs))
+	}
+}
+
+func TestLifeService_NoBrainNoProactive(t *testing.T) {
+	hub := &mockHub{}
+	svc := NewService(nil, hub)
+	state := models.LifeState{PetID: 1, Hungry: 90}
+	svc.checkTriggers(100, state)
+	time.Sleep(50 * time.Millisecond)
+	if len(hub.proactiveMsgs) != 0 {
+		t.Fatalf("expected no message without brain, got %d", len(hub.proactiveMsgs))
 	}
 }
 

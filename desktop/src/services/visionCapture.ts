@@ -14,7 +14,7 @@ import { isTauri } from '@/services/chatWindow'
 const VISION_JPEG_QUALITY = 0.85
 const WARMUP_MS = 180
 
-export type VisionFrameReason = 'speech_start' | 'audio_end' | 'object_refresh'
+export type VisionFrameReason = 'speech_start' | 'audio_end' | 'object_refresh' | 'pause_probe'
 
 export type VisionStartResult = 'ok' | 'denied' | 'unavailable' | 'skipped'
 

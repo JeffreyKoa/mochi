@@ -919,7 +919,7 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 	}
 
 	var uiMoodStrip text.StreamMoodStripper
-	reply, err := p.chat.StreamMessageVoice(ctx, sess.UserID, userText, perceptionAcoustic(perception), perceptionVisual(perception), perception, topicAnchor, func(token string) {
+	reply, err := p.chat.StreamMessageVoice(ctx, sess.UserID, userText, perceptionAcoustic(perception), perceptionVisual(perception), perception, topicAnchor, sess.VisualSpeakerForPrompt(p.cfg.Faceprint.OwnerRecentMS), func(token string) {
 		llmTokenMu.Lock()
 		if !llmTokenSeen {
 			llmTokenSeen = true

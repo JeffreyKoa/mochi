@@ -25,6 +25,7 @@ type TurnInput struct {
 	VisualHint      vision.Hint            `json:"visual_hint,omitempty"`   // 语音 turn 的视觉感知（Phase 1）
 	PipelinePerception *emotion.PerceptionState `json:"pipeline_perception,omitempty"` // V3c：Pipeline 融合唯一源
 	TopicAnchor     TopicAnchorInput       `json:"topic_anchor,omitempty"`
+	VisualSpeaker   string                 `json:"visual_speaker,omitempty"` // P2: owner | unknown
 }
 
 // TurnOutput represents the output of a single Agent interaction turn, supporting streaming.

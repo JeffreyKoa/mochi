@@ -331,7 +331,7 @@ func parseVLResponse(focus Focus, raw string) Hint {
 func normalizeExpression(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	switch s {
-	case "neutral", "tired", "sad", "happy", "anxious":
+	case "neutral", "tired", "sad", "happy", "anxious", "thinking", "hesitant":
 		return s
 	default:
 		return "unknown"
@@ -348,6 +348,8 @@ func expressionLabel(expr string) string {
 		return "开心"
 	case "anxious":
 		return "紧张"
+	case "thinking", "hesitant":
+		return "在琢磨"
 	case "neutral":
 		return "平静"
 	default:

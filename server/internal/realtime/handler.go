@@ -28,6 +28,20 @@ var upgrader = websocket.Upgrader{
 // maxUtteranceBytes caps one utterance at ~30s of 16kHz mono PCM.
 const maxUtteranceBytes = 16000 * 2 * 30
 
+// minBatchASRFallbackBytes：流式 ASR 空结果时，缓冲达到此长度则回退批量识别（~0.5s @16kHz mono）。
+const minBatchASRFallbackBytes = 16000
+
+// maxBatchASRBytes：批量 ASR 最多识别最近 8 秒，避免 20s+ 缓冲识别耗时 10s+。
+const maxBatchASRBytes = 16000 * 2 * 8
+
+// trimPCMForASR 截取 PCM 尾部用于批量 ASR，降低长缓冲识别延迟。
+func trimPCMForASR(pcm []byte) []byte {
+	if len(pcm) <= maxBatchASRBytes {
+		return pcm
+	}
+	return pcm[len(pcm)-maxBatchASRBytes:]
+}
+
 type Handler struct {
 	authSvc  *auth.Service
 	pipeline *Pipeline
@@ -325,6 +339,8 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 				processingMu.Lock()
 				processing = false
 				processingMu.Unlock()
+				// 本轮结束后预建流式 ASR，避免下一句首包时 asrSess 仍为 nil
+				ensureASR()
 			}()
 
 			asrMu.Lock()
@@ -351,18 +367,26 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 						lastPartial = ""
 						return
 					}
-					h.pipeline.OnSpeechEnd(ctx, sess, buf, sender)
+					h.pipeline.OnSpeechEnd(ctx, sess, trimPCMForASR(buf), sender)
 					return
 				}
 				if text == "" {
 					text = lastPartial
+				}
+				// 流式空结果但缓冲有足够音频 → 批量 ASR 回退（常见于 WS 断流后仅 buf 有有效 PCM）
+				if text == "" && len(buf) >= minBatchASRFallbackBytes {
+					trimmed := trimPCMForASR(buf)
+					log.Printf("[realtime] streaming asr empty, batch fallback session=%s bytes=%d trimmed=%d", sessionID, len(buf), len(trimmed))
+					h.pipeline.OnSpeechEnd(ctx, sess, trimmed, sender)
+					lastPartial = ""
+					return
 				}
 				h.pipeline.OnTranscript(ctx, sess, text, sender)
 				lastPartial = ""
 				return
 			}
 
-			h.pipeline.OnSpeechEnd(ctx, sess, buf, sender)
+			h.pipeline.OnSpeechEnd(ctx, sess, trimPCMForASR(buf), sender)
 		}()
 	}
 
@@ -496,11 +520,29 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 			audioBuf = append(audioBuf, pcm...)
 			audioMu.Unlock()
 
+			// 流式 ASR：无 session 时懒创建；SendAudio 失败则重建 session 并重发本包
 			asrMu.Lock()
-			if asrSess != nil {
-				_ = asrSess.SendAudio(pcm)
-			}
+			curASR := asrSess
 			asrMu.Unlock()
+			if curASR == nil && (st == StateListening || st == StateIdle) {
+				ensureASR()
+				asrMu.Lock()
+				curASR = asrSess
+				asrMu.Unlock()
+			}
+			if curASR != nil {
+				if err := curASR.SendAudio(pcm); err != nil {
+					log.Printf("[realtime] asr send error session=%s: %v", sessionID, err)
+					resetASR()
+					ensureASR()
+					asrMu.Lock()
+					curASR = asrSess
+					asrMu.Unlock()
+					if curASR != nil {
+						_ = curASR.SendAudio(pcm)
+					}
+				}
+			}
 
 			// Turn end is client-driven (audio_end). Server VAD only signals UI + barge-in.
 			if ev == "speech_start" {
@@ -555,10 +597,17 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 				break
 			}
 			sess.SetVisionFrame(jpeg, in.Seq, in.Reason)
+			if in.FaceProbe != nil {
+				log.Printf("[realtime][face] probe session=%s match=%v score=%.3f detected=%v",
+					sessionID, in.FaceProbe.Match, in.FaceProbe.Score, in.FaceProbe.Detected)
+				if in.FaceProbe.Detected {
+					sess.ApplyFaceProbe(in.FaceProbe.Match, in.FaceProbe.Score, in.FaceProbe.Detected)
+				}
+			}
 			log.Printf("[realtime][vision] frame_received session=%s jpeg_bytes=%d seq=%d reason=%s",
 				sessionID, len(jpeg), in.Seq, in.Reason)
 			// 仅 speech_start 预跑 owner_face；object_refresh/audio_end 留给 contextual object VL
-			if in.Reason == "" || in.Reason == "speech_start" {
+			if in.Reason == "" || in.Reason == "speech_start" || in.Reason == "pause_probe" {
 				h.pipeline.PrefetchOwnerFace(ctx, sess)
 			}
 

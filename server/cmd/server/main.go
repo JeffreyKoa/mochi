@@ -25,6 +25,7 @@ import (
 	"github.com/mochi-ai/server/internal/reflection"
 	"github.com/mochi-ai/server/internal/router"
 	"github.com/mochi-ai/server/internal/voice"
+	"github.com/mochi-ai/server/internal/faceprint"
 	"github.com/mochi-ai/server/internal/voiceprint"
 	"github.com/mochi-ai/server/internal/wellness"
 	"github.com/mochi-ai/server/internal/ws"
@@ -91,6 +92,7 @@ func main() {
 	toolsExec := tools.NewExecutor(toolsSvc, cfg.Tools)
 	toolsHandler := tools.NewHandler(db, toolsSvc)
 	chatSvc := chat.NewService(db, aiRouter, memSvc, lifeSvc, lifecycleSvc, bondSvc, emotionSvc, briefSvc, reflectionSvc, cfg.Growth, toolsExec, cfg.Tools, cfg.AI)
+	lifeSvc.SetProactiveBrain(chatSvc.Runtime())
 	chatHandler := chat.NewHandler(chatSvc)
 
 	authSvc := auth.NewService(db, cfg.JWT.Secret)
@@ -103,6 +105,9 @@ func main() {
 
 	voiceprintSvc := voiceprint.NewService(db)
 	voiceprintHandler := voiceprint.NewHandler(voiceprintSvc)
+
+	faceprintSvc := faceprint.NewService(db)
+	faceprintHandler := faceprint.NewHandler(faceprintSvc)
 
 	companionScheduler := companion.NewScheduler(db, rdb, chatSvc.Runtime(), wellnessSvc, aiRouter, bondSvc, cfg.Companion, hub, toolsSvc, cfg.Tools, realtimeHandler)
 	companionScheduler.Start()
@@ -129,6 +134,7 @@ func main() {
 		Tools:           toolsHandler,
 		Wellness:        wellnessHandler,
 		Voiceprint:      voiceprintHandler,
+		Faceprint:       faceprintHandler,
 		Hub:             hub,
 		AuthSvc:         authSvc,
 		ClientAPIBase:    cfg.Client.APIBase,

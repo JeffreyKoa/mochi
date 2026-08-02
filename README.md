@@ -30,7 +30,7 @@ Mochi/
 - `realtime.gate.*` — 回应门控；词表见 `config/data/gate_fastpath.yaml`
 - `client.api_base` — 桌面端 API 地址
 
-复制示例：`cp config/config.example.yaml config/config.yaml`
+直接编辑 `config/config.yaml` 即可（本仓库以该文件为唯一配置源，勿使用已删除的 example 副本）。
 
 ### 2. 启动后端
 

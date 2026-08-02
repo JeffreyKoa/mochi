@@ -434,6 +434,39 @@ export async function deleteVoiceprint() {
   return data
 }
 
+export interface FaceprintStatus {
+  enrolled: boolean
+  dim?: number
+  samples?: number
+  embedding?: number[]
+  updated_at?: string
+}
+
+export async function getFaceprintStatus() {
+  const { data } = await request<FaceprintStatus>(
+    `${getApiBase()}/api/v1/faceprint/status`,
+    { headers: authHeaders() },
+  )
+  return data
+}
+
+export async function enrollFaceprint(body: { embedding: number[]; samples: number }) {
+  const { data } = await request<FaceprintStatus>(`${getApiBase()}/api/v1/faceprint/enroll`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(body),
+  })
+  return data
+}
+
+export async function deleteFaceprint() {
+  const { data } = await request(`${getApiBase()}/api/v1/faceprint`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  })
+  return data
+}
+
 export function getWSUrl(): string {
   const token = getToken()
   const base = getApiBase()

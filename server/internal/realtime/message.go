@@ -62,9 +62,17 @@ type AudioIn struct {
 
 // VisionFrameIn 客户端上传的单帧 JPEG（语音 turn 前抓拍）。
 type VisionFrameIn struct {
-	JPEG   string `json:"jpeg"` // base64 encoded JPEG，日志禁止打印
-	Seq    int64  `json:"seq,omitempty"`
-	Reason string `json:"reason,omitempty"` // speech_start | audio_end
+	JPEG      string       `json:"jpeg"` // base64 encoded JPEG，日志禁止打印
+	Seq       int64        `json:"seq,omitempty"`
+	Reason    string       `json:"reason,omitempty"` // speech_start | audio_end | object_refresh
+	FaceProbe *FaceProbeIn `json:"face_probe,omitempty"`
+}
+
+// FaceProbeIn 客户端 ONNX 人脸匹配结果（P2）。
+type FaceProbeIn struct {
+	Match    bool    `json:"match"`
+	Score    float64 `json:"score"`
+	Detected bool    `json:"detected"`
 }
 
 type TextInput struct {

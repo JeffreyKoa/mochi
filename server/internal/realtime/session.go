@@ -50,6 +50,10 @@ type Session struct {
 	lastVisionSeq     int64
 	lastVisionReason  string
 
+	// P2：客户端 face_probe 推断的视觉说话人 owner|unknown
+	visualSpeaker   string
+	visualSpeakerAt time.Time
+
 	onStateChange func(SessionState)
 }
 
@@ -170,13 +174,12 @@ func (s *Session) PreferMP3() bool {
 }
 
 // SetTurnPCM 保存本 turn 的用户 PCM（供声学情绪旁路）。
+// 不清除 visualReady/visualHint：speech_start prefetch 的结果应保留到 audio_end 复用。
 func (s *Session) SetTurnPCM(pcm []byte) {
 	s.mu.Lock()
 	s.turnPCM = append([]byte(nil), pcm...)
 	s.acousticReady = false
 	s.acousticHint = emotion.EmptyAcousticHint()
-	s.visualReady = false
-	s.visualHint = vision.EmptyHint()
 	s.mu.Unlock()
 }
 
@@ -357,4 +360,40 @@ func (s *Session) ApplyTopicAnchor(userText string, insight emotion.UtteranceIns
 	defer s.mu.Unlock()
 	s.topicAnchor = UpdateTopicAnchor(s.topicAnchor, userText, insight, cfg)
 	return s.topicAnchor
+}
+
+// ApplyFaceProbe 更新会话级 visual_speaker（P2，TTL 由 caller 在读取时校验）。
+// 低分=看不清脸不更新；仅高置信 non-match 才标 unknown，避免单帧 crop 误伤。
+func (s *Session) ApplyFaceProbe(match bool, score float64, detected bool) {
+	if !detected {
+		return
+	}
+	const minUnknown = 0.32
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if match {
+		s.visualSpeaker = "owner"
+		s.visualSpeakerAt = time.Now()
+		return
+	}
+	if score >= minUnknown {
+		s.visualSpeaker = "unknown"
+		s.visualSpeakerAt = time.Now()
+	}
+}
+
+// VisualSpeakerForPrompt 返回仍在 TTL 内的 visual_speaker，否则空串。
+func (s *Session) VisualSpeakerForPrompt(ownerRecentMS int) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.visualSpeaker == "" {
+		return ""
+	}
+	if ownerRecentMS <= 0 {
+		ownerRecentMS = 8000
+	}
+	if time.Since(s.visualSpeakerAt) > time.Duration(ownerRecentMS)*time.Millisecond {
+		return ""
+	}
+	return s.visualSpeaker
 }

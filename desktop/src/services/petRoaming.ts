@@ -25,10 +25,13 @@ type RoamingHooks = {
 
 const ROAM_IDLE_MIN_MS = 3_000
 const ROAM_IDLE_MAX_MS = 8_000
-const ROAM_STEP_PX = 4
+const ROAM_STEP_PX = 8
 const ROAM_MIN_DISTANCE = 20
-const ROAM_FRAME_MS = 16
+const ROAM_FRAME_MS = 24
 const ROAM_FALLBACK_PX = 120
+const ROAM_BOUNDS_TTL_MS = 5_000
+
+let cachedBounds: { at: number; bounds: RoamingBounds | null } | null = null
 
 export function loadSavedPosition(): SavedPosition | null {
   try {
@@ -55,6 +58,10 @@ export async function saveWindowPosition(win: TauriWindow): Promise<void> {
 }
 
 async function getRoamingBounds(win: TauriWindow): Promise<RoamingBounds | null> {
+  const now = Date.now()
+  if (cachedBounds && now - cachedBounds.at < ROAM_BOUNDS_TTL_MS) {
+    return cachedBounds.bounds
+  }
   try {
     const { currentMonitor, primaryMonitor, availableMonitors } = await import(
       '@tauri-apps/api/window'
@@ -64,7 +71,10 @@ async function getRoamingBounds(win: TauriWindow): Promise<RoamingBounds | null>
       const all = await availableMonitors()
       monitor = all[0] ?? (await primaryMonitor())
     }
-    if (!monitor) return null
+    if (!monitor) {
+      cachedBounds = { at: now, bounds: null }
+      return null
+    }
 
     const size = await win.outerSize()
     const pos = monitor.position
@@ -72,16 +82,22 @@ async function getRoamingBounds(win: TauriWindow): Promise<RoamingBounds | null>
     const margin = 8
     const maxX = pos.x + mon.width - size.width - margin
     const maxY = pos.y + mon.height - size.height - margin
-    if (maxX <= pos.x + margin || maxY <= pos.y + margin) return null
+    if (maxX <= pos.x + margin || maxY <= pos.y + margin) {
+      cachedBounds = { at: now, bounds: null }
+      return null
+    }
 
-    return {
+    const bounds: RoamingBounds = {
       minX: pos.x + margin,
       minY: pos.y + margin,
       maxX,
       maxY,
     }
+    cachedBounds = { at: now, bounds }
+    return bounds
   } catch (e) {
     console.warn('[roam] bounds', e)
+    cachedBounds = { at: now, bounds: null }
     return null
   }
 }
@@ -173,7 +189,7 @@ export class PetRoamer {
       const x = Math.round(pos.x + (delta * i) / steps)
       const y = pos.y
       try {
-        await this.win.setPosition(new PhysicalPosition(x, y))
+        void this.win.setPosition(new PhysicalPosition(x, y))
       } catch (e) {
         console.warn('[roam] move', e)
         break
@@ -182,11 +198,7 @@ export class PetRoamer {
     }
 
     if (!this.stopped && !this.paused) {
-      try {
-        await saveWindowPosition(this.win)
-      } catch {
-        // ignore
-      }
+      void saveWindowPosition(this.win)
     }
 
     this.moving = false
@@ -237,7 +249,7 @@ export class PetRoamer {
       x = clamp(x, bounds.minX, bounds.maxX)
       y = clamp(y, bounds.minY, bounds.maxY)
       try {
-        await this.win.setPosition(new PhysicalPosition(Math.round(x), Math.round(y)))
+        void this.win.setPosition(new PhysicalPosition(Math.round(x), Math.round(y)))
       } catch (e) {
         console.warn('[roam] move', e)
         break
@@ -246,11 +258,7 @@ export class PetRoamer {
     }
 
     if (!this.stopped && !this.paused) {
-      try {
-        await saveWindowPosition(this.win)
-      } catch {
-        // ignore
-      }
+      void saveWindowPosition(this.win)
     }
 
     this.moving = false
@@ -269,7 +277,8 @@ export function canRoam(
   isDragging: boolean,
   settingsOpen = false,
   voiceActive = false,
+  menuOpen = false,
 ): boolean {
-  if (isChatOpen || isDragging || settingsOpen || voiceActive) return false
+  if (isChatOpen || isDragging || settingsOpen || voiceActive || menuOpen) return false
   return true
 }

@@ -14,7 +14,7 @@ import { HybridSpeechVad, pcmToFloat, type VADEvent } from '@/services/sileroSpe
 import { LocalSTT, isLocalSttSupported } from '@/services/localStt'
 import { SpeakerVerifier } from '@/services/speakerVerifier'
 import { SoundEventClassifier } from '@/services/soundEventClassifier'
-import { getRealtimeConfig, getVoiceprintConfig, getPresenceConfig, getClientConfig, initClientConfig, resolveSttMode } from '@/config'
+import { getRealtimeConfig, getVoiceprintConfig, getFaceprintConfig, getPresenceConfig, getClientConfig, initClientConfig, resolveSttMode } from '@/config'
 import { micPermissionDeniedMessage } from '@/utils/micPermission'
 import {
   captureOwnerFaceJPEG,
@@ -32,15 +32,19 @@ import {
   ambientPresence,
 } from '@/services/ambientMic'
 import { handleProactiveMessage } from '@/services/proactiveHandler'
-import { streamChatMessage, getVoiceprintStatus } from '@/services/api'
+import { streamChatMessage, getVoiceprintStatus, getFaceprintStatus } from '@/services/api'
 import {
   type VoiceOwner,
   getStoredVoiceOwner,
-  isChatWindowVisible,
 } from '@/services/voiceSessionOwner'
 import { isTauri } from '@/services/chatWindow'
 import { looksLikeObjectQuery } from '@/services/visionHeuristic'
-import { speakerGate } from '@/services/speakerGate'
+import { identityGate } from '@/services/identityGate'
+import { FaceVerifier, FACE_OWNER_BOOST_SCORE } from '@/services/faceVerifier'
+import {
+  evaluateTurnEnd,
+  PAUSE_PROBE_MS,
+} from '@/services/turnEndArbiter'
 
 /**
  * Turn phases — like talking to a person:
@@ -61,6 +65,11 @@ export type WakeListeningResult =
   | { ok: true }
   | { ok: false; reason: WakeListeningFailure }
 
+/** wakeListening 选项：manual=true 表示用户主动点击，跳过唤醒前声纹探测。 */
+export interface WakeListeningOptions {
+  manual?: boolean
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
@@ -70,33 +79,15 @@ export interface ChatMessage {
   dismissReason?: string
 }
 
-const WAKE_CONFIRM_MS = 120
+const WAKE_CONFIRM_MS = 450
+/** 声纹得分低于此值才口语拒答「不是主人」；介于其间视为没听清，静默忽略。 */
+const NON_OWNER_REPLY_SCORE_MAX = 0.28
 const TTS_WATCHDOG_MS = 45000
 const TEXT_TURN_ACK_MS = 6000
-const MAX_UTTERANCE_MS = 25000
+const MAX_UTTERANCE_MS = 10000
 const PCM_RING_CHUNKS = 200 // ~4 s @ 20 ms/chunk
 const PCM_RING_SAMPLES = PCM_RING_CHUNKS * 320 // 16 kHz mono
 const HEARD_BUBBLE_GRACE_MS = 3000
-
-const UNFINISHED_CONNECTIVES = [
-  '但是', '但是呢', '因为', '所以', '然后', '而且', '如果', '不过',
-  '虽然', '觉得', '特别是', '比如', '并且', '另外', '还有', '其实',
-  '或者', '结果', '就是', '就是说', '意思是', '也就是说', '然后呢', '所以说',
-  '……', '...', '---', '、'
-]
-
-function isUnfinishedSpeech(text: string): boolean {
-  const trimmed = text.trim()
-  if (!trimmed) return false
-  for (const conn of UNFINISHED_CONNECTIVES) {
-    if (trimmed.endsWith(conn)) return true
-  }
-  const lastChar = trimmed.slice(-1)
-  if (lastChar === '，' || lastChar === ',' || lastChar === '：' || lastChar === ':') {
-    return true
-  }
-  return false
-}
 
 interface RuntimeParams {
   silenceMs: number
@@ -194,8 +185,8 @@ export const useRealtimeStore = defineStore('realtime', () => {
     if (!isTauri()) return true
     const owner = getStoredVoiceOwner()
     if (voiceWindow === 'chat') return owner === 'chat'
+    // 设置与聊天共用 chat 弹窗；仅以 voice-owner 为准，避免设置页误拦宠物语音
     if (voiceWindow === 'pet') {
-      if (await isChatWindowVisible()) return false
       return owner === null || owner === 'pet'
     }
     return false
@@ -216,15 +207,37 @@ export const useRealtimeStore = defineStore('realtime', () => {
   }
 
   const speakerVerifier = new SpeakerVerifier()
+  const faceVerifier = new FaceVerifier()
   const soundClassifier = new SoundEventClassifier()
   let ownerEmbedding: Float32Array | null = null
+  let ownerFaceEmbedding: Float32Array | null = null
   let wakeProbeInFlight = false
+  /** 最近一次唤醒 probe 的声纹得分（供拒答策略判断）。 */
+  let lastWakeProbeScore: number | null = null
   /** 对话中声纹 stream_check 定时器。 */
   let streamCheckTimer: ReturnType<typeof setInterval> | null = null
+  let streamCheckGraceTimer: ReturnType<typeof setTimeout> | null = null
+  /** P2：对话中人脸 probe 定时器。 */
+  let faceCheckTimer: ReturnType<typeof setInterval> | null = null
+  /** 最近一次人脸 probe 结果（供 identity gate 融合）。 */
+  let lastFaceProbe: { match: boolean; score: number; detected: boolean } | null = null
   /** P2：本 turn 是否已发过 object_refresh 帧（partial 中途触发后 submit 仍可再发一次）。 */
   let objectRefreshCountThisTurn = 0
   /** 本 turn 是否已发 speech_start 帧（防 VAD 重复触发）。 */
   let speechStartFrameSent = false
+  /** 主人 turn 内锁定 PCM 上传，stream_check 不误拦导致 ASR 空。 */
+  let ownerTurnUploadLock = false
+  /** 本 turn 是否已开始上传（首包语音后连续上传，保证流式 ASR 不断流）。 */
+  let turnUploadStarted = false
+  /** ASR partial 最近一次更新时间（眼耳协同：partial 仍在变则不提交）。 */
+  let partialUpdatedAt = 0
+  /** 多模态仲裁：延长等待截止时间（主人可能还在组织语言）。 */
+  let thinkingHoldUntil = 0
+  /** 本 turn 是否已做过 pause_probe（静音≥3s 眼抓拍）。 */
+  let pauseProbeDone = false
+  let pauseProbeInFlight = false
+  /** pause_probe 之后用户是否已继续说话（区分句中停顿 vs 句末结束）。 */
+  let resumedAfterPauseProbe = false
   /** 举物补拍前留给用户对准摄像头的延迟（ms）。 */
   const OBJECT_FRAME_HOLD_MS = 400
   let speechEndSubmitTimer: ReturnType<typeof setTimeout> | null = null
@@ -264,6 +277,58 @@ export const useRealtimeStore = defineStore('realtime', () => {
     }
   }
 
+  async function loadOwnerFaceprint() {
+    ownerFaceEmbedding = null
+    try {
+      const status = await getFaceprintStatus()
+      if (status.enrolled && status.embedding?.length) {
+        ownerFaceEmbedding = new Float32Array(status.embedding)
+      }
+    } catch {
+      ownerFaceEmbedding = null
+    }
+  }
+
+  function faceprintReady(): boolean {
+    const fp = getFaceprintConfig()
+    if (!fp.enabled) return false
+    if (!fp.required) return faceVerifier.available && !!ownerFaceEmbedding?.length
+    return faceVerifier.available && !!ownerFaceEmbedding?.length
+  }
+
+  async function probeFaceFromJPEG(jpeg: ArrayBuffer): Promise<{ match: boolean; score: number; detected: boolean } | null> {
+    const fp = getFaceprintConfig()
+    if (!fp.enabled || !faceVerifier.available || !ownerFaceEmbedding?.length) return null
+    try {
+      const result = await faceVerifier.verify(jpeg, ownerFaceEmbedding, fp.matchThreshold)
+      if (!result) return null
+      if (result.detected) {
+        lastFaceProbe = result
+        identityGate.noteFaceResult(result)
+      }
+      return result
+    } catch {
+      return null
+    }
+  }
+
+  /** 唤醒前快拍验脸：声纹失败时若人脸高分仍视为主人。 */
+  async function quickFaceProbeForWake(): Promise<{ match: boolean; score: number; detected: boolean } | null> {
+    if (!faceprintReady()) return null
+    const buf = visionSession.isActive()
+      ? await visionSession.grabSnapshot()
+      : await captureOwnerFaceJPEG()
+    if (!buf) return null
+    return probeFaceFromJPEG(buf)
+  }
+
+  /** 人脸是否足以否决 non_owner 拒答 / 辅助唤醒。 */
+  function faceSupportsOwner(face: { match: boolean; score: number; detected: boolean } | null): boolean {
+    if (!face) return false
+    if (face.score >= FACE_OWNER_BOOST_SCORE) return true
+    return face.detected && face.match
+  }
+
   function snapshotRecentPcm(maxSeconds?: number): Float32Array {
     const sec = maxSeconds ?? getVoiceprintConfig().wakeProbeSec
     const maxSamples = Math.floor(sec * 16000)
@@ -301,54 +366,125 @@ export const useRealtimeStore = defineStore('realtime', () => {
   }
 
   function stopStreamCheck() {
+    if (streamCheckGraceTimer) {
+      clearTimeout(streamCheckGraceTimer)
+      streamCheckGraceTimer = null
+    }
     if (streamCheckTimer) {
       clearInterval(streamCheckTimer)
       streamCheckTimer = null
     }
+    stopFaceCheck()
   }
 
-  /** 对话中周期性验声纹（P0 stream_check）。 */
+  function stopFaceCheck() {
+    if (faceCheckTimer) {
+      clearInterval(faceCheckTimer)
+      faceCheckTimer = null
+    }
+  }
+
+  /** P2：周期性从会话摄像头抓拍并验脸。 */
+  function startFaceCheck() {
+    stopFaceCheck()
+    const fp = getFaceprintConfig()
+    if (!fp.enabled || !faceprintReady()) return
+    const interval = fp.checkIntervalMs || 2000
+    faceCheckTimer = setInterval(() => {
+      void runFaceCheck()
+    }, interval)
+  }
+
+  async function runFaceCheck() {
+    if (phase !== 'user_speaking' || !recording) return
+    if (!visionSession.isActive() && !isVisionCaptureEnabled()) return
+    const buf = visionSession.isActive()
+      ? await visionSession.grabSnapshot()
+      : await captureOwnerFaceJPEG()
+    if (!buf) return
+    const face = await probeFaceFromJPEG(buf)
+    if (import.meta.env.DEV && face) {
+      console.debug('[faceprint] periodic_probe match=%s score=%s', face.match, face.score.toFixed(3))
+    }
+  }
+
+  /** 对话中周期性验声纹（P0 stream_check）+ 人脸融合（P2）。 */
   function startStreamCheck() {
     stopStreamCheck()
     const vp = getVoiceprintConfig()
     if (!vp.required || !voiceprintReady() || effectiveSttMode === 'local') return
     const interval = vp.streamCheckIntervalMs || 500
-    streamCheckTimer = setInterval(() => {
-      void runStreamCheck()
-    }, interval)
+    // 唤醒宽限期：先上传首包音频，再启动 stream_check（避免首秒误拦）
+    const graceMs = 1200
+    const graceTimer = setTimeout(() => {
+      streamCheckTimer = setInterval(() => {
+        void runStreamCheck()
+      }, interval)
+    }, graceMs)
+    // 存 grace timer 以便 stopStreamCheck 清理
+    streamCheckGraceTimer = graceTimer
+    startFaceCheck()
   }
 
   async function runStreamCheck() {
     if (phase !== 'user_speaking' || !recording) return
+    // 主人已唤醒的 turn 内不做 PCM 门控，避免声纹瞬时偏低导致 ASR 识别为空
+    if (ownerTurnUploadLock) return
     const vp = getVoiceprintConfig()
+    const fp = getFaceprintConfig()
     const windowSec = Math.min(vp.verifyWindowSec, 2)
     const pcm = snapshotRecentPcm(windowSec)
-    const result = await verifyOwnerVoice(pcm, false)
-    const mode = speakerGate.applyVerifyResult(
+    const result = await verifyOwnerVoice(pcm, true)
+    const faceForGate = lastFaceProbe ?? identityGate.lastFaceResult
+    const mode = identityGate.applyIdentityResult(
       result ?? { match: false, score: 0 },
+      faceForGate,
       vp,
+      fp,
     )
     if (import.meta.env.DEV) {
       console.debug(
-        '[voiceprint] stream_check mode=%s score=%s',
+        '[identity_gate] stream_check mode=%s voice=%s face=%s',
         mode,
         result?.score?.toFixed(3) ?? 'null',
+        lastFaceProbe?.score?.toFixed(3) ?? 'null',
       )
     }
-    if (mode === 'foreign_only' && speakerGate.shouldTriggerNonOwnerReply(vp)) {
-      void sendNonOwnerReply(false)
+    if (mode === 'foreign_only' && import.meta.env.DEV) {
+      console.debug('[identity_gate] stream_check foreign_only (filter only, no TTS)')
     }
   }
 
-  /** 场景①：非主人直接问 Mochi → 服务端 TTS 拒答。 */
-  async function sendNonOwnerReply(immediate = false) {
+  /** 场景①：非主人明确对 Mochi 说话 → 服务端 TTS 拒答（仅高置信非主人）。 */
+  async function sendNonOwnerReply(immediate = false, score?: number | null) {
     const vp = getVoiceprintConfig()
-    if (!speakerGate.shouldTriggerNonOwnerReply(vp, { immediate })) return
+    // P2：人脸高分视为主人 → 不因声纹 alone 拒答（必要时即时补拍）
+    let face = lastFaceProbe
+    if (!faceSupportsOwner(face)) {
+      face = await quickFaceProbeForWake()
+    }
+    if (faceSupportsOwner(face)) {
+      if (import.meta.env.DEV) {
+        console.debug(
+          '[faceprint] skip non_owner_reply face_score=%s',
+          face?.score?.toFixed(3) ?? 'null',
+        )
+      }
+      return
+    }
+    // 得分在阈值附近：可能是主人或杂音，不说「不是主人」
+    if (score != null && score >= NON_OWNER_REPLY_SCORE_MAX) {
+      if (import.meta.env.DEV) {
+        console.debug('[voiceprint] skip non_owner_reply score=%s (borderline)', score.toFixed(3))
+      }
+      return
+    }
+    if (!identityGate.shouldTriggerNonOwnerReply(vp, { immediate })) return
     if (!realtimeSession.isOpen()) {
       await connectIfOwner()
       if (!realtimeSession.isOpen()) return
     }
-    speakerGate.markNonOwnerReplySent()
+    identityGate.markNonOwnerReplySent()
     realtimeSession.sendNonOwnerTurn()
     usePetStore().showSpeechBubble('你好像不是主人呢…', 3000)
 
@@ -359,7 +495,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
       }
       partialText.value = ''
       heardSpeech = false
-      speakerGate.resetTurn()
+      identityGate.resetTurn()
       enterResting()
     }
   }
@@ -412,17 +548,37 @@ export const useRealtimeStore = defineStore('realtime', () => {
         }
       }
 
-      const result = await verifyOwnerVoice(pcm, false)
+      const result = await verifyOwnerVoice(pcm, true)
+      lastWakeProbeScore = result?.score ?? null
       if (!result?.match) {
+        // P2：声纹未过但人脸高分 → 仍唤醒（降误拒）
+        const face = await quickFaceProbeForWake()
+        if (faceSupportsOwner(face)) {
+          if (import.meta.env.DEV) {
+            console.debug(
+              '[identity_gate] wake face_boost voice=%s face=%s',
+              result?.score?.toFixed(3) ?? 'null',
+              face?.score?.toFixed(3) ?? 'null',
+            )
+          }
+          identityGate.markOwnerMatch()
+          wakeOnSpeech()
+          return 'ok'
+        }
         if (import.meta.env.DEV) {
           console.debug('[voiceprint] wake rejected score=%s', result?.score?.toFixed(3) ?? 'null')
         }
-        speakerGate.applyVerifyResult(result ?? { match: false, score: 0 }, getVoiceprintConfig())
+        identityGate.applyIdentityResult(
+          result ?? { match: false, score: 0 },
+          lastFaceProbe,
+          getVoiceprintConfig(),
+          getFaceprintConfig(),
+        )
         wakeAccumMs = 0
         return 'not_owner'
       }
 
-      speakerGate.markOwnerMatch()
+      identityGate.markOwnerMatch()
       wakeOnSpeech()
       return 'ok'
     } finally {
@@ -432,8 +588,21 @@ export const useRealtimeStore = defineStore('realtime', () => {
 
   async function tryWakeFromResting() {
     const probe = await probeWakeFromResting()
-    if (probe === 'not_owner') {
-      void sendNonOwnerReply(true)
+    if (probe === 'ok') return
+    // VAD 已报 speech_start 但声纹/分类器误拒：能量明显时仍唤醒（宠物点按场景）
+    if (
+      (probe === 'not_owner' || probe === 'not_speech') &&
+      micLevel.value >= params.wakePeak * 1.5
+    ) {
+      if (import.meta.env.DEV) {
+        console.debug('[voiceprint] vad energy wake fallback peak=%s', micLevel.value.toFixed(3))
+      }
+      identityGate.markOwnerMatch()
+      wakeOnSpeech()
+      return
+    }
+    if (probe === 'not_owner' && import.meta.env.DEV) {
+      console.debug('[voiceprint] wake silent reject score=%s', lastWakeProbeScore?.toFixed(3) ?? 'null')
     }
   }
 
@@ -526,6 +695,15 @@ export const useRealtimeStore = defineStore('realtime', () => {
     if (finalReply) syncReplyBubble(finalReply)
     replyText.value = ''
     if (recording) {
+      // gate dismiss / ASR 空：无 TTS 可播，立即回 resting，避免 processing 阶段丢麦
+      if (!finalReply && !hadVoice) {
+        usePetStore().releaseVoiceBubble(HEARD_BUBBLE_GRACE_MS)
+        resetTurnTiming()
+        ttsPlayer.resetTurn()
+        enterResting('没听清或不需要回应，请再说一次')
+        usePetStore().syncAnimationFromState()
+        return
+      }
       ttsPlayer.markDone(() => {
         if (finalReply) usePetStore().updateVoiceBubble(finalReply)
         usePetStore().releaseVoiceBubble(HEARD_BUBBLE_GRACE_MS)
@@ -664,15 +842,55 @@ export const useRealtimeStore = defineStore('realtime', () => {
     })
   }
 
+  function buildTurnEndSignals() {
+    return {
+      heardSpeech,
+      lastSpeechAt,
+      vadSpeaking: speechVad?.isSpeaking() ?? false,
+      partialText: partialText.value,
+      partialUpdatedAt,
+      chunksSent: chunksSentCount,
+      thinkingHoldUntil,
+      silenceMsConfig: params.silenceMs,
+      resumedAfterPauseProbe,
+    }
+  }
+
+  /** 静音≥3s：眼抓拍 + 若像还在组织语言则延长等待 */
+  async function runPauseThinkingProbe() {
+    if (pauseProbeInFlight || phase !== 'user_speaking') return
+    pauseProbeInFlight = true
+    try {
+      void maybeSendVisionFrame('pause_probe')
+      void runFaceCheck()
+      const decision = evaluateTurnEnd(buildTurnEndSignals())
+      if (decision.extendHoldMs) {
+        thinkingHoldUntil = Math.max(thinkingHoldUntil, Date.now() + decision.extendHoldMs)
+        if (import.meta.env.DEV) {
+          console.debug('[turn_end] pause_probe hold=%sms reason=%s', decision.extendHoldMs, decision.reason)
+        }
+      }
+    } finally {
+      pauseProbeInFlight = false
+    }
+  }
+
   function startSilenceWatch() {
     clearSilenceWatch()
     silenceTimer = setInterval(() => {
-      if (!recording || phase !== 'user_speaking' || !heardSpeech || lastSpeechAt <= 0) return
-      const text = partialText.value.trim()
-      const unfinished = isUnfinishedSpeech(text) || text.length < 8
-      const requiredSilence = unfinished ? 2600 : Math.max(params.silenceMs, 1600)
+      if (!recording || phase !== 'user_speaking') return
+      const signals = buildTurnEndSignals()
+      const silence = Date.now() - signals.lastSpeechAt
 
-      if (Date.now() - lastSpeechAt >= requiredSilence) {
+      if (silence >= PAUSE_PROBE_MS && !pauseProbeDone && signals.heardSpeech) {
+        pauseProbeDone = true
+        void runPauseThinkingProbe()
+      }
+
+      const decision = evaluateTurnEnd(signals)
+      // extendHold 仅在 runPauseThinkingProbe 里应用一次，避免每 200ms 滑动延长导致永不提交
+
+      if (decision.ready) {
         void submitUtterance()
       }
       if (utteranceStartedAt > 0 && Date.now() - utteranceStartedAt >= MAX_UTTERANCE_MS) {
@@ -689,7 +907,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
   function enterResting(hint?: string) {
     clearTtsWatchdog()
     stopStreamCheck()
-    speakerGate.resetTurn()
+    identityGate.resetTurn()
     setPhase('resting')
     submitLock = false
     uploadSeq = 0
@@ -703,6 +921,14 @@ export const useRealtimeStore = defineStore('realtime', () => {
     ttsStartedAt = 0
     objectRefreshCountThisTurn = 0
     speechStartFrameSent = false
+    lastFaceProbe = null
+    ownerTurnUploadLock = false
+    turnUploadStarted = false
+    partialUpdatedAt = 0
+    thinkingHoldUntil = 0
+    pauseProbeDone = false
+    pauseProbeInFlight = false
+    resumedAfterPauseProbe = false
     resetTurnTiming()
     chunksSent.value = 0
     resetPcmRing()
@@ -752,25 +978,36 @@ export const useRealtimeStore = defineStore('realtime', () => {
     uploadSeq = 0
     chunksSentCount = 0
     peakSeen = 0
-    heardSpeech = true
-    lastSpeechAt = Date.now()
+    // 等检测到真实语音后再标记 heardSpeech，避免点击唤醒后静音误触发提交
+    heardSpeech = false
+    lastSpeechAt = 0
     utteranceStartedAt = Date.now()
     objectRefreshCountThisTurn = 0
     speechStartFrameSent = false
+    // 保留唤醒时的人脸 probe，供 stream_check 立即融合（勿清空）
     chunksSent.value = 0
     partialText.value = ''
+    partialUpdatedAt = 0
+    pauseProbeDone = false
+    pauseProbeInFlight = false
+    resumedAfterPauseProbe = false
+    thinkingHoldUntil = 0
     ambientPresence.setOwnerSpeaking(true)
-    speakerGate.markOwnerMatch()
-    speakerGate.resetTurn()
+    identityGate.markOwnerMatch()
+    identityGate.resetTurn()
+    ownerTurnUploadLock = true
+    // 唤醒即连续上传（含点击 manual wake），避免 VAD 已触发但 PCM 未传导致 ASR 空
+    turnUploadStarted = true
     realtimeSession.sendAudioStart()
     sendVisionFrameOnSpeechStart()
     flushPreRollAudio()
     startStreamCheck()
-    statusText.value = '正在听... 说完点「说完了」或稍停片刻'
+    startSilenceWatch()
+    statusText.value = '正在听...'
   }
 
   /** Click pet while resting — start listening immediately. */
-  async function wakeListening(): Promise<WakeListeningResult> {
+  async function wakeListening(opts?: WakeListeningOptions): Promise<WakeListeningResult> {
     if (phase !== 'resting' || !recording) {
       return { ok: false, reason: 'not_ready' }
     }
@@ -792,10 +1029,32 @@ export const useRealtimeStore = defineStore('realtime', () => {
         return { ok: false, reason: 'disconnected' }
       }
     }
+    // 用户主动点击：明确意图，直接开始上传，不再做唤醒前声纹探测（避免「说了没反应」）
+    if (opts?.manual) {
+      identityGate.markOwnerMatch()
+      wakeOnSpeech()
+      return { ok: true }
+    }
     const probe = await probeWakeFromResting()
     if (probe === 'ok') return { ok: true }
     if (probe === 'not_owner') {
-      void sendNonOwnerReply(true)
+      // 唤醒前补一次人脸（lastFaceProbe 可能尚未有 speech_start 帧）
+      if (!faceSupportsOwner(lastFaceProbe)) {
+        const face = await quickFaceProbeForWake()
+        if (faceSupportsOwner(face)) {
+          identityGate.markOwnerMatch()
+          wakeOnSpeech()
+          return { ok: true }
+        }
+      } else {
+        identityGate.markOwnerMatch()
+        wakeOnSpeech()
+        return { ok: true }
+      }
+      // 仅高置信非主人才 TTS 拒答；否则静默
+      if (lastWakeProbeScore != null && lastWakeProbeScore < NON_OWNER_REPLY_SCORE_MAX) {
+        void sendNonOwnerReply(true, lastWakeProbeScore)
+      }
       return { ok: false, reason: 'not_owner' }
     }
     if (probe === 'not_speech') return { ok: false, reason: 'not_speech' }
@@ -850,7 +1109,22 @@ export const useRealtimeStore = defineStore('realtime', () => {
       return
     }
     const b64 = jpegToBase64(buf)
-    const ok = realtimeSession.sendVisionFrame(b64, { reason })
+    let faceProbe: { match: boolean; score: number; detected: boolean } | undefined
+    const fp = getFaceprintConfig()
+    const shouldProbeFace =
+      fp.enabled &&
+      faceprintReady() &&
+      (reason !== 'speech_start' || fp.probeOnSpeechStart)
+    if (shouldProbeFace) {
+      const face = await probeFaceFromJPEG(buf)
+      if (face) {
+        faceProbe = face
+        if (import.meta.env.DEV) {
+          console.debug('[faceprint] frame_probe reason=%s match=%s score=%s', reason, face.match, face.score.toFixed(3))
+        }
+      }
+    }
+    const ok = realtimeSession.sendVisionFrame(b64, { reason, faceProbe })
     console.info(
       '[vision] frame_sent ok=%s trigger=%s jpeg_bytes=%d b64_len=%d elapsed_ms=%d',
       ok,
@@ -905,10 +1179,17 @@ export const useRealtimeStore = defineStore('realtime', () => {
     }
     if (submitLock && !force) return
 
+    if (!force) {
+      if (speechVad?.isSpeaking()) return
+      if (!evaluateTurnEnd(buildTurnEndSignals()).ready) return
+    }
+
     if (chunksSentCount === 0) {
       if (partialText.value.trim()) {
         commitHeardText(partialText.value, { dismissed: true, dismissReason: '未检测到有效语音' })
       }
+      statusText.value = '没听到声音，请再说一次'
+      usePetStore().showSpeechBubble('没听到声音，请大声一点~', 3000)
       enterResting()
       return
     }
@@ -968,19 +1249,19 @@ export const useRealtimeStore = defineStore('realtime', () => {
       clearSpeechEndSubmitTimer()
       heardSpeech = true
       lastSpeechAt = Date.now()
-      statusText.value = '正在听... 说完点「说完了」或稍停片刻'
+      // 句中 3s 停顿后续说：解除 thinking hold，句末静音走正常仲裁
+      if (pauseProbeDone) {
+        resumedAfterPauseProbe = true
+        thinkingHoldUntil = 0
+      }
+      statusText.value = '正在听...'
       sendVisionFrameOnSpeechStart()
       return
     }
 
     if (ev === 'speech_end' && heardSpeech) {
+      // 提交时机由 silence watch + turnEndArbiter 统一仲裁（含 3s pause_probe）
       clearSpeechEndSubmitTimer()
-      speechEndSubmitTimer = setTimeout(() => {
-        speechEndSubmitTimer = null
-        if (phase === 'user_speaking' && heardSpeech) {
-          void submitUtterance()
-        }
-      }, 800)
     }
   }
 
@@ -1145,8 +1426,6 @@ export const useRealtimeStore = defineStore('realtime', () => {
       const owner = getStoredVoiceOwner()
       if (voiceWindow === 'pet' && owner === 'chat') {
         statusText.value = '聊天窗口占用语音连接，请先关闭聊天'
-      } else if (voiceWindow === 'pet' && (await isChatWindowVisible())) {
-        statusText.value = '请先关闭聊天窗口再语音对话'
       } else if (voiceWindow === 'chat' && owner !== 'chat') {
         statusText.value = '语音通道未就绪，请关闭聊天后重新打开'
       } else {
@@ -1254,7 +1533,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
 
         if (phase === 'resting') {
           speechVad?.feed(pcmToFloat(boosted))
-          if (peak >= params.wakePeak) {
+          const vadSpeaking = speechVad?.isSpeaking() ?? false
+          // 需 VAD 认为在说话，或能量明显偏高，才尝试唤醒（避免杂音误触）
+          if (peak >= params.wakePeak && (vadSpeaking || peak >= params.wakePeak * 2)) {
             wakeAccumMs += 20
             if (wakeAccumMs >= WAKE_CONFIRM_MS) {
               wakeAccumMs = 0
@@ -1268,13 +1549,25 @@ export const useRealtimeStore = defineStore('realtime', () => {
 
         if (phase === 'user_speaking') {
           const peakOk = peak >= params.tailSpeechPeak || (speechVad && speechVad.isSpeaking())
-          // 场景②：主人会话中过滤非主人 PCM；仅主人声更新 heardSpeech
-          if (peakOk && speakerGate.shouldAllowUpload()) {
-            heardSpeech = true
-            lastSpeechAt = Date.now()
+          const hasSpeechEnergy = peakOk || (speechVad?.isSpeaking() ?? false)
+          if (hasSpeechEnergy) {
+            if (peakOk && (ownerTurnUploadLock || identityGate.shouldAllowUpload())) {
+              heardSpeech = true
+              lastSpeechAt = Date.now()
+              // VAD 未切 speech_start 时，能量续说同样解除 pause hold
+              if (pauseProbeDone && !resumedAfterPauseProbe) {
+                resumedAfterPauseProbe = true
+                thinkingHoldUntil = 0
+              }
+            }
+            turnUploadStarted = true
           }
           speechVad?.feed(pcmToFloat(boosted))
-          if (!speakerGate.shouldAllowUpload()) {
+          // 首包语音前不传；首包后连续上传（含句中停顿），保证流式 ASR 不断流
+          if (!turnUploadStarted) {
+            return
+          }
+          if (!ownerTurnUploadLock && !identityGate.shouldAllowUpload()) {
             return
           }
           uploadSeq++
@@ -1351,8 +1644,10 @@ export const useRealtimeStore = defineStore('realtime', () => {
     effectiveSttMode = resolveSttMode(getRealtimeConfig(), isLocalSttSupported())
 
     await speakerVerifier.init().catch(() => {})
+    await faceVerifier.init().catch(() => {})
     await soundClassifier.init().catch(() => {})
     await loadOwnerVoiceprint()
+    await loadOwnerFaceprint()
 
     if (!voiceprintReady()) {
       statusText.value = '请先在设置中录入主人声纹（设置 → 主人声纹）'
@@ -1376,9 +1671,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
 
     await startCloudTalk()
     await startVisionSession().catch(() => {})
-    if (recording && phase === 'resting') {
-      wakeOnSpeech()
-    }
+    // 保持 resting，等用户说话（VAD）或再次点击（manual wake）；勿在此自动 wakeOnSpeech
     return recording
   }
 
@@ -1432,9 +1725,10 @@ export const useRealtimeStore = defineStore('realtime', () => {
         break
       case 'asr_partial':
         partialText.value = ev.text
+        partialUpdatedAt = Date.now()
         trackObjectIntentFromPartial(ev.text)
         if (ev.text.trim() && !pet.isChatOpen) {
-          pet.showVoiceBubble(`“${ev.text.trim()}”`)
+          pet.showPersistentBubble(`“${ev.text.trim()}”`)
         }
         if (ev.sentenceEnd) {
           handleAsrEndpoint(ev.text)

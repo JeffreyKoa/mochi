@@ -133,13 +133,23 @@ export class RealtimeSession {
   /** 上传语音 turn JPEG（base64，不含 data: 前缀）。 */
   sendVisionFrame(
     jpegBase64: string,
-    options?: { seq?: number; reason?: 'speech_start' | 'audio_end' | 'object_refresh' },
+    options?: {
+      seq?: number
+      reason?: 'speech_start' | 'audio_end' | 'object_refresh' | 'pause_probe'
+      faceProbe?: { match: boolean; score: number; detected: boolean }
+    },
   ): boolean {
-    const payload: { jpeg: string; seq: number; reason?: string } = {
+    const payload: {
+      jpeg: string
+      seq: number
+      reason?: string
+      face_probe?: { match: boolean; score: number; detected: boolean }
+    } = {
       jpeg: jpegBase64,
       seq: options?.seq ?? Date.now(),
     }
     if (options?.reason) payload.reason = options.reason
+    if (options?.faceProbe) payload.face_probe = options.faceProbe
     return this.send('vision_frame', payload)
   }
 

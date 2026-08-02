@@ -1,0 +1,86 @@
+/* Mochi 陪伴 UI 共享 token（聊天 + 设置） */
+:root {
+  --mochi-pink: #ff8fab;
+  --mochi-pink-soft: #ffb3c6;
+  --mochi-pink-bg: #fff0f3;
+  --mochi-bg: #fafafa;
+  --mochi-surface: #ffffff;
+  --mochi-text: #333;
+  --mochi-text-muted: #888;
+  --mochi-border: #f0f0f0;
+  --mochi-radius-lg: 16px;
+  --mochi-radius-md: 12px;
+  --mochi-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+}
+
+.settings-card {
+  background: var(--mochi-surface);
+  border: 1px solid var(--mochi-border);
+  border-radius: var(--mochi-radius-md);
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+
+.settings-card:last-child {
+  margin-bottom: 0;
+}
+
+.settings-card.danger {
+  border-color: #ffd0d0;
+  background: #fffafa;
+}
+
+.settings-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.settings-card-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mochi-text);
+}
+
+.settings-card-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--mochi-pink-bg);
+  color: #c45;
+  white-space: nowrap;
+}
+
+.settings-card-hint {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--mochi-text-muted);
+  line-height: 1.5;
+}
+
+.settings-card-body > :last-child {
+  margin-bottom: 0;
+}
+
+.settings-advanced-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mochi-text);
+  cursor: pointer;
+}
+
+.settings-advanced-body {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--mochi-border);
+}

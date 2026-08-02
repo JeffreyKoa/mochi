@@ -407,8 +407,11 @@ export async function showSidePanelPopup(mode: SidePanelMode): Promise<boolean> 
     if (!shown) return false
 
     await sleep(80)
+    // 统一用 side-panel-opened 传递 mode；chat-opened 仅聊天模式兼容旧监听
     await emit('side-panel-opened', { mode, token })
-    await emit('chat-opened', { mode, token })
+    if (mode === 'chat') {
+      await emit('chat-opened', { mode, token })
+    }
 
     setPopupChatFollowsPet(true)
     return true
