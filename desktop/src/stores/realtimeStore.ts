@@ -16,6 +16,7 @@ import { SpeakerVerifier } from '@/services/speakerVerifier'
 import { SoundEventClassifier } from '@/services/soundEventClassifier'
 import { getRealtimeConfig, getVoiceprintConfig, getFaceprintConfig, getPresenceConfig, getClientConfig, initClientConfig, resolveSttMode } from '@/config'
 import { micPermissionDeniedMessage } from '@/utils/micPermission'
+import { stripMoodTags } from '@/utils/stripMoodTags'
 import {
   captureOwnerFaceJPEG,
   isVisionCaptureEnabled,
@@ -671,7 +672,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
   function syncReplyBubble(text: string) {
     const pet = usePetStore()
     if (pet.isChatOpen || pet.isReminderBubbleActive()) return
-    const trimmed = text.trim()
+    const trimmed = stripMoodTags(text.trim())
     if (!trimmed) return
     if (recording || talking.value) {
       if (pet.isVoiceBubbleActive()) pet.updateVoiceBubble(trimmed)
@@ -1728,7 +1729,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
         partialUpdatedAt = Date.now()
         trackObjectIntentFromPartial(ev.text)
         if (ev.text.trim() && !pet.isChatOpen) {
-          pet.showPersistentBubble(`“${ev.text.trim()}”`)
+          pet.showPersistentBubble(`"${stripMoodTags(ev.text.trim())}"`)
         }
         if (ev.sentenceEnd) {
           handleAsrEndpoint(ev.text)

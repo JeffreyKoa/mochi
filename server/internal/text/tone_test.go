@@ -27,6 +27,16 @@ func TestStripMoodTags(t *testing.T) {
 	if got := StripMoodTags(in); got != want {
 		t.Errorf("StripMoodTags = %q, want %q", got, want)
 	}
+	// 带空格的 mood 标记
+	spaced := "[mood: calm]今晚深圳25°C。"
+	if got := StripMoodTags(spaced); got != "今晚深圳25°C。" {
+		t.Errorf("spaced mood tag = %q", got)
+	}
+	// 残缺标记
+	orphan := "m]今晚。[mood:playful]你穿"
+	if got := StripMoodTags(orphan); got != "今晚。你穿" {
+		t.Errorf("orphan cleanup = %q, want 今晚。你穿", got)
+	}
 }
 
 func TestMoodTracker_Inherit(t *testing.T) {
@@ -81,5 +91,13 @@ func TestStreamMoodStripper(t *testing.T) {
 	out = sm.Feed("你好。")
 	if out != "你好。" {
 		t.Errorf("after tag closed, got %q", out)
+	}
+	// 流式切在 mood 中间
+	sm = StreamMoodStripper{}
+	if sm.Feed("[mood:cal") != "" {
+		t.Error("mid-tag chunk 1 should be silent")
+	}
+	if got := sm.Feed("m]今晚"); got != "今晚" {
+		t.Errorf("mid-tag chunk 2 = %q, want 今晚", got)
 	}
 }

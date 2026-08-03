@@ -21,8 +21,13 @@ const (
 
 var (
 	moodTagPattern = `(?:gentle|excited|sad|calm|worried|playful|serious)`
-	moodTagRE      = regexp.MustCompile(`(?i)\[mood:` + moodTagPattern + `\]`)
-	moodTagHeadRE  = regexp.MustCompile(`(?i)^\s*\[mood:(` + moodTagPattern + `)\]\s*`)
+	// 允许 mood 名前后空格，避免 LLM 输出 `[mood: calm]` 时剥离失败
+	moodTagRE     = regexp.MustCompile(`(?i)\[mood:\s*` + moodTagPattern + `\s*\]`)
+	moodTagHeadRE = regexp.MustCompile(`(?i)^\s*\[mood:\s*(` + moodTagPattern + `)\s*\]\s*`)
+	// 清理流式/漏标产生的残缺标记（如 [mood:pla、m]）
+	moodTagOrphanRE  = regexp.MustCompile(`(?i)\[mood:[^\]]*\]?`)
+	moodStrayTailRE  = regexp.MustCompile(`(?i)^m\]`)
+	moodStrayMidRE   = regexp.MustCompile(`([。！？.!?])\s*\]`)
 )
 
 // ToneSegment 为剥离 mood 标记后的单句文本。
@@ -50,12 +55,15 @@ func ParseToneSegment(raw string) ToneSegment {
 	return ToneSegment{Mood: mood, Text: text}
 }
 
-// StripMoodTags 移除全文中的所有 [mood:xxx] 标记。
+// StripMoodTags 移除全文中的所有 [mood:xxx] 标记（含残缺片段）。
 func StripMoodTags(s string) string {
 	if s == "" {
 		return ""
 	}
 	out := moodTagRE.ReplaceAllString(s, "")
+	out = moodTagOrphanRE.ReplaceAllString(out, "")
+	out = moodStrayTailRE.ReplaceAllString(out, "")
+	out = moodStrayMidRE.ReplaceAllString(out, "$1")
 	return collapseSpaces(strings.TrimSpace(out))
 }
 
@@ -175,6 +183,17 @@ func stripStreamingMoodTags(s string, hold *strings.Builder) string {
 	i := 0
 	for i < len(s) {
 		if s[i] == '[' {
+			rest := s[i:]
+			// 任何 [mood:...] 一律整段剥离（含未知 mood 名），避免流式切 token 残留 m]
+			if len(rest) >= 6 && strings.EqualFold(rest[:6], "[mood:") {
+				end := strings.Index(rest, "]")
+				if end < 0 {
+					hold.WriteString(rest)
+					return out.String()
+				}
+				i += end + 1
+				continue
+			}
 			end := strings.Index(s[i:], "]")
 			if end < 0 {
 				hold.WriteString(s[i:])

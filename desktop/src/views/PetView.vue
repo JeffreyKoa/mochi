@@ -681,16 +681,15 @@ function layoutSpeechBubble() {
   const el = bubbleEl.value
   if (!el || !pet.showBubble) return
 
-  // top: 12px guarantees 0% top clipping (12px below OS window top edge)
-  // left: 12px & right: 12px with max-width: 256px (doubled width!) guarantees 0% side clipping
-  // height stays compact (~45px-65px), keeping 24px+ clear gap above Mochi's ears (0% face overlap)
+  // Mochi 头部在画布上方（BODY_CY≈18），气泡放底部腿/尾区域，避免挡脸
   bubbleStyle.value = {
     left: '12px',
     right: '12px',
+    bottom: '12px',
+    top: 'auto',
+    transform: 'none',
     width: 'fit-content',
-    'max-width': '256px',
-    top: '12px',
-    bottom: 'auto',
+    maxWidth: '256px',
     margin: '0 auto',
   }
 }
@@ -862,7 +861,12 @@ function onDblClick() {
 
 .speech-bubble {
   position: absolute;
-  top: 12px;
+  bottom: 12px;
+  top: auto;
+  left: 12px;
+  right: 12px;
+  transform: none;
+  margin: 0 auto;
   background: linear-gradient(145deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 255, 0.96) 100%);
   padding: 8px 12px;
   border-radius: 14px;
@@ -876,11 +880,9 @@ function onDblClick() {
   backdrop-filter: blur(10px);
   width: fit-content;
   width: max-content;
-  max-width: 256px;
+  max-width: 240px;
   min-width: 42px;
-  height: fit-content;
-  height: max-content;
-  max-height: 120px;
+  max-height: 96px;
   overflow-y: auto;
   box-sizing: border-box;
   overflow-wrap: anywhere;
@@ -909,12 +911,12 @@ function onDblClick() {
 .speech-bubble::after {
   content: '';
   position: absolute;
-  bottom: -6px;
+  top: -6px;
   left: 50%;
   transform: translateX(-50%);
   border: 6px solid transparent;
-  border-top-color: rgba(252, 253, 255, 0.98);
-  filter: drop-shadow(0 2px 2px rgba(88, 120, 180, 0.08));
+  border-bottom-color: rgba(252, 253, 255, 0.98);
+  filter: drop-shadow(0 -1px 2px rgba(88, 120, 180, 0.08));
 }
 
 .context-menu {
