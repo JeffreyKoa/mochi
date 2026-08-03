@@ -3,9 +3,12 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import * as PIXI from 'pixi.js'
 import { usePetStore } from '@/stores/petStore'
 import type { Animation } from '@/stores/petStore'
+import { getPetAnimIntervalMs } from '@/services/lowPowerMode'
 
 const pet = usePetStore()
 const canvasRef = ref<HTMLCanvasElement>()
+/** PIXI 初始化失败时显示可见占位，避免透明窗体完全点不透 */
+const pixiFailed = ref(false)
 
 const CANVAS_W = 280
 const CANVAS_H = 280
@@ -502,7 +505,7 @@ function startAnimLoop(anim: Animation) {
 
     drawPet(color, scale, eyeOpen)
     applyDanceTransform(anim)
-  }, 50)
+  }, getPetAnimIntervalMs())
 }
 
 watch(() => pet.happyBurstSeq, () => {
@@ -521,25 +524,30 @@ watch(() => pet.animationColors, () => {
 onMounted(async () => {
   if (!canvasRef.value) return
 
-  app = new PIXI.Application()
-  await app.init({
-    canvas: canvasRef.value,
-    width: CANVAS_W,
-    height: CANVAS_H,
-    backgroundAlpha: 0,
-    antialias: true,
-    resolution: window.devicePixelRatio || 1,
-    autoDensity: true,
-  })
+  try {
+    app = new PIXI.Application()
+    await app.init({
+      canvas: canvasRef.value,
+      width: CANVAS_W,
+      height: CANVAS_H,
+      backgroundAlpha: 0,
+      antialias: true,
+      resolution: window.devicePixelRatio || 1,
+      autoDensity: true,
+    })
 
-  petGraphic = new PIXI.Graphics()
-  petGraphic.pivot.set(0, BODY_CY)
-  petGraphic.x = CANVAS_W / 2
-  petGraphic.y = CANVAS_H / 2 + BODY_CY
-  petGraphic.scale.x = pet.facing === 'left' ? -1 : 1
-  app.stage.addChild(petGraphic)
+    petGraphic = new PIXI.Graphics()
+    petGraphic.pivot.set(0, BODY_CY)
+    petGraphic.x = CANVAS_W / 2
+    petGraphic.y = CANVAS_H / 2 + BODY_CY
+    petGraphic.scale.x = pet.facing === 'left' ? -1 : 1
+    app.stage.addChild(petGraphic)
 
-  startAnimLoop(pet.currentAnimation)
+    startAnimLoop(pet.currentAnimation)
+  } catch (e) {
+    console.error('[pet] PIXI init failed', e)
+    pixiFailed.value = true
+  }
 })
 
 watch(() => pet.currentAnimation, (anim) => {
@@ -557,14 +565,40 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <canvas ref="canvasRef" class="pet-canvas" />
+  <div class="pet-canvas-wrap">
+    <canvas ref="canvasRef" class="pet-canvas" :class="{ 'pet-canvas--hidden': pixiFailed }" />
+    <div v-if="pixiFailed" class="pet-fallback" aria-label="Mochi">🍡</div>
+  </div>
 </template>
 
 <style scoped>
+.pet-canvas-wrap {
+  width: 280px;
+  height: 280px;
+  position: relative;
+}
+
 .pet-canvas {
   width: 280px;
   height: 280px;
   display: block;
+  pointer-events: none;
+}
+
+.pet-canvas--hidden {
+  opacity: 0;
+  position: absolute;
+}
+
+.pet-fallback {
+  width: 280px;
+  height: 280px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 96px;
+  line-height: 1;
+  filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.25));
   pointer-events: none;
 }
 </style>

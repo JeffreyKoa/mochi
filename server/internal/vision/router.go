@@ -14,6 +14,8 @@ type RouteInput struct {
 	HasFrame      bool
 	ObjectKeys    []string
 	SceneKeys     []string
+	SkipTopics    []string
+	DeicticExempt bool
 }
 
 // RouteFocus 根据谈话上下文选择视觉焦点（V1.5：object > scene > owner_face > skip）。
@@ -29,6 +31,11 @@ func RouteFocus(in RouteInput) Focus {
 	}
 	if !in.IsVoiceTurn {
 		log.Printf("[vision][router] focus=skip reason=not_voice_turn text=%q", truncate(text, 40))
+		return FocusSkip
+	}
+	// Step1：纯信息意图 Skip Tier-1（代词豁免见 skip.go）
+	if ShouldSkipTier1(text, in.SkipTopics, in.DeicticExempt) {
+		log.Printf("[vision][router] focus=skip reason=skip_topic text=%q", truncate(text, 40))
 		return FocusSkip
 	}
 

@@ -17,6 +17,7 @@ import (
 	"github.com/mochi-ai/server/internal/auth"
 	"github.com/mochi-ai/server/internal/chat"
 	"github.com/mochi-ai/server/internal/config"
+	"github.com/mochi-ai/server/internal/vision"
 )
 
 var upgrader = websocket.Upgrader{
@@ -85,6 +86,19 @@ func (h *Handler) SendProactiveReminder(userID, reminderID uint64, message, anim
 		Message:    message,
 		Animation:  animation,
 		ReminderID: reminderID,
+	})
+	return n > 0
+}
+
+// SendProactive 向 voice 会话推送主动消息（含在场闲聊）。
+func (h *Handler) SendProactive(userID uint64, message, animation, source string) bool {
+	if h.sessions == nil {
+		return false
+	}
+	n := h.sessions.SendToUser(userID, MsgProactiveMessage, ProactiveMessage{
+		Message:   message,
+		Animation: animation,
+		Source:    source,
 	})
 	return n > 0
 }
@@ -558,6 +572,20 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 			}
 			processTextInput(in.Text, in.VoiceReply)
 
+		case MsgSpeakOnly:
+			var in SpeakOnlyInput
+			if err := json.Unmarshal(data, &in); err != nil {
+				continue
+			}
+			text := strings.TrimSpace(in.Text)
+			if text == "" || h.pipeline == nil {
+				continue
+			}
+			h.DeferWellness(userID, 15*time.Minute)
+			go func() {
+				h.pipeline.SpeakOnly(ctx, sess, text, sender)
+			}()
+
 		case MsgAudioEnd:
 			if isTextTurn() {
 				audioMu.Lock()
@@ -606,8 +634,46 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 			}
 			log.Printf("[realtime][vision] frame_received session=%s jpeg_bytes=%d seq=%d reason=%s",
 				sessionID, len(jpeg), in.Seq, in.Reason)
-			// 仅 speech_start 预跑 owner_face；object_refresh/audio_end 留给 contextual object VL
-			if in.Reason == "" || in.Reason == "speech_start" || in.Reason == "pause_probe" {
+
+			switch in.Reason {
+			case "pause_probe":
+				// Tier-0：推断是否在组织语言，回传 vision_pause_hint
+				var fp *vision.FaceProbeIn
+				if in.FaceProbe != nil {
+					fp = &vision.FaceProbeIn{
+						Match:    in.FaceProbe.Match,
+						Score:    in.FaceProbe.Score,
+						Detected: in.FaceProbe.Detected,
+					}
+				}
+				expr, composing := vision.Tier0PauseHint(in.PartialText, fp)
+				_ = sender.Send(MsgVisionPauseHint, VisionPauseHint{
+					Expression: expr,
+					Composing:  composing,
+					Tier:       "tier0",
+				})
+				log.Printf("[realtime][vision] pause_hint session=%s expr=%s composing=%v partial=%q",
+					sessionID, expr, composing, truncatePartial(in.PartialText, 32))
+
+			case "glance":
+				// THINK 阶段 Tier-0 GLANCE：不 prefetch、不 Tier-1
+				if sess.State() == StateThinking || sess.State() == StateListening {
+					var fp *vision.FaceProbeIn
+					if in.FaceProbe != nil {
+						fp = &vision.FaceProbeIn{
+							Match:    in.FaceProbe.Match,
+							Score:    in.FaceProbe.Score,
+							Detected: in.FaceProbe.Detected,
+						}
+					}
+					h := vision.Tier0GlanceHint(fp)
+					if h.IsUsable() || h.UserExpression != "" {
+						sess.ApplyGlanceHint(h)
+					}
+				}
+
+			case "", "speech_start":
+				sess.ResetVisionWork(ctx)
 				h.pipeline.PrefetchOwnerFace(ctx, sess)
 			}
 
@@ -657,4 +723,12 @@ func (h *Handler) writePump(conn *websocket.Conn, out <-chan WSMessage, done <-c
 			return
 		}
 	}
+}
+
+func truncatePartial(s string, n int) string {
+	r := []rune(strings.TrimSpace(s))
+	if len(r) <= n {
+		return string(r)
+	}
+	return string(r[:n]) + "…"
 }

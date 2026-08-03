@@ -111,6 +111,8 @@ func main() {
 
 	companionScheduler := companion.NewScheduler(db, rdb, chatSvc.Runtime(), wellnessSvc, aiRouter, bondSvc, cfg.Companion, hub, toolsSvc, cfg.Tools, realtimeHandler)
 	companionScheduler.Start()
+	presenceSvc := companion.NewPresenceService(db, rdb, chatSvc.Runtime(), wellnessSvc, bondSvc, cfg.Companion, hub)
+	companionHandler := companion.NewHandler(presenceSvc)
 
 	authHandler := auth.NewHandler(authSvc)
 
@@ -138,12 +140,15 @@ func main() {
 		Hub:             hub,
 		AuthSvc:         authSvc,
 		ClientAPIBase:    cfg.Client.APIBase,
+		ClientPublic:     cfg.Client.PublicClient(),
 		RealtimeEnabled:  cfg.Realtime.Enabled,
 		RealtimePublic:   cfg.Realtime.PublicClient(),
 		WriteApproval:    cfg.Growth.WriteApproval,
 		GrowthEnabled:   cfg.Growth.Enabled,
 		VisionEnabled:   cfg.Vision.Enabled,
 		VisionPublic:    cfg.Vision.PublicClient(),
+		CompanionPublic: cfg.Companion.PublicClient(),
+		Companion:       companionHandler,
 	})
 
 	addr := ":" + cfg.ServerPort()

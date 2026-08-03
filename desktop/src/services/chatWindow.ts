@@ -3,6 +3,7 @@ import { emit } from '@tauri-apps/api/event'
 import { currentMonitor, getCurrentWindow, type Window as TauriWin } from '@tauri-apps/api/window'
 import { WebviewWindow, getAllWebviewWindows } from '@tauri-apps/api/webviewWindow'
 import { ref } from 'vue'
+import { isPlausibleWindowPosition } from '@/services/petRoaming'
 
 export const PET_W = 280
 export const PET_H = 280
@@ -128,6 +129,15 @@ async function resolveSidePanelOnLeft(win: TauriWin): Promise<boolean> {
 
 let tauriCached: boolean | null = null
 
+type TauriInternals = {
+  metadata?: {
+    currentWindow?: {
+      label?: string
+    }
+  }
+  invoke?: (...args: unknown[]) => unknown
+}
+
 export function isTauri(): boolean {
   if (tauriCached != null) return tauriCached
   if (import.meta.env.TAURI_ENV_PLATFORM != null) {
@@ -143,11 +153,60 @@ export function isTauri(): boolean {
   return false
 }
 
+/** Tauri 注入完成且 currentWindow 可用（避免 metadata 未就绪时 getCurrentWindow 抛错） */
+export function isTauriWindowReady(): boolean {
+  if (!isTauri()) return false
+  const w = window as Window & { __TAURI_INTERNALS__?: TauriInternals }
+  return !!w.__TAURI_INTERNALS__?.metadata?.currentWindow?.label
+}
+
+/** 安全获取当前 Tauri 窗口；未就绪时返回 null */
+export function getTauriWindow(): TauriWin | null {
+  if (!isTauriWindowReady()) return null
+  try {
+    return getCurrentWindow()
+  } catch {
+    return null
+  }
+}
+
+/** 读取当前窗口 label（不实例化 Window，避免 metadata 竞态） */
+export function readTauriWindowLabel(): string {
+  const w = window as Window & { __TAURI_INTERNALS__?: TauriInternals }
+  return w.__TAURI_INTERNALS__?.metadata?.currentWindow?.label ?? 'browser'
+}
+
+/** 等待 Tauri 注入 currentWindow（启动早期 metadata 可能尚未就绪） */
+export async function waitForTauriWindow(maxMs = 3000): Promise<TauriWin | null> {
+  const start = Date.now()
+  while (Date.now() - start < maxMs) {
+    const win = getTauriWindow()
+    if (win) return win
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  return null
+}
+
+/** 当前 WebView 是否为 pet 窗口且 API 可用 */
+export function getPetTauriWindow(): TauriWin | null {
+  const win = getTauriWindow()
+  if (!win || !isPetWindowLabel(win.label)) return null
+  return win
+}
+
+/** Tauri invoke 通道是否已注入（早于 metadata 的情况也存在） */
+export function isTauriInvokeReady(): boolean {
+  if (!isTauri()) return false
+  const w = window as Window & { __TAURI_INTERNALS__?: TauriInternals }
+  return typeof w.__TAURI_INTERNALS__?.invoke === 'function'
+}
+
 export function isPetWindowLabel(label: string): boolean {
   return label === 'pet' || label === 'main'
 }
 
 async function invokeCmd(cmd: string, args: Record<string, unknown> = {}): Promise<boolean> {
+  if (!isTauriInvokeReady()) return false
   try {
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke(cmd, args)
@@ -159,20 +218,22 @@ async function invokeCmd(cmd: string, args: Record<string, unknown> = {}): Promi
 }
 
 async function invokeWithLabel(cmd: string): Promise<boolean> {
-  return invokeCmd(cmd, { label: getCurrentWindow().label })
+  const win = getPetTauriWindow()
+  if (!win) return false
+  return invokeCmd(cmd, { label: win.label })
 }
 
 export async function isPetWindowExpanded(): Promise<boolean> {
-  if (!isTauri()) return false
-  const win = getCurrentWindow()
-  if (!isPetWindowLabel(win.label)) return false
+  if (!isTauriWindowReady()) return false
+  const win = getPetTauriWindow()
+  if (!win) return false
   const { width, height } = await getLogicalOuterSize(win)
   return sizeNear(width, PET_WITH_CHAT_W) && sizeNear(height, PET_WITH_CHAT_H)
 }
 
 async function expandPanelLayoutInner(reposition: boolean): Promise<boolean> {
-  const win = getCurrentWindow()
-  if (!isPetWindowLabel(win.label)) return false
+  const win = getPetTauriWindow()
+  if (!win) return false
 
   if (await isPetWindowExpanded()) {
     if (reposition) await ensurePetWindowVisible()
@@ -202,8 +263,8 @@ async function expandPanelLayoutInner(reposition: boolean): Promise<boolean> {
 }
 
 async function compactPanelLayoutInner(): Promise<void> {
-  const win = getCurrentWindow()
-  if (!isPetWindowLabel(win.label)) return
+  const win = getPetTauriWindow()
+  if (!win) return
   const { width, height } = await getLogicalOuterSize(win)
   if (sizeNear(width, PET_W) && sizeNear(height, PET_H)) {
     sidePanelOnLeft.value = false
@@ -222,7 +283,7 @@ async function compactPanelLayoutInner(): Promise<void> {
 
 /** Expand pet shell to fit Mochi + 8px gap + side panel (608×440 logical). */
 export async function setExpandedPanelLayout(reposition = false): Promise<boolean> {
-  if (!isTauri()) return true
+  if (!isTauriWindowReady()) return true
   return runLayoutTask(async () => {
     try {
       return await expandPanelLayoutInner(reposition)
@@ -235,7 +296,7 @@ export async function setExpandedPanelLayout(reposition = false): Promise<boolea
 
 /** Collapse to pet-only 280×280; keep Mochi screen position. */
 export async function setCompactPetLayout(): Promise<void> {
-  if (!isTauri()) return
+  if (!isTauriWindowReady()) return
   return runLayoutTask(async () => {
     try {
       await compactPanelLayoutInner()
@@ -247,7 +308,7 @@ export async function setCompactPetLayout(): Promise<void> {
 
 /** Sync window size with whether a side panel should be visible. */
 export async function syncPanelShellLayout(expanded: boolean, reposition = false): Promise<void> {
-  if (!isTauri()) return
+  if (!isTauriWindowReady()) return
   if (expanded) {
     await setExpandedPanelLayout(reposition)
   } else {
@@ -316,7 +377,8 @@ async function placeChatBesidePet(
   overrideX?: number,
   overrideY?: number,
 ): Promise<void> {
-  const petWin = getCurrentWindow()
+  const petWin = getPetTauriWindow()
+  if (!petWin) return
   const scale = await getWindowScale(petWin)
   const pos =
     overrideX != null && overrideY != null
@@ -372,8 +434,8 @@ export async function syncAttachedSidePanels(petX?: number, petY?: number): Prom
   // Avoid sending async IPC setPosition calls to prevent race-condition jitter.
   if (isTauri()) return
   if (!popupFollowsPet) return
-  const win = getCurrentWindow()
-  if (!isPetWindowLabel(win.label)) return
+  const win = getPetTauriWindow()
+  if (!win) return
   if (await isChatPopupVisible()) {
     await syncChatPopupPosition(petX, petY)
   }
@@ -386,9 +448,9 @@ export async function hideSidePanelPopup(): Promise<void> {
 
 /** Show chat/settings in a separate popup beside the pet (pet stays 280×280). */
 export async function showSidePanelPopup(mode: SidePanelMode): Promise<boolean> {
-  if (!isTauri()) return false
-  const win = getCurrentWindow()
-  if (!isPetWindowLabel(win.label)) return false
+  if (!isTauriWindowReady()) return false
+  const win = getPetTauriWindow()
+  if (!win) return false
 
   try {
     void setCompactPetLayout()
@@ -463,8 +525,10 @@ export async function showChatPopupWindow(): Promise<boolean> {
 }
 
 export async function setWindowSize(width: number, height: number) {
-  if (!isTauri()) return
-  await setWindowSizeLogical(getCurrentWindow(), width, height)
+  if (!isTauriWindowReady()) return
+  const win = getPetTauriWindow()
+  if (!win) return
+  await setWindowSizeLogical(win, width, height)
 }
 
 export async function setPetOnlyLayout() {
@@ -476,11 +540,16 @@ export async function setLoginLayout() {
 }
 
 export async function ensurePetWindowVisible() {
-  if (!isTauri()) return
-  const win = getCurrentWindow()
-  if (!isPetWindowLabel(win.label)) return
+  const win = getPetTauriWindow()
+  if (!win) return
 
   try {
+    try {
+      await win.unminimize()
+    } catch {
+      // optional
+    }
+
     const visible = await win.isVisible()
     if (!visible) {
       await win.show()
@@ -492,6 +561,21 @@ export async function ensurePetWindowVisible() {
     const { availableMonitors, primaryMonitor } = await import('@tauri-apps/api/window')
     const monitors = await availableMonitors()
     const primary = (await primaryMonitor()) ?? monitors[0]
+
+    // 异常坐标（如 Windows 最小化时的 -32000）或窗口过小 → 强制居中并恢复尺寸
+    const badPos = !isPlausibleWindowPosition(pos.x, pos.y)
+    const tooSmall = size.width < 120 || size.height < 120
+    if (badPos || tooSmall) {
+      localStorage.removeItem('mochi_window_position')
+      if (tooSmall) {
+        await setWindowSize(LOGIN_W, LOGIN_H)
+      }
+      await win.center()
+      await win.show()
+      await win.setAlwaysOnTop(true)
+      return
+    }
+
     if (!primary) {
       await win.center()
       return
@@ -511,6 +595,7 @@ export async function ensurePetWindowVisible() {
     })
 
     if (!intersectsAny) {
+      localStorage.removeItem('mochi_window_position')
       await win.center()
       return
     }
@@ -528,6 +613,7 @@ export async function ensurePetWindowVisible() {
     }
   } catch {
     try {
+      await win.unminimize()
       await win.show()
       await win.center()
     } catch {
@@ -537,12 +623,22 @@ export async function ensurePetWindowVisible() {
 }
 
 export async function initPetWindowChrome() {
-  if (!isTauri()) return
-  const win = getCurrentWindow()
-  if (!isPetWindowLabel(win.label)) return
+  const win = getPetTauriWindow()
+  if (!win) return
   try {
     await win.setShadow(false)
+    try {
+      await win.unminimize()
+    } catch {
+      // optional
+    }
     await win.show()
+    await win.setAlwaysOnTop(true)
+    try {
+      await win.setIgnoreCursorEvents(false)
+    } catch {
+      // optional
+    }
     await win.setFocus()
   } catch {
     // optional

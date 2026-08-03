@@ -121,6 +121,7 @@ func (s *Service) generateToken(userID uint64, email string) (string, error) {
 
 type UserPreferences struct {
 	ProactiveEnabled        bool                  `json:"proactive_enabled"`
+	PresenceChatEnabled     bool                  `json:"presence_chat_enabled"`
 	QuietHoursStart         int                   `json:"quiet_hours_start"`
 	QuietHoursEnd           int                   `json:"quiet_hours_end"`
 	MorningGreeting         bool                  `json:"morning_greeting"`
@@ -141,6 +142,7 @@ type UserPreferences struct {
 func defaultPreferences(user models.User) *UserPreferences {
 	prefs := &UserPreferences{
 		ProactiveEnabled:      user.ProactiveEnabled,
+		PresenceChatEnabled:   user.PresenceChatEnabled,
 		QuietHoursStart:       user.QuietHoursStart,
 		QuietHoursEnd:         user.QuietHoursEnd,
 		MorningGreeting:       user.MorningGreeting,
@@ -194,6 +196,7 @@ func (s *Service) GetPreferences(userID uint64) (*UserPreferences, error) {
 
 type UpdatePreferencesInput struct {
 	ProactiveEnabled      *bool
+	PresenceChatEnabled   *bool
 	QuietHoursStart       *int
 	QuietHoursEnd         *int
 	MorningGreeting       *bool
@@ -218,6 +221,9 @@ func (s *Service) UpdatePreferences(userID uint64, in UpdatePreferencesInput) (*
 	updates := map[string]interface{}{}
 	if in.ProactiveEnabled != nil {
 		updates["proactive_enabled"] = *in.ProactiveEnabled
+	}
+	if in.PresenceChatEnabled != nil {
+		updates["presence_chat_enabled"] = *in.PresenceChatEnabled
 	}
 	if in.QuietHoursStart != nil {
 		h := *in.QuietHoursStart

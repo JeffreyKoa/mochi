@@ -268,6 +268,12 @@ func (p *Pipeline) OnSpeechEnd(ctx context.Context, sess *Session, audio []byte,
 	if !fh.IsUsable() && fh.Focus == "" && sess.visualDone() {
 		fh = sess.VisualHint()
 	}
+	// Phase B：纯信息 Skip Tier-1（如「深圳天气」）
+	if p.vision != nil && p.vision.ShouldSkipTier1(text) {
+		sess.CancelVisionWork()
+		fh = vision.EmptyHint()
+		log.Printf("[vision][skip] tier1_skipped session=%s text=%q", sess.ID, truncateVisionText(text, 40))
+	}
 
 	visualHint := p.finalizeParallelPerception(pipeCtx, sess, text, acousticHint, fh)
 	if lat := sess.TurnLatency(); lat != nil {
@@ -292,6 +298,17 @@ func (p *Pipeline) OnTranscript(ctx context.Context, sess *Session, text string,
 		lat.MarkASRFinal()
 	}
 	p.onTranscriptWithMode(pipeCtx, sess, text, send, true, nil)
+}
+
+func (p *Pipeline) SpeakOnly(ctx context.Context, sess *Session, text string, send Sender) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	pipeCtx := sess.BeginPipeline(ctx)
+	defer sess.EndPipeline()
+	p.speakReply(pipeCtx, sess, send, text)
+	_ = send.Send(MsgTTSDone, map[string]any{})
 }
 
 func (p *Pipeline) OnTextInput(ctx context.Context, sess *Session, text string, send Sender, withVoice bool) {
@@ -327,13 +344,19 @@ func (p *Pipeline) PrefetchOwnerFace(ctx context.Context, sess *Session) {
 	if p.vision == nil || !p.vision.PrefetchOnFrame() || !sess.TryBeginVisionPrefetch() {
 		return
 	}
+	workCtx := sess.VisionWorkCtx(ctx)
 	go func() {
 		defer sess.EndVisionPrefetch()
 		jpeg := sess.TurnVisionJPEG()
 		if len(jpeg) == 0 {
 			return
 		}
-		hint := p.vision.DescribeOwnerFace(ctx, jpeg, sess.ID)
+		hint := p.vision.DescribeOwnerFace(workCtx, jpeg, sess.ID)
+		select {
+		case <-workCtx.Done():
+			return
+		default:
+		}
 		sess.SetVisualHint(hint)
 		log.Printf("[realtime][vision] prefetch_done session=%s focus=%s skipped=%v conf=%.2f",
 			sess.ID, hint.Focus, hint.Skipped, hint.ExpressionConfidence)
@@ -346,6 +369,14 @@ func (p *Pipeline) finalizeParallelPerception(ctx context.Context, sess *Session
 	if p.vision == nil || !p.vision.Enabled() || len(jpeg) == 0 {
 		state := emotion.BuildFinalPerception(userText, acoustic, vision.EmptyHint(),
 			p.classifyUtterance(ctx, userText, acoustic, faceHint), 0.65, 0.6)
+		return &state
+	}
+
+	userText = strings.TrimSpace(userText)
+	if userText != "" && p.vision.ShouldSkipTier1(userText) {
+		sess.CancelVisionWork()
+		state := emotion.BuildFinalPerception(userText, acoustic, vision.EmptyHint(),
+			p.classifyUtterance(ctx, userText, acoustic, faceHint), p.vision.MinVisualConf(), p.vision.MinVisualConf())
 		return &state
 	}
 
@@ -362,28 +393,72 @@ func (p *Pipeline) finalizeParallelPerception(ctx context.Context, sess *Session
 			emotion.FallbackInsight(acoustic, faceHint), 0.65, p.vision.MinVisualConf())
 		return &state
 	}
-	return p.buildPerceptionState(ctx, userText, acoustic, faceHint, jpeg, sess.ID)
+	return p.buildPerceptionState(ctx, sess, userText, acoustic, faceHint, jpeg)
 }
 
-// buildPerceptionState V3c：ClassifyUtterance → RefineContextual → BuildFinalPerception。
-func (p *Pipeline) buildPerceptionState(ctx context.Context, userText string, acoustic emotion.AcousticHint, faceHint vision.Hint, jpeg []byte, sessionID string) *emotion.PerceptionState {
+// buildPerceptionState V3c：ClassifyUtterance ∥ Barrier → 仅硬依赖二次 VL。
+func (p *Pipeline) buildPerceptionState(ctx context.Context, sess *Session, userText string, acoustic emotion.AcousticHint, faceHint vision.Hint, jpeg []byte) *emotion.PerceptionState {
+	sessionID := sess.ID
 	minAcoustic := 0.65
 	minVisual := 0.6
 	if p.vision != nil {
 		minVisual = p.vision.MinVisualConf()
 	}
 
-	insight := p.classifyUtterance(ctx, userText, acoustic, faceHint)
+	// classify ∥ 硬焦点 Barrier 等待（Phase C #9）
+	classCh := make(chan emotion.UtteranceInsight, 1)
+	go func() {
+		classCh <- p.classifyUtterance(ctx, userText, acoustic, faceHint)
+	}()
+
+	kwPlan := vision.RefinePlan{}
+	if p.vision != nil {
+		kwPlan = vision.PlanRefine(userText, p.vision.ObjectKeywords(), p.vision.SceneKeywords())
+	}
+	barrierCh := make(chan bool, 1)
+	if p.vision != nil && vision.PlanNeedsHardBarrier(kwPlan) {
+		go func() {
+			barrier := p.vision.HardFocusBarrier()
+			barrierCh <- sess.WaitForVisionFrameReason(ctx, []string{"audio_end", "object_refresh"}, barrier)
+		}()
+	} else {
+		barrierCh <- true
+	}
+
+	insight := <-classCh
+	gotFrame := <-barrierCh
+	jpeg = sess.TurnVisionJPEG()
+
 	visualHint := faceHint
 	if p.vision != nil && len(jpeg) > 0 {
-		if p.vision.ContextualPlannerEnabled() {
-			visualHint = p.vision.RefineContextual(ctx, jpeg, userText, faceHint, insight.VisualTask, insight.FaceTextClash, sessionID)
-		} else {
-			visualHint = p.vision.RefineAfterASR(ctx, jpeg, userText, faceHint, sessionID)
+		plan := p.vision.ResolveRefinePlan(userText, faceHint, insight.VisualTask, insight.FaceTextClash)
+		if vision.PlanNeedsHardBarrier(plan) {
+			log.Printf("[vision][barrier] session=%s focus=%s got_frame=%v jpeg_bytes=%d",
+				sessionID, plan.Focus, gotFrame, len(jpeg))
+			if !gotFrame || len(jpeg) == 0 {
+				faceHint = vision.Hint{
+					Focus:      plan.Focus,
+					Skipped:    true,
+					SkipReason: "barrier_timeout",
+					Note:       "我没看清楚，你举近一点让我再看看~",
+				}
+				state := emotion.BuildFinalPerception(userText, acoustic, faceHint, insight, minAcoustic, minVisual)
+				return &state
+			}
+			// 二次 VL 仅硬依赖（Phase C #9）
+			if p.vision.ContextualPlannerEnabled() {
+				visualHint = p.vision.RefineContextual(ctx, jpeg, userText, faceHint, insight.VisualTask, insight.FaceTextClash, sessionID)
+			} else {
+				visualHint = p.vision.RefineAfterASR(ctx, jpeg, userText, faceHint, sessionID)
+			}
 		}
 	}
 
 	state := emotion.BuildFinalPerception(userText, acoustic, visualHint, insight, minAcoustic, minVisual)
+	if gh := sess.TakePendingGlance(); gh.IsUsable() {
+		state.GlanceHint = gh
+		log.Printf("[vision][glance] merged_pending session=%s expr=%s", sessionID, gh.UserExpression)
+	}
 	log.Printf("[perception] final mood=%s intent=%s empathy=%v source=%s visual_task=%s",
 		state.Hint.UserMood, state.Hint.Intent, state.Hint.NeedsEmpathy, state.Source, insight.VisualTask)
 	return &state
@@ -470,7 +545,7 @@ func (p *Pipeline) awaitOwnerFaceHint(ctx context.Context, sess *Session) vision
 		log.Printf("[realtime][vision] prefetch_hit session=%s focus=%s", sess.ID, h.Focus)
 		return h
 	}
-	timeout := p.vision.WaitTimeout()
+	timeout := p.vision.OwnerFaceWaitTimeout()
 	if waited := sess.WaitForVisualHint(ctx, timeout); waited.IsUsable() || waited.Focus != vision.FocusSkip {
 		log.Printf("[realtime][vision] prefetch_hit session=%s focus=%s after_wait", sess.ID, waited.Focus)
 		return waited
@@ -523,6 +598,14 @@ func (p *Pipeline) resolveVisionForTurn(ctx context.Context, sess *Session, user
 // perceiveVoiceTurn 流式路径：acoustic ∥ owner_face → V3c 融合。
 func (p *Pipeline) perceiveVoiceTurn(ctx context.Context, sess *Session, userText string) *emotion.PerceptionState {
 	log.Printf("[perception] parallel_start session=%s has_vision=%v", sess.ID, sess.HasVisionFrame())
+	if p.vision != nil && p.vision.ShouldSkipTier1(userText) {
+		sess.CancelVisionWork()
+		acousticHint := p.ensureAcousticHint(ctx, sess)
+		state := emotion.BuildFinalPerception(userText, acousticHint, vision.EmptyHint(),
+			p.classifyUtterance(ctx, userText, acousticHint, vision.EmptyHint()), 0.65, p.vision.MinVisualConf())
+		log.Printf("[vision][skip] tier1_skipped session=%s text=%q", sess.ID, truncateVisionText(userText, 40))
+		return &state
+	}
 	var (
 		wg           sync.WaitGroup
 		acousticHint emotion.AcousticHint
@@ -737,6 +820,7 @@ func (p *Pipeline) playSegmentResult(res segmentSynthResult, onChunk func([]byte
 
 // streamLLMAndVoice runs LLM token streaming and pipes sentence chunks to TTS asynchronously.
 func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Sender, userText string, withVoice bool, perception *emotion.PerceptionState, topicAnchor agent.TopicAnchorInput) bool {
+	sess.SetLLMStreaming(false)
 	var tokenBuf strings.Builder
 	speaking := false
 	audioChunks := 0
@@ -923,6 +1007,7 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		llmTokenMu.Lock()
 		if !llmTokenSeen {
 			llmTokenSeen = true
+			sess.SetLLMStreaming(true)
 			if lat != nil {
 				lat.MarkLLMFirstToken()
 			}
@@ -1227,9 +1312,31 @@ func (p *Pipeline) Interrupt(sess *Session, send Sender) {
 
 func buildTurnMoodFromPerception(state *emotion.PerceptionState, userText string) (text.MoodTag, emotion.Hint) {
 	if state != nil {
-		return text.InferDefaultMood(state.Hint.UserMood, state.Hint.Intent, state.Hint.NeedsEmpathy), state.Hint
+		mood, hint := text.InferDefaultMood(state.Hint.UserMood, state.Hint.Intent, state.Hint.NeedsEmpathy), state.Hint
+		// GLANCE Tier-0：TTS 未开始前可微调首句语气
+		if state.GlanceHint.IsUsable() {
+			if gm := glanceExpressionMood(state.GlanceHint.UserExpression); gm != "" {
+				mood = gm
+			}
+		}
+		return mood, hint
 	}
 	return buildTurnMoodContext(userText, emotion.EmptyAcousticHint(), vision.EmptyHint())
+}
+
+func glanceExpressionMood(expr string) text.MoodTag {
+	switch strings.ToLower(strings.TrimSpace(expr)) {
+	case "thinking", "hesitant":
+		return text.MoodGentle
+	case "anxious":
+		return text.MoodWorried
+	case "sad":
+		return text.MoodSad
+	case "happy":
+		return text.MoodPlayful
+	default:
+		return ""
+	}
 }
 
 func perceptionAcoustic(state *emotion.PerceptionState) emotion.AcousticHint {

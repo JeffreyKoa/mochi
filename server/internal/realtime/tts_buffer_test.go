@@ -10,7 +10,7 @@ import (
 func testPipelineCfg() config.RealtimePipeline {
 	p := config.RealtimePipeline{
 		TTSMinChars:          4,
-		TTSFirstMinChars:     3,
+		TTSFirstMinChars:     2,
 		TTSWeakPunctMinChars: 8,
 		TTSForceFlushChars:   24,
 		TTSPunctuation:       "。！？，",

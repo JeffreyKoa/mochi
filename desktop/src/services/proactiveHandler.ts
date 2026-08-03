@@ -3,9 +3,15 @@ import { broadcastProactive, notifyTasksRefresh, type ProactivePayload } from '.
 
 let lastShown = { text: '', at: 0 }
 
+export function wasProactiveRecentlyShown(text: string): boolean {
+  return text === lastShown.text && Date.now() - lastShown.at < 8000
+}
+
 export type ProactiveOptions = {
   /** When true, use persistent reminder bubble (voice chat should pass true). */
   priority?: boolean
+  /** When true, skip browser speechSynthesis (server TTS will speak). */
+  skipSpeak?: boolean
 }
 
 /** Show reminder/proactive UI. Caller should append chat message separately. */
@@ -22,9 +28,11 @@ export function handleProactiveMessage(payload: ProactivePayload, opts: Proactiv
   } else {
     pet.showSpeechBubble(payload.message, 12000)
   }
-  speakReminder(payload.message)
   void broadcastProactive(payload)
   void notifyTasksRefresh()
+  if (!opts.skipSpeak) {
+    speakReminder(payload.message)
+  }
 }
 
 function speakReminder(text: string) {

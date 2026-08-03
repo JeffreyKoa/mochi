@@ -8,6 +8,7 @@ import (
 
 	"github.com/mochi-ai/server/internal/auth"
 	"github.com/mochi-ai/server/internal/chat"
+	"github.com/mochi-ai/server/internal/companion"
 	"github.com/mochi-ai/server/internal/config"
 	"github.com/mochi-ai/server/internal/pet"
 	"github.com/mochi-ai/server/internal/realtime"
@@ -34,12 +35,15 @@ type Handlers struct {
 	Hub             *ws.Hub
 	AuthSvc       *auth.Service
 	ClientAPIBase      string
+	ClientPublic       config.ClientPublicConfig
 	RealtimeEnabled    bool
 	RealtimePublic     config.RealtimePublicConfig
 	WriteApproval      bool
 	GrowthEnabled      bool
 	VisionEnabled      bool
 	VisionPublic       config.VisionPublicConfig
+	CompanionPublic    config.CompanionPublicConfig
+	Companion          *companion.Handler
 }
 
 func Setup(mode string, h Handlers) *gin.Engine {
@@ -60,12 +64,14 @@ func Setup(mode string, h Handlers) *gin.Engine {
 	r.GET("/api/v1/public/config", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"api_base":         h.ClientAPIBase,
+			"client":           h.ClientPublic,
 			"realtime_enabled": h.RealtimeEnabled,
 			"realtime":         h.RealtimePublic,
 			"write_approval":   h.WriteApproval,
 			"growth_enabled":   h.GrowthEnabled,
 			"vision_enabled":   h.VisionEnabled,
 			"vision":           h.VisionPublic,
+			"companion":        h.CompanionPublic,
 		})
 	})
 
@@ -104,6 +110,9 @@ func Setup(mode string, h Handlers) *gin.Engine {
 			}
 			if h.Wellness != nil {
 				protected.POST("/activity/heartbeat", h.Wellness.Heartbeat)
+			}
+			if h.Companion != nil {
+				protected.POST("/companion/presence-chat", h.Companion.PresenceChat)
 			}
 			if h.Voiceprint != nil {
 				protected.POST("/voiceprint/enroll", h.Voiceprint.Enroll)

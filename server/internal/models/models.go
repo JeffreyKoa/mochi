@@ -8,7 +8,8 @@ type User struct {
 	ID                 uint64    `gorm:"primaryKey" json:"id"`
 	Email              string    `gorm:"uniqueIndex;size:255" json:"email"`
 	Password           string    `gorm:"size:255" json:"-"`
-	ProactiveEnabled   bool      `gorm:"default:true" json:"proactive_enabled"`
+	ProactiveEnabled     bool `gorm:"default:true" json:"proactive_enabled"`
+	PresenceChatEnabled  bool `gorm:"default:true" json:"presence_chat_enabled"`
 	QuietHoursStart    int       `gorm:"default:23" json:"quiet_hours_start"`
 	QuietHoursEnd      int       `gorm:"default:8" json:"quiet_hours_end"`
 	MorningGreeting    bool      `gorm:"default:true" json:"morning_greeting"`

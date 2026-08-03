@@ -3,6 +3,7 @@ import { getPresenceConfig, getVoiceprintConfig } from '@/config'
 import { SoundPresenceTracker, type SoundPresenceState } from '@/services/soundPresence'
 import { SpeakerVerifier } from '@/services/speakerVerifier'
 import { usePetStore } from '@/stores/petStore'
+import { shouldSuppressAudioReturnBubble, tryTriggerAudioPresence } from '@/services/presenceChat'
 
 const SAMPLE_RATE = 16000
 
@@ -53,7 +54,10 @@ function applyPresenceAnimation(next: SoundPresenceState, prev: SoundPresenceSta
     pet.setAnimation('sleep')
   } else if (next === 'owner_present' && prev === 'away') {
     pet.setAnimation('idle')
-    pet.showSpeechBubble('你回来了~', 2500)
+    if (!shouldSuppressAudioReturnBubble()) {
+      pet.showSpeechBubble('你回来了~', 2500)
+    }
+    void tryTriggerAudioPresence(prev, next)
   } else if (next !== 'away' && prev === 'away') {
     pet.setAnimation('idle')
   }

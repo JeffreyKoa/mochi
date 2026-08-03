@@ -82,6 +82,21 @@ describe('turnEndArbiter', () => {
     expect(d.ready).toBe(true)
   })
 
+  it('pause_hint_composing extends hold on mid pause', () => {
+    const d = evaluateTurnEnd(
+      base({
+        partialText: '因为',
+        partialUpdatedAt: 5000,
+        lastSpeechAt: 10_000 - PAUSE_PROBE_MS,
+        pauseHintComposing: true,
+        now: 10_000,
+      }),
+    )
+    expect(d.ready).toBe(false)
+    expect(d.reason).toBe('pause_hint_composing')
+    expect(d.extendHoldMs).toBe(THINKING_HOLD_EXTEND_MS)
+  })
+
   it('respects thinking_hold', () => {
     const d = evaluateTurnEnd(
       base({

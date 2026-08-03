@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useAuthStore } from '@/stores/authStore'
 import { usePetStore, type PetLifecycle, type PetPersonality } from '@/stores/petStore'
 import { useRealtimeStore } from '@/stores/realtimeStore'
@@ -8,6 +7,12 @@ import { useGrowthStore } from '@/stores/growthStore'
 import { getPet, getLifeState, getChatHistory, initClientConfig, AuthError, ApiError } from '@/services/api'
 import { healthMonitor } from '@/services/healthMonitor'
 import { startActivityHeartbeat, stopActivityHeartbeat } from '@/services/activityHeartbeat'
+import {
+  registerPresenceChatDeliver,
+  registerPresenceChatPhaseGuard,
+  startPresenceChatLoop,
+  stopPresenceChatLoop,
+} from '@/services/presenceChat'
 import { stopAmbientMic } from '@/services/ambientMic'
 import { wsManager } from '@/services/ws'
 import { handleProactiveMessage } from '@/services/proactiveHandler'
@@ -17,10 +22,12 @@ import {
   initPetWindowChrome,
   isPetWindowLabel,
   isTauri,
+  readTauriWindowLabel,
   sidePanelOnLeft,
   syncBrowserSidePanelPlacement,
   syncPanelShellLayout,
   consumeSidePanelPending,
+  waitForTauriWindow,
 } from '@/services/chatWindow'
 import { setLoginLayout, setPetOnlyLayout, PET_WITH_SIDE_W, PET_WITH_SIDE_H } from '@/services/windowLayout'
 import LoginView from '@/views/LoginView.vue'
@@ -29,6 +36,7 @@ import PetView from '@/views/PetView.vue'
 import ChatPanel from '@/components/chat/ChatPanel.vue'
 import SettingsPanel from '@/components/growth/SettingsPanel.vue'
 import AdoptView from '@/views/AdoptView.vue'
+import VoiceDiagnostics from '@/components/dev/VoiceDiagnostics.vue'
 
 const auth = useAuthStore()
 const pet = usePetStore()
@@ -37,6 +45,8 @@ const growth = useGrowthStore()
 const ready = ref(false)
 const loading = ref(true)
 const loadError = ref('')
+/** 桌宠壳层是否已挂载（用于隐藏启动占位） */
+const shellReady = ref(false)
 const showOnboarding = ref(false)
 const showAdopt = ref(false)
 const winLabel = ref('browser')
@@ -76,6 +86,7 @@ function syncPopupPanelFromPending() {
 }
 
 const isBrowserDev = computed(() => !isTauri())
+const isDev = import.meta.env.DEV
 const isChatWindow = computed(() => winLabel.value === 'chat')
 const isPetShell = computed(() => isBrowserDev.value || isPetWindowLabel(winLabel.value))
 const sidePanelOpen = computed(
@@ -127,7 +138,11 @@ function setupWs() {
       if (d.animation) pet.setServerAnimation(d.animation)
     })
     wsManager.on('proactive_message', (data: unknown) => {
-      const d = data as { message: string; animation: string }
+      const d = data as { message: string; animation: string; source?: string }
+      if (d.source === 'presence_chat') {
+        void rt.deliverPresenceChat(d.message, d.animation)
+        return
+      }
       handleProactiveMessage({ message: d.message, animation: d.animation }, { priority: true })
       rt.appendAssistantMessage(d.message)
     })
@@ -279,6 +294,16 @@ async function loadUserData() {
     void rt.initAmbientPresence().catch((e) => {
       console.warn('[ambient] presence init skipped', e)
     })
+    if (isPetShell.value) {
+      registerPresenceChatPhaseGuard(() => {
+        const phase = rt.turnPhase
+        return phase === 'resting' || phase === 'idle'
+      })
+      registerPresenceChatDeliver((payload) => {
+        void rt.deliverPresenceChat(payload.message, payload.animation)
+      })
+      void startPresenceChatLoop()
+    }
     healthMonitor.stop()
     loadError.value = ''
     pet.setBootFailed(false)
@@ -306,14 +331,19 @@ async function loadUserData() {
 }
 
 onMounted(async () => {
-  try {
-    winLabel.value = getCurrentWindow().label
-  } catch {
+  if (isTauri()) {
+    await waitForTauriWindow()
+    winLabel.value = readTauriWindowLabel()
+  } else {
     winLabel.value = 'browser'
   }
 
   ready.value = true
   pet.registerBootRetry(() => void retryLoadUserData())
+
+  if (isTauri() && isPetWindowLabel(winLabel.value)) {
+    auth.syncFromStorage()
+  }
 
   if (isChatWindow.value) {
     auth.syncFromStorage()
@@ -358,8 +388,25 @@ onMounted(async () => {
   }
 
   await initClientConfig().catch((e) => console.warn('[init] config', e))
-  await initPetWindowChrome()
-  await ensurePetWindowVisible()
+
+  if (isTauri() && isPetWindowLabel(winLabel.value)) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      await invoke('recover_pet_window')
+    } catch (e) {
+      console.warn('[init] recover_pet_window', e)
+    }
+    try {
+      const { listen } = await import('@tauri-apps/api/event')
+      await listen('pet-window-recover', () => {
+        localStorage.removeItem('mochi_window_position')
+      })
+    } catch {
+      // optional
+    }
+    await initPetWindowChrome()
+    await ensurePetWindowVisible()
+  }
 
   if (auth.isLoggedIn) {
     loading.value = false
@@ -369,6 +416,7 @@ onMounted(async () => {
     loading.value = false
     await setLoginLayout()
   }
+  shellReady.value = true
 })
 
 watch(
@@ -424,6 +472,7 @@ function onAdoptLogout() {
 onUnmounted(() => {
   healthMonitor.stop()
   stopActivityHeartbeat()
+  stopPresenceChatLoop()
   void stopAmbientMic()
   unlistenProactive?.()
   unlistenProactive = null
@@ -454,6 +503,7 @@ onUnmounted(() => {
           <ChatPanel v-else-if="useInlineSidePanel && pet.isChatOpen && pet.chatInline" docked @pointerdown.stop />
         </div>
         <p v-if="loadError && !showOnboarding && !showAdopt" class="load-error">{{ loadError }}</p>
+        <VoiceDiagnostics v-if="isDev && isPetShell" />
       </template>
     </template>
 
@@ -465,6 +515,8 @@ onUnmounted(() => {
 
     <!-- Tauri pet window -->
     <template v-else-if="isPetShell && ready">
+      <!-- 启动占位：避免 WebView 透明 + 内容未渲染时完全看不见 -->
+      <div v-if="!shellReady" class="pet-boot-splash">Mochi 醒来中…</div>
       <LoginView v-if="!auth.isLoggedIn" @success="onLoginSuccess" />
       <template v-else>
         <div
@@ -482,8 +534,14 @@ onUnmounted(() => {
         </div>
         <p v-if="loading && !showOnboarding && !growth.showSettings && !showAdopt" class="boot-hint">Mochi 醒来中...</p>
         <p v-if="loadError" class="load-error">{{ loadError }}</p>
+        <VoiceDiagnostics v-if="isDev && isPetShell" />
       </template>
     </template>
+
+    <!-- 兜底：避免 winLabel 异常时整窗空白 -->
+    <div v-else-if="ready && isTauri()" class="pet-boot-splash">
+      Mochi 窗口初始化中… ({{ winLabel }})
+    </div>
   </div>
 </template>
 
@@ -539,6 +597,20 @@ onUnmounted(() => {
   z-index: 100;
   white-space: nowrap;
   pointer-events: none;
+}
+
+.pet-boot-splash {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 220, 230, 0.96);
+  color: #c2185b;
+  font-size: 15px;
+  font-weight: 600;
+  z-index: 500;
+  pointer-events: auto;
 }
 
 .load-error {

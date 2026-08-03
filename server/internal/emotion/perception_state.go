@@ -8,12 +8,13 @@ import (
 
 // PerceptionState Pipeline 单 turn 融合后的唯一感知真相源（V3c）。
 type PerceptionState struct {
-	Hint     Hint
-	Insight  UtteranceInsight
-	Visual   vision.Hint
-	Acoustic AcousticHint
-	Text     string
-	Source   string
+	Hint       Hint
+	Insight    UtteranceInsight
+	Visual     vision.Hint
+	Acoustic   AcousticHint
+	Text       string
+	Source     string
+	GlanceHint vision.Hint `json:"glance_hint,omitempty"` // Phase C Tier-0 GLANCE（不打断 LLM）
 }
 
 // BuildFinalPerception 融合 Insight + SER + VL，供 Pipeline 与 Agent 共用。

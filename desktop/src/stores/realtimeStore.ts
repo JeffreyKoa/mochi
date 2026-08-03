@@ -20,11 +20,9 @@ import { stripMoodTags } from '@/utils/stripMoodTags'
 import {
   captureOwnerFaceJPEG,
   isVisionCaptureEnabled,
-  jpegToBase64,
-  startVisionSession,
+  prewarmVisionSession,
   stopVisionSession,
   visionSession,
-  type VisionFrameReason,
 } from '@/services/visionCapture'
 import {
   bootstrapAmbientPresence as startAmbientPresenceService,
@@ -32,20 +30,34 @@ import {
   resumeAmbientMicAfterTalk,
   ambientPresence,
 } from '@/services/ambientMic'
-import { handleProactiveMessage } from '@/services/proactiveHandler'
+import { handleProactiveMessage, wasProactiveRecentlyShown } from '@/services/proactiveHandler'
 import { streamChatMessage, getVoiceprintStatus, getFaceprintStatus } from '@/services/api'
 import {
   type VoiceOwner,
   getStoredVoiceOwner,
 } from '@/services/voiceSessionOwner'
 import { isTauri } from '@/services/chatWindow'
-import { looksLikeObjectQuery } from '@/services/visionHeuristic'
 import { identityGate } from '@/services/identityGate'
+import {
+  createPerceptionOrchestrator,
+  PAUSE_PROBE_MS,
+  shouldStartPeriodicFaceCheck,
+  shouldStartStreamCheck,
+  type PerceptionPhase,
+} from '@/services/perception'
+import {
+  getPeriodicFaceCheckIntervalMs,
+  getStreamCheckGraceMs,
+  getStreamCheckIntervalMs,
+} from '@/services/perception/earChannel'
 import { FaceVerifier, FACE_OWNER_BOOST_SCORE } from '@/services/faceVerifier'
 import {
   evaluateTurnEnd,
-  PAUSE_PROBE_MS,
+  isComposingExpression,
+  THINKING_HOLD_EXTEND_MS,
 } from '@/services/turnEndArbiter'
+import { startEventLoopProbe, onEventLoopLag } from '@/services/eventLoopProbe'
+import { recordTurnMetricsBaseline } from '@/services/turnMetricsBaseline'
 
 /**
  * Turn phases — like talking to a person:
@@ -53,7 +65,7 @@ import {
  * user_speaking: owner voice detected, recording & uploading
  * processing / agent_speaking: Mochi thinks & replies
  */
-type TurnPhase = 'idle' | 'resting' | 'user_speaking' | 'processing' | 'agent_speaking'
+export type TurnPhase = 'idle' | 'resting' | 'user_speaking' | 'processing' | 'agent_speaking'
 
 export type WakeListeningFailure =
   | 'not_ready'
@@ -131,6 +143,12 @@ export const useRealtimeStore = defineStore('realtime', () => {
   const micLevel = ref(0)
   const chunksSent = ref(0)
   const processingRef = ref(false)
+  /** DEV 诊断：当前轮次相位与最近一次检测到语音的时间戳。 */
+  const turnPhase = ref<TurnPhase>('idle')
+  /** DEV 诊断：Orchestrator 内部感知相位（listen/endpoint/think/speak）。 */
+  const perceptionPhase = ref<PerceptionPhase>('idle')
+  const lastSpeechAtMs = ref(0)
+  const eventLoopLagMs = ref(0)
 
   const userSpeaking = computed(
     () => talking.value && !resting.value && !processingRef.value,
@@ -171,6 +189,33 @@ export const useRealtimeStore = defineStore('realtime', () => {
   let connectFlight: Promise<void> | null = null
   let intentionalDisconnect = false
   let reconnecting = false
+  let eventLoopProbeStarted = false
+  /** 在场闲聊：speak_only 播完后进入连续聆听。 */
+  let presenceChatListenAfterTts = false
+
+  function resetTurnAbort() {
+    turnAbortController?.abort()
+    turnAbortController = new AbortController()
+  }
+
+  function cancelTurnAbort() {
+    turnAbortController?.abort()
+    turnAbortController = null
+  }
+
+  function ensureEventLoopProbe() {
+    if (eventLoopProbeStarted || !import.meta.env.DEV) return
+    eventLoopProbeStarted = true
+    startEventLoopProbe(getClientConfig().eventLoopProbeMs || 1000)
+    onEventLoopLag((lag) => {
+      eventLoopLagMs.value = lag
+    })
+  }
+
+  function touchLastSpeechAt(at = Date.now()) {
+    lastSpeechAt = at
+    lastSpeechAtMs.value = at
+  }
 
   function detachHandler() {
     unsub?.()
@@ -222,10 +267,6 @@ export const useRealtimeStore = defineStore('realtime', () => {
   let faceCheckTimer: ReturnType<typeof setInterval> | null = null
   /** 最近一次人脸 probe 结果（供 identity gate 融合）。 */
   let lastFaceProbe: { match: boolean; score: number; detected: boolean } | null = null
-  /** P2：本 turn 是否已发过 object_refresh 帧（partial 中途触发后 submit 仍可再发一次）。 */
-  let objectRefreshCountThisTurn = 0
-  /** 本 turn 是否已发 speech_start 帧（防 VAD 重复触发）。 */
-  let speechStartFrameSent = false
   /** 主人 turn 内锁定 PCM 上传，stream_check 不误拦导致 ASR 空。 */
   let ownerTurnUploadLock = false
   /** 本 turn 是否已开始上传（首包语音后连续上传，保证流式 ASR 不断流）。 */
@@ -234,13 +275,13 @@ export const useRealtimeStore = defineStore('realtime', () => {
   let partialUpdatedAt = 0
   /** 多模态仲裁：延长等待截止时间（主人可能还在组织语言）。 */
   let thinkingHoldUntil = 0
-  /** 本 turn 是否已做过 pause_probe（静音≥3s 眼抓拍）。 */
-  let pauseProbeDone = false
-  let pauseProbeInFlight = false
   /** pause_probe 之后用户是否已继续说话（区分句中停顿 vs 句末结束）。 */
   let resumedAfterPauseProbe = false
-  /** 举物补拍前留给用户对准摄像头的延迟（ms）。 */
-  const OBJECT_FRAME_HOLD_MS = 400
+  /** Tier-0 vision_pause_hint：服务端推断仍在组织语言 */
+  let pauseHintComposing = false
+  let pauseHintExpression = ''
+  /** 本 turn 在途视觉/提交可 abort（barge-in / 新 wake）。 */
+  let turnAbortController: AbortController | null = null
   let speechEndSubmitTimer: ReturnType<typeof setTimeout> | null = null
   const pcmRing = new Float32Array(PCM_RING_SAMPLES)
   let pcmRingWrite = 0
@@ -385,12 +426,21 @@ export const useRealtimeStore = defineStore('realtime', () => {
     }
   }
 
-  /** P2：周期性从会话摄像头抓拍并验脸。 */
+  /** P2：周期性从会话摄像头抓拍并验脸（低配模式关闭以省 CPU）。 */
   function startFaceCheck() {
     stopFaceCheck()
     const fp = getFaceprintConfig()
-    if (!fp.enabled || !faceprintReady()) return
-    const interval = fp.checkIntervalMs || 2000
+    if (
+      !shouldStartPeriodicFaceCheck({
+        faceprintEnabled: fp.enabled,
+        faceprintReady: faceprintReady(),
+        phase,
+        recording,
+      })
+    ) {
+      return
+    }
+    const interval = getPeriodicFaceCheckIntervalMs()
     faceCheckTimer = setInterval(() => {
       void runFaceCheck()
     }, interval)
@@ -409,14 +459,56 @@ export const useRealtimeStore = defineStore('realtime', () => {
     }
   }
 
+  /** 同步 DEV 面板用的 Orchestrator 相位。 */
+  function syncPerceptionPhaseRef() {
+    perceptionPhase.value = perception.getPerceptionPhase()
+  }
+
+  /** Phase E：眼耳感知编排（Turn Phase FSM + Eye/Ear Channel）。 */
+  const perception = createPerceptionOrchestrator({
+    getAbortSignal: () => turnAbortController?.signal,
+    sendVisionFrame: (b64, meta) =>
+      realtimeSession.sendVisionFrame(b64, {
+        reason: meta.reason,
+        faceProbe: meta.faceProbe,
+        partialText: meta.partialText,
+      }),
+    probeFaceFromJPEG,
+    faceprintReady,
+    runPeriodicFaceCheck: () => runFaceCheck(),
+    onEvent: () => syncPerceptionPhaseRef(),
+  })
+
+  function buildEarTurnState() {
+    return {
+      heardSpeech,
+      lastSpeechAt,
+      vadSpeaking: speechVad?.isSpeaking() ?? false,
+      partialText: partialText.value,
+      partialUpdatedAt,
+      chunksSent: chunksSentCount,
+      thinkingHoldUntil,
+      silenceMsConfig: params.silenceMs,
+      resumedAfterPauseProbe,
+      pauseHintComposing,
+    }
+  }
+
   /** 对话中周期性验声纹（P0 stream_check）+ 人脸融合（P2）。 */
   function startStreamCheck() {
     stopStreamCheck()
     const vp = getVoiceprintConfig()
-    if (!vp.required || !voiceprintReady() || effectiveSttMode === 'local') return
-    const interval = vp.streamCheckIntervalMs || 500
-    // 唤醒宽限期：先上传首包音频，再启动 stream_check（避免首秒误拦）
-    const graceMs = 1200
+    if (
+      !shouldStartStreamCheck({
+        voiceprintRequired: vp.required,
+        voiceprintReady: voiceprintReady(),
+        sttMode: effectiveSttMode,
+      })
+    ) {
+      return
+    }
+    const interval = getStreamCheckIntervalMs()
+    const graceMs = getStreamCheckGraceMs()
     const graceTimer = setTimeout(() => {
       streamCheckTimer = setInterval(() => {
         void runStreamCheck()
@@ -713,12 +805,16 @@ export const useRealtimeStore = defineStore('realtime', () => {
         let hint: string | undefined
         if (!finalReply) {
           hint = '没听清或不需要回应，请再说一次'
+          enterResting(hint)
         } else if (!hadVoice && finalReply) {
           hint = isOpusDecodeSupported()
             ? '文字已回复，语音播放失败，请检查音量'
             : '文字已回复（当前环境不支持 Opus，已请求 MP3）'
+          enterContinuousListen(hint)
+        } else {
+          // 正常一轮对话结束：保持聆听，避免「说一句停一句」的问答机感
+          enterContinuousListen()
         }
-        enterResting(hint)
         usePetStore().syncAnimationFromState()
       })
     } else {
@@ -754,6 +850,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
 
   function setPhase(next: TurnPhase) {
     phase = next
+    turnPhase.value = next
+    perception.syncTurnPhase(next)
+    syncPerceptionPhaseRef()
     resting.value = next === 'resting'
     setProcessing(next === 'processing' || next === 'agent_speaking')
     speechVad?.setPlaybackMode(next === 'agent_speaking')
@@ -776,9 +875,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
         onPartial: (text) => {
           if (phase === 'processing' || phase === 'agent_speaking') return
           partialText.value = text
-          trackObjectIntentFromPartial(text)
+          perception.trackObjectIntentFromPartial(text)
           heardSpeech = true
-          lastSpeechAt = Date.now()
+          touchLastSpeechAt()
           if (phase === 'resting') {
             return
           }
@@ -828,7 +927,8 @@ export const useRealtimeStore = defineStore('realtime', () => {
     replyText.value = ''
     startTtsWatchdog()
 
-    void sendVisionFramesBeforeSubmit(trimmed).then(() => {
+    resetTurnAbort()
+    void perception.prepareBeforeSubmit(trimmed).then(() => {
       const sent = realtimeSession.sendTextInput(trimmed, { voiceReply: true })
       if (!sent) {
         submitLock = false
@@ -844,35 +944,24 @@ export const useRealtimeStore = defineStore('realtime', () => {
   }
 
   function buildTurnEndSignals() {
-    return {
-      heardSpeech,
-      lastSpeechAt,
-      vadSpeaking: speechVad?.isSpeaking() ?? false,
-      partialText: partialText.value,
-      partialUpdatedAt,
-      chunksSent: chunksSentCount,
-      thinkingHoldUntil,
-      silenceMsConfig: params.silenceMs,
-      resumedAfterPauseProbe,
-    }
+    return perception.buildTurnEndSignals(buildEarTurnState())
   }
 
-  /** 静音≥3s：眼抓拍 + 若像还在组织语言则延长等待 */
+  /** THINK 阶段 Tier-0 GLANCE：仅 faceDet，不触发 Tier-1 VL。 */
+  function runThinkGlance() {
+    perception.runThinkGlance()
+  }
+
+  /** 静音≥3s：眼抓拍 + Tier-0 pause_hint 回传 turnEndArbiter */
   async function runPauseThinkingProbe() {
-    if (pauseProbeInFlight || phase !== 'user_speaking') return
-    pauseProbeInFlight = true
-    try {
-      void maybeSendVisionFrame('pause_probe')
-      void runFaceCheck()
-      const decision = evaluateTurnEnd(buildTurnEndSignals())
-      if (decision.extendHoldMs) {
-        thinkingHoldUntil = Math.max(thinkingHoldUntil, Date.now() + decision.extendHoldMs)
-        if (import.meta.env.DEV) {
-          console.debug('[turn_end] pause_probe hold=%sms reason=%s', decision.extendHoldMs, decision.reason)
-        }
+    const partial = partialText.value.trim()
+    await perception.runPauseProbe(partial)
+    const decision = evaluateTurnEnd(buildTurnEndSignals())
+    if (decision.extendHoldMs) {
+      thinkingHoldUntil = Math.max(thinkingHoldUntil, Date.now() + decision.extendHoldMs)
+      if (import.meta.env.DEV) {
+        console.debug('[turn_end] pause_probe hold=%sms reason=%s', decision.extendHoldMs, decision.reason)
       }
-    } finally {
-      pauseProbeInFlight = false
     }
   }
 
@@ -883,8 +972,8 @@ export const useRealtimeStore = defineStore('realtime', () => {
       const signals = buildTurnEndSignals()
       const silence = Date.now() - signals.lastSpeechAt
 
-      if (silence >= PAUSE_PROBE_MS && !pauseProbeDone && signals.heardSpeech) {
-        pauseProbeDone = true
+      if (silence >= PAUSE_PROBE_MS && !perception.isPauseProbeDone() && signals.heardSpeech) {
+        perception.markPauseProbeDone()
         void runPauseThinkingProbe()
       }
 
@@ -904,6 +993,84 @@ export const useRealtimeStore = defineStore('realtime', () => {
     processingRef.value = v
   }
 
+  /** Mochi 说完后保持会话敞开：主人可直接接下一句，无需 resting→重新唤醒。 */
+  /** 在场闲聊送达：Mochi 声线播报并进入可接话状态。 */
+  async function deliverPresenceChat(message: string, animation?: string) {
+    const trimmed = message.trim()
+    if (!trimmed || wasProactiveRecentlyShown(trimmed)) return
+
+    handleProactiveMessage({ message: trimmed, animation }, { priority: true, skipSpeak: true })
+    commitAssistantMessage(trimmed)
+
+    if (!recording) {
+      const ok = await startTalk()
+      if (!ok) {
+        handleProactiveMessage({ message: trimmed, animation }, { priority: true })
+        return
+      }
+    }
+
+    if (!realtimeSession.isOpen()) {
+      handleProactiveMessage({ message: trimmed, animation }, { priority: true })
+      return
+    }
+
+    presenceChatListenAfterTts = true
+    replyText.value = trimmed
+    syncReplyBubble(trimmed)
+    setPhase('agent_speaking')
+    statusText.value = 'Mochi 想跟你说说话~'
+    startTtsWatchdog()
+    if (!realtimeSession.sendSpeakOnly(trimmed)) {
+      presenceChatListenAfterTts = false
+      handleProactiveMessage({ message: trimmed, animation }, { priority: true })
+    }
+  }
+
+  function enterContinuousListen(hint?: string) {
+    clearTtsWatchdog()
+    stopStreamCheck()
+    identityGate.resetTurn()
+    perception.resetTurn()
+    submitLock = false
+    uploadSeq = 0
+    chunksSentCount = 0
+    peakSeen = 0
+    heardSpeech = false
+    lastSpeechAt = 0
+    lastSpeechAtMs.value = 0
+    utteranceStartedAt = 0
+    bargeAccumMs = 0
+    wakeAccumMs = 0
+    ttsStartedAt = 0
+    partialText.value = ''
+    partialUpdatedAt = 0
+    resumedAfterPauseProbe = false
+    pauseHintComposing = false
+    pauseHintExpression = ''
+    thinkingHoldUntil = 0
+    resetTurnTiming()
+    chunksSent.value = 0
+    // 保留 pcm ring，连续对话时 pre-roll 仍有效
+
+    setPhase('user_speaking')
+    identityGate.markOwnerMatch()
+    ownerTurnUploadLock = true
+    ambientPresence.setOwnerSpeaking(true)
+    statusText.value = hint ?? '还在呢，继续说~'
+    usePetStore().setAnimation('happy')
+
+    // TTS 刚结束：短延迟再开上传，避免扬声器回声触发误提交
+    const echoDelayMs = Math.min(params.echoGuardMs, 800)
+    setTimeout(() => {
+      if (!recording || phase !== 'user_speaking') return
+      turnUploadStarted = true
+      realtimeSession.sendAudioStart()
+      startStreamCheck()
+      startSilenceWatch()
+    }, echoDelayMs)
+  }
+
   /** Mochi goes back to sleep — mic stays open but nothing is uploaded. */
   function enterResting(hint?: string) {
     clearTtsWatchdog()
@@ -916,20 +1083,13 @@ export const useRealtimeStore = defineStore('realtime', () => {
     peakSeen = 0
     heardSpeech = false
     lastSpeechAt = 0
+    lastSpeechAtMs.value = 0
     utteranceStartedAt = 0
     bargeAccumMs = 0
     wakeAccumMs = 0
     ttsStartedAt = 0
-    objectRefreshCountThisTurn = 0
-    speechStartFrameSent = false
+    perception.resetTurn()
     lastFaceProbe = null
-    ownerTurnUploadLock = false
-    turnUploadStarted = false
-    partialUpdatedAt = 0
-    thinkingHoldUntil = 0
-    pauseProbeDone = false
-    pauseProbeInFlight = false
-    resumedAfterPauseProbe = false
     resetTurnTiming()
     chunksSent.value = 0
     resetPcmRing()
@@ -973,6 +1133,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
 
   /** Owner started speaking — wake up and begin uploading. */
   function wakeOnSpeech() {
+    resetTurnAbort()
     if (phase !== 'resting' || !recording) return
     usePetStore().clearEmotionHold()
     setPhase('user_speaking')
@@ -982,16 +1143,16 @@ export const useRealtimeStore = defineStore('realtime', () => {
     // 等检测到真实语音后再标记 heardSpeech，避免点击唤醒后静音误触发提交
     heardSpeech = false
     lastSpeechAt = 0
+    lastSpeechAtMs.value = 0
     utteranceStartedAt = Date.now()
-    objectRefreshCountThisTurn = 0
-    speechStartFrameSent = false
+    perception.resetTurn()
     // 保留唤醒时的人脸 probe，供 stream_check 立即融合（勿清空）
     chunksSent.value = 0
     partialText.value = ''
     partialUpdatedAt = 0
-    pauseProbeDone = false
-    pauseProbeInFlight = false
     resumedAfterPauseProbe = false
+    pauseHintComposing = false
+    pauseHintExpression = ''
     thinkingHoldUntil = 0
     ambientPresence.setOwnerSpeaking(true)
     identityGate.markOwnerMatch()
@@ -1000,7 +1161,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     // 唤醒即连续上传（含点击 manual wake），避免 VAD 已触发但 PCM 未传导致 ASR 空
     turnUploadStarted = true
     realtimeSession.sendAudioStart()
-    sendVisionFrameOnSpeechStart()
+    perception.onSpeechStart()
     flushPreRollAudio()
     startStreamCheck()
     startSilenceWatch()
@@ -1021,7 +1182,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
       statusText.value = '正在听...'
       ambientPresence.setOwnerSpeaking(true)
       startLocalListening()
-      sendVisionFrameOnSpeechStart()
+      perception.onSpeechStart()
       return { ok: true }
     }
     if (!realtimeSession.isOpen()) {
@@ -1077,96 +1238,6 @@ export const useRealtimeStore = defineStore('realtime', () => {
     void submitUtteranceAsync(force)
   }
 
-  async function maybeSendVisionFrame(reason: VisionFrameReason = 'audio_end') {
-    const cfg = getClientConfig()
-    if (!cfg.visionEnabled) {
-      console.warn('[vision] skip_send reason=server_disabled trigger=%s', reason)
-      return
-    }
-    if (!isVisionCaptureEnabled()) {
-      console.warn('[vision] skip_send reason=client_opt_out trigger=%s', reason)
-      return
-    }
-    if (reason === 'speech_start' && !cfg.visionSnapshotOnSpeechStart) {
-      return
-    }
-    if (reason === 'audio_end' && cfg.visionSnapshotOnAudioEnd === false) {
-      return
-    }
-    if (reason === 'object_refresh' && cfg.visionSnapshotOnObjectIntent === false) {
-      return
-    }
-
-    const start = Date.now()
-    const buf = visionSession.isActive()
-      ? await visionSession.grabSnapshot()
-      : await captureOwnerFaceJPEG()
-    if (!buf) {
-      console.warn(
-        '[vision] skip_send reason=capture_failed trigger=%s elapsed_ms=%d',
-        reason,
-        Date.now() - start,
-      )
-      return
-    }
-    const b64 = jpegToBase64(buf)
-    let faceProbe: { match: boolean; score: number; detected: boolean } | undefined
-    const fp = getFaceprintConfig()
-    const shouldProbeFace =
-      fp.enabled &&
-      faceprintReady() &&
-      (reason !== 'speech_start' || fp.probeOnSpeechStart)
-    if (shouldProbeFace) {
-      const face = await probeFaceFromJPEG(buf)
-      if (face) {
-        faceProbe = face
-        if (import.meta.env.DEV) {
-          console.debug('[faceprint] frame_probe reason=%s match=%s score=%s', reason, face.match, face.score.toFixed(3))
-        }
-      }
-    }
-    const ok = realtimeSession.sendVisionFrame(b64, { reason, faceProbe })
-    console.info(
-      '[vision] frame_sent ok=%s trigger=%s jpeg_bytes=%d b64_len=%d elapsed_ms=%d',
-      ok,
-      reason,
-      buf.byteLength,
-      b64.length,
-      Date.now() - start,
-    )
-  }
-
-  /** speech_start 预拍帧（每 turn 一次，不阻塞 VAD）。 */
-  function sendVisionFrameOnSpeechStart() {
-    if (speechStartFrameSent) return
-    speechStartFrameSent = true
-    void maybeSendVisionFrame('speech_start')
-  }
-
-  /** P2：ASR partial 命中举物语义时 mid-turn 补拍（延迟一拍，等用户举物对准镜头）。 */
-  function trackObjectIntentFromPartial(text: string) {
-    if (!text.trim() || objectRefreshCountThisTurn > 0) return
-    if (!getClientConfig().visionSnapshotOnObjectIntent) return
-    if (!looksLikeObjectQuery(text)) return
-    objectRefreshCountThisTurn++
-    setTimeout(() => {
-      void maybeSendVisionFrame('object_refresh')
-    }, OBJECT_FRAME_HOLD_MS)
-  }
-
-  /** P2：submit 前若像举物问句，留时间举物后再抓拍，最后 audio_end 帧覆盖。 */
-  async function sendVisionFramesBeforeSubmit(turnText: string) {
-    if (
-      getClientConfig().visionSnapshotOnObjectIntent &&
-      looksLikeObjectQuery(turnText)
-    ) {
-      await new Promise((r) => setTimeout(r, OBJECT_FRAME_HOLD_MS))
-      await maybeSendVisionFrame('object_refresh')
-      await new Promise((r) => setTimeout(r, 120))
-    }
-    await maybeSendVisionFrame('audio_end')
-  }
-
   async function submitUtteranceAsync(force = false) {
     if (!talking.value && !recording) {
       statusText.value = '请先点击开始对话'
@@ -1213,6 +1284,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     setPhase('processing')
     heardSpeech = false
     lastSpeechAt = 0
+    lastSpeechAtMs.value = 0
     utteranceStartedAt = 0
     bargeAccumMs = 0
     speechVad?.reset()
@@ -1221,7 +1293,14 @@ export const useRealtimeStore = defineStore('realtime', () => {
     playbackMarked = false
     ttsPlayer.resetTurn()
 
-    await sendVisionFramesBeforeSubmit(partialText.value.trim())
+    resetTurnAbort()
+    await perception.prepareBeforeSubmit(partialText.value.trim())
+
+    if (turnAbortController?.signal.aborted) {
+      submitLock = false
+      enterResting()
+      return
+    }
 
     const sent = realtimeSession.sendAudioEnd()
     if (!sent) {
@@ -1249,14 +1328,14 @@ export const useRealtimeStore = defineStore('realtime', () => {
     if (ev === 'speech_start') {
       clearSpeechEndSubmitTimer()
       heardSpeech = true
-      lastSpeechAt = Date.now()
+      touchLastSpeechAt()
       // 句中 3s 停顿后续说：解除 thinking hold，句末静音走正常仲裁
-      if (pauseProbeDone) {
+      if (perception.isPauseProbeDone()) {
         resumedAfterPauseProbe = true
         thinkingHoldUntil = 0
       }
       statusText.value = '正在听...'
-      sendVisionFrameOnSpeechStart()
+      perception.onSpeechStart()
       return
     }
 
@@ -1269,6 +1348,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
   function bargeIn() {
     if (phase !== 'agent_speaking') return
     if (!ttsPlayer.hadPlayback && !replyText.value.trim()) return
+    cancelTurnAbort()
     ttsPlayer.stop()
     clearTtsWatchdog()
     replyText.value = ''
@@ -1423,6 +1503,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
   }
 
   async function connectInternal(): Promise<void> {
+    ensureEventLoopProbe()
     if (!(await shouldOwnVoice())) {
       const owner = getStoredVoiceOwner()
       if (voiceWindow === 'pet' && owner === 'chat') {
@@ -1554,9 +1635,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
           if (hasSpeechEnergy) {
             if (peakOk && (ownerTurnUploadLock || identityGate.shouldAllowUpload())) {
               heardSpeech = true
-              lastSpeechAt = Date.now()
+              touchLastSpeechAt()
               // VAD 未切 speech_start 时，能量续说同样解除 pause hold
-              if (pauseProbeDone && !resumedAfterPauseProbe) {
+              if (perception.isPauseProbeDone() && !resumedAfterPauseProbe) {
                 resumedAfterPauseProbe = true
                 thinkingHoldUntil = 0
               }
@@ -1629,6 +1710,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
     await initClientConfig().catch(() => {})
     refreshRuntimeParams()
 
+    // Phase D #12：并行预热摄像头，减少首帧 capture 冷启动延迟
+    const visionWarmPromise = prewarmVisionSession()
+
     await connect()
     if (!realtimeSession.isOpen()) {
       const owner = getStoredVoiceOwner()
@@ -1666,12 +1750,12 @@ export const useRealtimeStore = defineStore('realtime', () => {
 
     if (effectiveSttMode === 'local') {
       await startLocalTalk()
-      await startVisionSession().catch(() => {})
+      await visionWarmPromise.catch(() => {})
       return recording
     }
 
     await startCloudTalk()
-    await startVisionSession().catch(() => {})
+    await visionWarmPromise.catch(() => {})
     // 保持 resting，等用户说话（VAD）或再次点击（manual wake）；勿在此自动 wakeOnSpeech
     return recording
   }
@@ -1680,10 +1764,13 @@ export const useRealtimeStore = defineStore('realtime', () => {
     await initClientConfig().catch(() => {})
     await speakerVerifier.init().catch(() => {})
     await loadOwnerVoiceprint()
+    // Phase D #12：ambient 阶段后台预热摄像头
+    void prewarmVisionSession()
     await startAmbientPresenceService(ownerEmbedding)
   }
 
   async function endConversation() {
+    cancelTurnAbort()
     if (!recording && !talking.value) return
     clearSilenceWatch()
     clearTtsWatchdog()
@@ -1727,7 +1814,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
       case 'asr_partial':
         partialText.value = ev.text
         partialUpdatedAt = Date.now()
-        trackObjectIntentFromPartial(ev.text)
+        perception.trackObjectIntentFromPartial(ev.text)
         if (ev.text.trim() && !pet.isChatOpen) {
           pet.showPersistentBubble(`"${stripMoodTags(ev.text.trim())}"`)
         }
@@ -1768,7 +1855,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
         if (textViaRest) break
         replyText.value = ev.text
         syncReplyBubble(ev.text)
-        commitAssistantMessage(ev.text)
+        if (!presenceChatListenAfterTts) {
+          commitAssistantMessage(ev.text)
+        }
         if (recording) {
           if (phase !== 'agent_speaking') {
             statusText.value = 'Mochi 正在回复...'
@@ -1793,6 +1882,17 @@ export const useRealtimeStore = defineStore('realtime', () => {
         ttsPlayer.flushSegment()
         break
       case 'tts_done':
+        if (presenceChatListenAfterTts) {
+          presenceChatListenAfterTts = false
+          clearTtsWatchdog()
+          ttsPlayer.markDone(() => {
+            resetTurnTiming()
+            ttsPlayer.resetTurn()
+            enterContinuousListen('我在这儿，你说~')
+            usePetStore().syncAnimationFromState()
+          })
+          break
+        }
         if (phase !== 'resting' && phase !== 'idle') {
           finishTextTurn()
         } else {
@@ -1803,6 +1903,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
         break
       case 'turn_metrics':
         lastTurnMetrics = ev.metrics
+        recordTurnMetricsBaseline(ev.metrics)
         if (import.meta.env.DEV) {
           console.debug('[realtime] turn_metrics', ev.metrics)
           if (ev.metrics.visionMs >= 0) {
@@ -1813,14 +1914,33 @@ export const useRealtimeStore = defineStore('realtime', () => {
           }
         }
         break
+      case 'vision_pause_hint':
+        pauseHintExpression = ev.expression
+        pauseHintComposing = ev.composing || isComposingExpression(ev.expression)
+        if (pauseHintComposing && phase === 'user_speaking') {
+          thinkingHoldUntil = Math.max(
+            thinkingHoldUntil,
+            Date.now() + THINKING_HOLD_EXTEND_MS,
+          )
+          if (import.meta.env.DEV) {
+            console.debug(
+              '[turn_end] vision_pause_hint expr=%s composing=%s',
+              ev.expression,
+              pauseHintComposing,
+            )
+          }
+        }
+        break
       case 'turn_ack':
         signalTurnAck()
         if (turnStartAt <= 0) turnStartAt = Date.now()
         setPhase('processing')
         startTtsWatchdog()
         statusText.value = 'Mochi 正在想...'
+        void runThinkGlance()
         break
       case 'interrupted':
+        cancelTurnAbort()
         ttsPlayer.stop()
         clearTtsWatchdog()
         textSending = false
@@ -1871,6 +1991,10 @@ export const useRealtimeStore = defineStore('realtime', () => {
         }
         break
       case 'proactive_message':
+        if (ev.source === 'presence_chat') {
+          void deliverPresenceChat(ev.message, ev.animation)
+          break
+        }
         interruptForReminder()
         handleProactiveMessage(
           { message: ev.message, animation: ev.animation },
@@ -1946,11 +2070,16 @@ export const useRealtimeStore = defineStore('realtime', () => {
     wakeListening,
     sendTextMessage,
     loadHistory,
+    deliverPresenceChat,
     appendAssistantMessage: commitAssistantMessage,
     interruptForReminder,
     submitUtterance,
     endConversation,
     stopTalk: submitUtterance,
     lastTurnMetrics,
+    turnPhase,
+    perceptionPhase,
+    lastSpeechAtMs,
+    eventLoopLagMs,
   }
 })

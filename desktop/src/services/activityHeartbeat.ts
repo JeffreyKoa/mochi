@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { postActivityHeartbeat } from './api'
 import { getAmbientPresenceSnapshot } from './ambientMic'
-import { isTauri } from './chatWindow'
+import { isTauri, isTauriInvokeReady } from './chatWindow'
 
 const HEARTBEAT_MS = 5 * 60 * 1000
 
@@ -16,7 +16,7 @@ let timer: ReturnType<typeof setInterval> | null = null
 let running = false
 
 async function readSnapshot(): Promise<ActivitySnapshot | null> {
-  if (!isTauri()) return null
+  if (!isTauriInvokeReady()) return null
   try {
     return await invoke<ActivitySnapshot>('get_activity_snapshot')
   } catch (e) {
@@ -42,7 +42,7 @@ async function sendHeartbeat() {
 }
 
 export function startActivityHeartbeat() {
-  if (running || !isTauri()) return
+  if (running || !isTauriInvokeReady()) return
   running = true
   void sendHeartbeat()
   timer = setInterval(() => void sendHeartbeat(), HEARTBEAT_MS)

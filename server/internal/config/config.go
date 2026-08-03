@@ -79,7 +79,26 @@ type AIConfig struct {
 }
 
 type ClientConfig struct {
-	APIBase string `yaml:"api_base"`
+	APIBase          string `yaml:"api_base"`
+	LowPowerMode     bool   `yaml:"low_power_mode"`
+	EventLoopProbeMS int    `yaml:"event_loop_probe_ms"`
+}
+
+// ClientPublicConfig 暴露给桌面端的客户端开关（无密钥）。
+type ClientPublicConfig struct {
+	LowPowerMode     bool `json:"low_power_mode"`
+	EventLoopProbeMS int  `json:"event_loop_probe_ms"`
+}
+
+func (c ClientConfig) PublicClient() ClientPublicConfig {
+	ms := c.EventLoopProbeMS
+	if ms == 0 {
+		ms = 1000
+	}
+	return ClientPublicConfig{
+		LowPowerMode:     c.LowPowerMode,
+		EventLoopProbeMS: ms,
+	}
 }
 
 type RealtimeConfig struct {
@@ -282,12 +301,53 @@ type RealtimeGate struct {
 }
 
 type CompanionConfig struct {
-	ProactiveEnabled   bool  `yaml:"proactive_enabled"`
-	MaxDailyProactive  int   `yaml:"max_daily_proactive"`
-	QuietHours         []int `yaml:"quiet_hours"`
-	FollowUpEnabled    bool  `yaml:"follow_up_enabled"`
-	MorningGreeting    bool  `yaml:"morning_greeting"`
-	EveningGreeting    bool  `yaml:"evening_greeting"`
+	ProactiveEnabled          bool  `yaml:"proactive_enabled"`
+	MaxDailyProactive         int   `yaml:"max_daily_proactive"`
+	QuietHours                []int `yaml:"quiet_hours"`
+	FollowUpEnabled           bool  `yaml:"follow_up_enabled"`
+	MorningGreeting           bool  `yaml:"morning_greeting"`
+	EveningGreeting           bool  `yaml:"evening_greeting"`
+	PresenceChatEnabled       *bool `yaml:"presence_chat_enabled"`
+	PresenceChatIntervalSec   int   `yaml:"presence_chat_interval_sec"`
+	PresenceChatCooldownMin   int   `yaml:"presence_chat_cooldown_min"`
+	PresenceChatDailyMax      int   `yaml:"presence_chat_daily_max"`
+}
+
+// IsPresenceChatEnabled 服务端全局开关，未配置时默认 true。
+func (c CompanionConfig) IsPresenceChatEnabled() bool {
+	if c.PresenceChatEnabled == nil {
+		return true
+	}
+	return *c.PresenceChatEnabled
+}
+
+// CompanionPublicConfig 暴露给桌宠客户端的在场闲聊参数。
+type CompanionPublicConfig struct {
+	PresenceChatEnabled     bool `json:"presence_chat_enabled"`
+	PresenceChatIntervalSec int  `json:"presence_chat_interval_sec"`
+	PresenceChatCooldownMin int  `json:"presence_chat_cooldown_min"`
+	PresenceChatDailyMax    int  `json:"presence_chat_daily_max"`
+}
+
+func (c CompanionConfig) PublicClient() CompanionPublicConfig {
+	interval := c.PresenceChatIntervalSec
+	if interval <= 0 {
+		interval = 45
+	}
+	cooldown := c.PresenceChatCooldownMin
+	if cooldown <= 0 {
+		cooldown = 45
+	}
+	dailyMax := c.PresenceChatDailyMax
+	if dailyMax <= 0 {
+		dailyMax = 8
+	}
+	return CompanionPublicConfig{
+		PresenceChatEnabled:     c.IsPresenceChatEnabled(),
+		PresenceChatIntervalSec: interval,
+		PresenceChatCooldownMin: cooldown,
+		PresenceChatDailyMax:    dailyMax,
+	}
 }
 
 type GrowthConfig struct {
@@ -366,6 +426,14 @@ type VisionConfig struct {
 	SnapshotOnAudioEnd bool `yaml:"snapshot_on_audio_end"`
 	// P2：举物语义 detected 时客户端补拍 object_refresh 帧。
 	SnapshotOnObjectIntent bool `yaml:"snapshot_on_object_intent"`
+	// Phase B：纯信息类 Skip Tier-1 VL（weather/news/time 等）。
+	SkipTopics []string `yaml:"skip_topics"`
+	// Phase B：Skip 时指示代词/视觉动词豁免。
+	DeicticExempt bool `yaml:"deictic_exempt"`
+	// Phase B：Tier-1 预算（毫秒）。
+	Tier1FastTimeoutMS  int `yaml:"tier1_fast_timeout_ms"`
+	Tier1SlowTimeoutMS  int `yaml:"tier1_slow_timeout_ms"`
+	HardFocusBarrierMS  int `yaml:"hard_focus_barrier_ms"`
 }
 
 // VisionPublicConfig 暴露给客户端的视觉配置（无密钥）。
@@ -415,7 +483,20 @@ func (v *VisionConfig) applyDefaults() {
 		v.EarlyAnimationMinConf = 0.65
 	}
 	if v.ClassifyTimeoutMS == 0 {
-		v.ClassifyTimeoutMS = 800
+		v.ClassifyTimeoutMS = 400
+	}
+	if v.Tier1FastTimeoutMS == 0 {
+		v.Tier1FastTimeoutMS = 1000
+	}
+	if v.Tier1SlowTimeoutMS == 0 {
+		v.Tier1SlowTimeoutMS = 3000
+	}
+	if v.HardFocusBarrierMS == 0 {
+		v.HardFocusBarrierMS = 400
+	}
+	if v.Enabled && len(v.SkipTopics) == 0 {
+		v.SkipTopics = []string{"weather", "news", "time", "translate", "calculate"}
+		v.DeicticExempt = true
 	}
 	if len(v.ObjectTriggerKeywords) == 0 {
 		v.ObjectTriggerKeywords = []string{
@@ -524,6 +605,9 @@ func (c *Config) applyDefaults() {
 	if c.Client.APIBase == "" {
 		c.Client.APIBase = fmt.Sprintf("http://localhost:%d", c.Server.Port)
 	}
+	if c.Client.EventLoopProbeMS == 0 {
+		c.Client.EventLoopProbeMS = 1000
+	}
 	if c.Log.Dir == "" {
 		c.Log.Dir = "logs"
 	}
@@ -542,6 +626,15 @@ func (c *CompanionConfig) applyDefaults() {
 	}
 	if len(c.QuietHours) == 0 {
 		c.QuietHours = []int{23, 8}
+	}
+	if c.PresenceChatIntervalSec == 0 {
+		c.PresenceChatIntervalSec = 45
+	}
+	if c.PresenceChatCooldownMin == 0 {
+		c.PresenceChatCooldownMin = 45
+	}
+	if c.PresenceChatDailyMax == 0 {
+		c.PresenceChatDailyMax = 8
 	}
 }
 
@@ -715,7 +808,7 @@ func (r *RealtimeConfig) applyDefaults() {
 	}
 	if r.ThinkingFiller.Enabled {
 		if r.ThinkingFiller.ThresholdMS == 0 {
-			r.ThinkingFiller.ThresholdMS = 800
+			r.ThinkingFiller.ThresholdMS = 500
 		}
 	}
 	if r.Dashscope.Region == "" {
@@ -777,7 +870,7 @@ func (p *RealtimePipeline) applyDefaults() {
 		p.TTSMinChars = 8
 	}
 	if p.TTSFirstMinChars == 0 {
-		p.TTSFirstMinChars = 3
+		p.TTSFirstMinChars = 2
 	}
 	if p.TTSWeakPunctMinChars == 0 {
 		p.TTSWeakPunctMinChars = 8

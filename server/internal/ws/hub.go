@@ -34,6 +34,7 @@ type pendingItem struct {
 	ReminderID uint64 `json:"reminder_id,omitempty"`
 	Message    string `json:"message"`
 	Animation  string `json:"animation"`
+	Source     string `json:"source,omitempty"`
 }
 
 type Connection struct {
@@ -95,6 +96,11 @@ func (h *Hub) SendProactive(userID uint64, message, animation string) bool {
 	return h.sendProactive(userID, pendingItem{Message: message, Animation: animation})
 }
 
+// SendProactiveWithSource 推送主动消息，source 供客户端区分在场闲聊/提醒等。
+func (h *Hub) SendProactiveWithSource(userID uint64, message, animation, source string) bool {
+	return h.sendProactive(userID, pendingItem{Message: message, Animation: animation, Source: source})
+}
+
 func (h *Hub) SendProactiveReminder(userID uint64, reminderID uint64, message, animation string) bool {
 	return h.sendProactive(userID, pendingItem{
 		ReminderID: reminderID,
@@ -104,12 +110,16 @@ func (h *Hub) SendProactiveReminder(userID uint64, reminderID uint64, message, a
 }
 
 func (h *Hub) sendProactive(userID uint64, item pendingItem) bool {
+	data := map[string]string{
+		"message":   item.Message,
+		"animation": item.Animation,
+	}
+	if item.Source != "" {
+		data["source"] = item.Source
+	}
 	msg := Message{
 		Type: "proactive_message",
-		Data: map[string]string{
-			"message":   item.Message,
-			"animation": item.Animation,
-		},
+		Data: data,
 		Timestamp: time.Now().Unix(),
 	}
 	var onSent func()

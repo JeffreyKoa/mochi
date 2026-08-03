@@ -29,7 +29,8 @@ func TestResponseGate_FastPath(t *testing.T) {
 	}{
 		{"", false, "empty"},
 		{"好", true, "fastpath:address:"},
-		{"今天天气怎么样？", true, "fastpath:question_mark"},
+		{"今天天气怎么样？", true, "fastpath:"},
+		{"深圳天气怎么样", true, "fastpath:"},
 		{"我准备吃午饭了", true, "fastpath:share:"},
 		{"刚才觉得好累啊", true, "fastpath:share:"},
 	}

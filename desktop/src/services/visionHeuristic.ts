@@ -23,6 +23,30 @@ const OBJECT_QUERY_HINTS = [
   'what\'s this',
 ]
 
+/**
+ * 场景/窗外类口语（硬焦点，submit 前短窗口发帧）。
+ */
+const SCENE_QUERY_HINTS = [
+  '窗外',
+  '外面',
+  '看看外',
+  '你看外',
+  '房间',
+  '环境',
+  '周围',
+]
+
+/** 硬焦点：object/scene/指物，submit 前需尽量发出 JPEG（服务端 400ms Barrier）。 */
+export function needsHardFocusFrame(text: string): boolean {
+  return looksLikeObjectQuery(text) || looksLikeSceneQuery(text)
+}
+
+export function looksLikeSceneQuery(text: string): boolean {
+  const t = text.trim().toLowerCase()
+  if (!t) return false
+  return SCENE_QUERY_HINTS.some((h) => t.includes(h.toLowerCase()))
+}
+
 /** 单字触发需与上下文组合，避免误触（如「这个好」）。 */
 const OBJECT_QUERY_CHARS = ['这', '看', '啥', '物']
 

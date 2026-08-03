@@ -264,6 +264,7 @@ export interface UserPreferences {
   lunch_hour?: number
   dinner_hour?: number
   wellness_daily_max?: number
+  presence_chat_enabled?: boolean
   learning_prefs?: LearningPreferences
 }
 
@@ -304,6 +305,31 @@ export async function updateLearningPreferences(body: LearningPreferences) {
     `${getApiBase()}/api/v1/user/learning-preferences`,
     {
       method: 'PUT',
+      headers: authHeaders(),
+      body: JSON.stringify(body),
+    },
+  )
+  return data
+}
+
+export interface PresenceChatResponse {
+  ok: boolean
+  message?: string
+  animation?: string
+  delivered?: boolean
+  reason?: string
+}
+
+export async function postPresenceChat(body: {
+  face_match?: boolean
+  face_score?: number
+  trigger?: 'vision' | 'audio'
+  last_interaction_hint_sec?: number
+}) {
+  const { data } = await request<PresenceChatResponse>(
+    `${getApiBase()}/api/v1/companion/presence-chat`,
+    {
+      method: 'POST',
       headers: authHeaders(),
       body: JSON.stringify(body),
     },

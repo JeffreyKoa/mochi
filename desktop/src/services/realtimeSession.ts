@@ -18,7 +18,8 @@ export type RealtimeEvent =
   | { type: 'turn_metrics'; metrics: TurnMetrics }
   | { type: 'animation'; state: string }
   | { type: 'barge_in_config'; echoGuardMs: number; peakThreshold: number; bargeInMs: number; aecEnabled: boolean }
-  | { type: 'proactive_message'; message: string; animation?: string; reminderId?: number }
+  | { type: 'vision_pause_hint'; expression: string; composing: boolean; tier: string }
+  | { type: 'proactive_message'; message: string; animation?: string; reminderId?: number; source?: string }
   | { type: 'error'; code: string; message: string }
   | { type: 'connected' }
   | { type: 'disconnected' }
@@ -135,7 +136,8 @@ export class RealtimeSession {
     jpegBase64: string,
     options?: {
       seq?: number
-      reason?: 'speech_start' | 'audio_end' | 'object_refresh' | 'pause_probe'
+      reason?: 'speech_start' | 'audio_end' | 'object_refresh' | 'pause_probe' | 'glance'
+      partialText?: string
       faceProbe?: { match: boolean; score: number; detected: boolean }
     },
   ): boolean {
@@ -143,12 +145,14 @@ export class RealtimeSession {
       jpeg: string
       seq: number
       reason?: string
+      partial_text?: string
       face_probe?: { match: boolean; score: number; detected: boolean }
     } = {
       jpeg: jpegBase64,
       seq: options?.seq ?? Date.now(),
     }
     if (options?.reason) payload.reason = options.reason
+    if (options?.partialText) payload.partial_text = options.partialText
     if (options?.faceProbe) payload.face_probe = options.faceProbe
     return this.send('vision_frame', payload)
   }
@@ -163,6 +167,11 @@ export class RealtimeSession {
       data.voice_reply = true
     }
     return this.send('text_input', data)
+  }
+
+  /** 仅 TTS 播报已有文案（在场闲聊等，不走 LLM）。 */
+  sendSpeakOnly(text: string): boolean {
+    return this.send('speak_only', { text })
   }
 
   async sendClientCaps(): Promise<boolean> {
@@ -294,12 +303,21 @@ export class RealtimeSession {
           aecEnabled: Boolean(data.aec_enabled),
         })
         break
+      case 'vision_pause_hint':
+        this.emit({
+          type: 'vision_pause_hint',
+          expression: String(data.expression ?? ''),
+          composing: Boolean(data.composing),
+          tier: String(data.tier ?? 'tier0'),
+        })
+        break
       case 'proactive_message':
         this.emit({
           type: 'proactive_message',
           message: String(data.message ?? ''),
           animation: typeof data.animation === 'string' ? data.animation : undefined,
           reminderId: typeof data.reminder_id === 'number' ? data.reminder_id : undefined,
+          source: typeof data.source === 'string' ? data.source : undefined,
         })
         break
       case 'error':

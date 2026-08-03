@@ -90,7 +90,7 @@ func (s *Service) Describe(ctx context.Context, jpeg []byte, focus Focus, sessio
 	return hint
 }
 
-// BuildRouteInput 构造路由输入（含配置化触发词）。
+// BuildRouteInput 构造路由输入（含配置化触发词与 Skip 规则）。
 func (s *Service) BuildRouteInput(userText, intent string, isVoiceTurn, hasFrame bool) RouteInput {
 	return RouteInput{
 		UserText:      userText,
@@ -100,7 +100,29 @@ func (s *Service) BuildRouteInput(userText, intent string, isVoiceTurn, hasFrame
 		HasFrame:      hasFrame,
 		ObjectKeys:    s.cfg.ObjectTriggerKeywords,
 		SceneKeys:     s.cfg.SceneTriggerKeywords,
+		SkipTopics:    s.cfg.SkipTopics,
+		DeicticExempt: s.deicticExemptOn(),
 	}
+}
+
+// deicticExemptOn 代词豁免默认开启（Phase B）；yaml deictic_exempt: true 显式开启。
+func (s *Service) deicticExemptOn() bool {
+	if s == nil {
+		return true
+	}
+	if s.cfg.DeicticExempt {
+		return true
+	}
+	// 配置了 skip_topics 时默认豁免，避免「看看窗外天气」被 Skip
+	return len(s.cfg.SkipTopics) > 0
+}
+
+// ShouldSkipTier1 是否跳过本 turn 的 Tier-1 VL。
+func (s *Service) ShouldSkipTier1(text string) bool {
+	if s == nil || !s.Enabled() {
+		return true
+	}
+	return ShouldSkipTier1(text, s.cfg.SkipTopics, s.deicticExemptOn())
 }
 
 // RouteAndDescribe 路由 + 分析合一（便于 pipeline 调用）。
@@ -220,6 +242,40 @@ func mergeOwnerFaceHints(base, refined Hint) Hint {
 	return out
 }
 
+// ResolveRefinePlan 预计算二次 VL 计划（Barrier 前置，Phase B）。
+func (s *Service) ResolveRefinePlan(userText string, faceHint Hint, visualTask string, faceTextClash bool) RefinePlan {
+	if s != nil && s.ContextualPlannerEnabled() {
+		plan := PlanContextual(userText, faceHint, visualTask, faceTextClash)
+		if !plan.NeedSecondVL {
+			kwPlan := PlanRefine(userText, s.cfg.ObjectTriggerKeywords, s.cfg.SceneTriggerKeywords)
+			if kwPlan.NeedSecondVL {
+				return kwPlan
+			}
+		}
+		return plan
+	}
+	if s == nil {
+		return RefinePlan{}
+	}
+	return PlanRefine(userText, s.cfg.ObjectTriggerKeywords, s.cfg.SceneTriggerKeywords)
+}
+
+// ObjectKeywords 返回举物触发词。
+func (s *Service) ObjectKeywords() []string {
+	if s == nil {
+		return nil
+	}
+	return s.cfg.ObjectTriggerKeywords
+}
+
+// SceneKeywords 返回场景触发词。
+func (s *Service) SceneKeywords() []string {
+	if s == nil {
+		return nil
+	}
+	return s.cfg.SceneTriggerKeywords
+}
+
 // PrefetchOnFrame 是否在 vision_frame 到达时预分析。
 func (s *Service) PrefetchOnFrame() bool {
 	return s != nil && s.Enabled() && s.cfg.PrefetchOnFrame
@@ -251,12 +307,41 @@ func (s *Service) MinVisualConf() float64 {
 	return s.cfg.MinExpressionConfidence
 }
 
-// WaitTimeout VL 等待/HTTP 超时。
+// WaitTimeout VL HTTP 默认超时（Tier-1 慢路径上限）。
 func (s *Service) WaitTimeout() time.Duration {
-	if s == nil || s.cfg.TimeoutMS <= 0 {
+	if s == nil || s.cfg.Tier1SlowTimeoutMS <= 0 {
+		if s != nil && s.cfg.TimeoutMS > 0 {
+			return time.Duration(s.cfg.TimeoutMS) * time.Millisecond
+		}
 		return 5 * time.Second
 	}
-	return time.Duration(s.cfg.TimeoutMS) * time.Millisecond
+	return time.Duration(s.cfg.Tier1SlowTimeoutMS) * time.Millisecond
+}
+
+// OwnerFaceWaitTimeout 软依赖 owner_face 最多等待（Tier-1 快）。
+func (s *Service) OwnerFaceWaitTimeout() time.Duration {
+	if s == nil || s.cfg.Tier1FastTimeoutMS <= 0 {
+		return time.Second
+	}
+	return time.Duration(s.cfg.Tier1FastTimeoutMS) * time.Millisecond
+}
+
+// HardFocusBarrier 硬依赖焦点 Barrier 等待 JPEG（毫秒）。
+func (s *Service) HardFocusBarrier() time.Duration {
+	if s == nil || s.cfg.HardFocusBarrierMS <= 0 {
+		return 400 * time.Millisecond
+	}
+	return time.Duration(s.cfg.HardFocusBarrierMS) * time.Millisecond
+}
+
+// DescribeWithBudget 带独立超时预算的 VL 调用（硬/快路径）。
+func (s *Service) DescribeWithBudget(ctx context.Context, jpeg []byte, focus Focus, sessionID string, budget time.Duration) Hint {
+	if budget > 0 {
+		c, cancel := context.WithTimeout(ctx, budget)
+		defer cancel()
+		ctx = c
+	}
+	return s.Describe(ctx, jpeg, focus, sessionID)
 }
 
 type vlFaceJSON struct {

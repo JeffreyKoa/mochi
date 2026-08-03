@@ -35,6 +35,7 @@ import {
 } from '@/services/voiceSessionOwner'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { playWakeGreeting, getWakeGreetingText } from '@/services/wakeGreeting'
 
 const { sidePanelOpen = false } = defineProps<{ sidePanelOpen?: boolean }>()
 
@@ -59,7 +60,13 @@ const lastHeadlessBubbleIndex = ref(0)
 const DRAG_THRESHOLD = 5
 
 /** 单击 Mochi 唤醒时的唯一提示语；之后仅展示 ASR 实时识别文字。 */
-const PET_WAKE_GREETING = '在呢，主人！'
+const PET_WAKE_GREETING = getWakeGreetingText()
+
+/** 即时唤醒反馈：气泡 + 本地 TTS，不等待 WS。 */
+function giveWakeFeedback() {
+  playWakeGreeting()
+  pet.showPersistentBubble(PET_WAKE_GREETING)
+}
 
 /** manual wake 失败时给用户可见反馈（避免「点了没反应」）。 */
 async function showWakeFailure(reason: string | undefined) {
@@ -270,6 +277,8 @@ onMounted(async () => {
     try {
       const restored = await restoreWindowPosition(dragWindow)
       if (!restored) await dragWindow.center()
+      // 恢复上次坐标后仍须校验是否在可见区域内（换显示器/分辨率后可能跑到屏外）
+      await ensurePetWindowVisible()
     } catch {
       try {
         await dragWindow.center()
@@ -507,6 +516,8 @@ function openChatFromMenu() {
 
 async function startVoiceInteraction() {
   roamer?.pause()
+  // 点击即反馈，≤300ms 本地 TTS，不阻塞后续 connect
+  giveWakeFeedback()
 
   await initClientConfig().catch(() => {})
   if (!getClientConfig().realtimeEnabled) {
@@ -566,6 +577,7 @@ async function handlePetTap() {
 
   if (rt.talking) {
     if (rt.resting) {
+      giveWakeFeedback()
       const wake = await rt.wakeListening({ manual: true })
       if (wake.ok) {
         pet.showPersistentBubble(PET_WAKE_GREETING)

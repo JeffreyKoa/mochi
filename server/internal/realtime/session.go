@@ -2,6 +2,7 @@ package realtime
 
 import (
 	"context"
+	"log"
 	"sync"
 	"time"
 
@@ -31,6 +32,10 @@ type Session struct {
 	pipelineMu     sync.Mutex
 	pipelineCancel context.CancelFunc
 
+	visionWorkMu  sync.Mutex
+	visionCancel  context.CancelFunc
+	visionWorkCtx context.Context
+
 	turnLat        *TurnLatency
 	turnAudioBytes int
 	preferMP3      bool
@@ -53,6 +58,12 @@ type Session struct {
 	// P2：客户端 face_probe 推断的视觉说话人 owner|unknown
 	visualSpeaker   string
 	visualSpeakerAt time.Time
+
+	// Phase C：THINK 阶段 Tier-0 GLANCE（不打断 LLM）
+	glanceMu         sync.Mutex
+	pendingGlance    vision.Hint
+	glanceNextTurn   vision.Hint
+	llmStreaming     bool
 
 	onStateChange func(SessionState)
 }
@@ -120,6 +131,7 @@ func (s *Session) CancelPipeline() {
 		s.pipelineCancel()
 		s.pipelineCancel = nil
 	}
+	s.CancelVisionWork()
 }
 
 // EndPipeline clears the pipeline cancel handle after normal completion.
@@ -319,6 +331,8 @@ func (s *Session) WaitForVisualHint(ctx context.Context, timeout time.Duration) 
 
 // ClearTurnMedia 新一轮 utterance 开始时清除音视频缓存。
 func (s *Session) ClearTurnMedia() {
+	s.CancelVisionWork()
+	s.ResetGlanceTurn()
 	s.mu.Lock()
 	s.turnPCM = nil
 	s.turnVisionJPEG = nil
@@ -328,6 +342,71 @@ func (s *Session) ClearTurnMedia() {
 	s.visualHint = vision.EmptyHint()
 	s.visionPrefetching = false
 	s.mu.Unlock()
+}
+
+// ResetVisionWork 新一轮 LISTEN（speech_start）时绑定可取消的视觉 goroutine 上下文。
+func (s *Session) ResetVisionWork(parent context.Context) context.Context {
+	s.visionWorkMu.Lock()
+	defer s.visionWorkMu.Unlock()
+	if s.visionCancel != nil {
+		s.visionCancel()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	s.visionCancel = cancel
+	s.visionWorkCtx = ctx
+	return ctx
+}
+
+// CancelVisionWork 打断/Skip/barge-in 时取消在途 Tier-1 VL。
+func (s *Session) CancelVisionWork() {
+	s.visionWorkMu.Lock()
+	defer s.visionWorkMu.Unlock()
+	if s.visionCancel != nil {
+		s.visionCancel()
+		s.visionCancel = nil
+	}
+	s.visionWorkCtx = nil
+}
+
+// VisionWorkCtx 返回当前 turn 视觉 ctx；未初始化时用 fallback。
+func (s *Session) VisionWorkCtx(fallback context.Context) context.Context {
+	s.visionWorkMu.Lock()
+	defer s.visionWorkMu.Unlock()
+	if s.visionWorkCtx != nil {
+		return s.visionWorkCtx
+	}
+	return fallback
+}
+
+// LastVisionReason 返回最近一帧 reason。
+func (s *Session) LastVisionReason() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastVisionReason
+}
+
+// WaitForVisionFrameReason 硬焦点 Barrier：等待 audio_end / object_refresh 帧。
+func (s *Session) WaitForVisionFrameReason(ctx context.Context, reasons []string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	want := make(map[string]bool, len(reasons))
+	for _, r := range reasons {
+		want[r] = true
+	}
+	for time.Now().Before(deadline) {
+		s.mu.Lock()
+		reason := s.lastVisionReason
+		hasFrame := len(s.turnVisionJPEG) > 0
+		s.mu.Unlock()
+		if hasFrame && (len(want) == 0 || want[reason]) {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return s.HasVisionFrame()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	return s.HasVisionFrame()
 }
 
 // SetEchoGuardMS 设置本会话 effective echo guard（client_caps AEC 握手）。
@@ -396,4 +475,57 @@ func (s *Session) VisualSpeakerForPrompt(ownerRecentMS int) string {
 		return ""
 	}
 	return s.visualSpeaker
+}
+
+// SetLLMStreaming 标记当前 turn LLM 是否已开始出 token（GLANCE 消费规则 §2.5）。
+func (s *Session) SetLLMStreaming(v bool) {
+	s.glanceMu.Lock()
+	s.llmStreaming = v
+	s.glanceMu.Unlock()
+}
+
+// LLMStreaming 是否已 streaming。
+func (s *Session) LLMStreaming() bool {
+	s.glanceMu.Lock()
+	defer s.glanceMu.Unlock()
+	return s.llmStreaming
+}
+
+// ApplyGlanceHint Tier-0 GLANCE：LLM 已 streaming 则仅写入下轮，不重生成。
+func (s *Session) ApplyGlanceHint(h vision.Hint) {
+	s.glanceMu.Lock()
+	defer s.glanceMu.Unlock()
+	if s.llmStreaming {
+		s.glanceNextTurn = h
+		log.Printf("[vision][glance] store=next_turn focus=%s expr=%s", h.Focus, h.UserExpression)
+		return
+	}
+	s.pendingGlance = h
+	log.Printf("[vision][glance] store=pending focus=%s expr=%s", h.Focus, h.UserExpression)
+}
+
+// TakePendingGlance 取出尚未消费的本 turn GLANCE（TTS 首句前可影响 prosody）。
+func (s *Session) TakePendingGlance() vision.Hint {
+	s.glanceMu.Lock()
+	defer s.glanceMu.Unlock()
+	h := s.pendingGlance
+	s.pendingGlance = vision.EmptyHint()
+	return h
+}
+
+// TakeGlanceForNextTurn 取出写入下轮记忆的 GLANCE。
+func (s *Session) TakeGlanceForNextTurn() vision.Hint {
+	s.glanceMu.Lock()
+	defer s.glanceMu.Unlock()
+	h := s.glanceNextTurn
+	s.glanceNextTurn = vision.EmptyHint()
+	return h
+}
+
+// ResetGlanceTurn 新 turn 开始时清理 GLANCE 状态。
+func (s *Session) ResetGlanceTurn() {
+	s.glanceMu.Lock()
+	s.pendingGlance = vision.EmptyHint()
+	s.llmStreaming = false
+	s.glanceMu.Unlock()
 }

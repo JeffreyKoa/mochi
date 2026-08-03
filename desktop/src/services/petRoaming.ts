@@ -38,11 +38,25 @@ export function loadSavedPosition(): SavedPosition | null {
     const raw = localStorage.getItem(POSITION_KEY)
     if (!raw) return null
     const parsed = JSON.parse(raw) as SavedPosition
-    if (typeof parsed.x === 'number' && typeof parsed.y === 'number') return parsed
+    if (typeof parsed.x === 'number' && typeof parsed.y === 'number') {
+      if (!isPlausibleWindowPosition(parsed.x, parsed.y)) {
+        localStorage.removeItem(POSITION_KEY)
+        return null
+      }
+      return parsed
+    }
   } catch {
     // ignore
   }
   return null
+}
+
+/** Windows 最小化/异常状态时坐标常为 -32000 量级，不可恢复。 */
+export function isPlausibleWindowPosition(x: number, y: number): boolean {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return false
+  if (x < -4000 || y < -4000) return false
+  if (x > 20000 || y > 20000) return false
+  return true
 }
 
 export async function restoreWindowPosition(win: TauriWindow): Promise<boolean> {
@@ -54,6 +68,7 @@ export async function restoreWindowPosition(win: TauriWindow): Promise<boolean> 
 
 export async function saveWindowPosition(win: TauriWindow): Promise<void> {
   const pos = await win.outerPosition()
+  if (!isPlausibleWindowPosition(pos.x, pos.y)) return
   localStorage.setItem(POSITION_KEY, JSON.stringify({ x: pos.x, y: pos.y }))
 }
 

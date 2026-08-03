@@ -75,6 +75,7 @@ func (h *Handler) UpdatePreferences(c *gin.Context) {
 	}
 	var req struct {
 		ProactiveEnabled        *bool   `json:"proactive_enabled"`
+		PresenceChatEnabled     *bool   `json:"presence_chat_enabled"`
 		QuietHoursStart         *int    `json:"quiet_hours_start"`
 		QuietHoursEnd           *int    `json:"quiet_hours_end"`
 		MorningGreeting         *bool   `json:"morning_greeting"`
@@ -96,6 +97,7 @@ func (h *Handler) UpdatePreferences(c *gin.Context) {
 	}
 	prefs, err := h.svc.UpdatePreferences(userID.(uint64), UpdatePreferencesInput{
 		ProactiveEnabled:        req.ProactiveEnabled,
+		PresenceChatEnabled:     req.PresenceChatEnabled,
 		QuietHoursStart:         req.QuietHoursStart,
 		QuietHoursEnd:           req.QuietHoursEnd,
 		MorningGreeting:         req.MorningGreeting,

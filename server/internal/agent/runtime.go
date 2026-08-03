@@ -635,6 +635,13 @@ func (r *Runtime) Turn(ctx context.Context, input TurnInput) (TurnOutput, error)
 			Role:    "system",
 			Content: fmt.Sprintf("【系统指令 - 主动关怀】结合当前状态与已知依据，以当前风格写下一句主动关心/提醒主人（无需称呼你好，字数限制在20字内，口语自然；无依据不要编造）。指令内容：%s", input.Message),
 		})
+	} else if input.TriggerType == "presence_smalltalk" {
+		messages = append(messages, ai.Message{
+			Role: "system",
+			Content: "【系统指令 - 在场闲聊】主人刚刚出现在你面前。结合记忆、当前时间、最近聊过的事，" +
+				"主动找一个轻松话题开聊（1-2句，口语，像朋友搭话，末尾留接话空间）。" +
+				"禁止「想你了」「好久不见」等套话；无依据不要编造。只输出正文。",
+		})
 	} else if input.Message != "" {
 		messages = append(messages, ai.Message{Role: "user", Content: input.Message})
 	}
@@ -900,14 +907,20 @@ func (r *Runtime) postProcess(ctx context.Context, petID uint64, userMsg, petRep
 		return
 	}
 
-	r.db.Create(&models.ChatMessage{PetID: petID, Role: "user", Content: userMsg})
+	if strings.TrimSpace(userMsg) != "" {
+		r.db.Create(&models.ChatMessage{PetID: petID, Role: "user", Content: userMsg})
+	}
 	r.db.Create(&models.ChatMessage{PetID: petID, Role: "assistant", Content: petReply})
 
-	_ = r.memory.AddShortTerm(ctx, petID, "user", userMsg)
+	if strings.TrimSpace(userMsg) != "" {
+		_ = r.memory.AddShortTerm(ctx, petID, "user", userMsg)
+	}
 	_ = r.memory.AddShortTerm(ctx, petID, "assistant", petReply)
 
-	extractPrompt := prompt.MemoryExtractPrompt(userMsg, petReply)
-	go r.memory.ExtractAndStore(ctx, petID, userMsg, petReply, extractPrompt)
+	if strings.TrimSpace(userMsg) != "" {
+		extractPrompt := prompt.MemoryExtractPrompt(userMsg, petReply)
+		go r.memory.ExtractAndStore(ctx, petID, userMsg, petReply, extractPrompt)
+	}
 
 	_ = r.bond.RecordChatTurn(ctx, petID, quickHint.NeedsEmpathy)
 	_ = r.bond.UpdateMood(ctx, petID, quickHint.UserMood, quickHint.Intent)

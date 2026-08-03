@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mochi-ai/server/internal/agent"
 	"github.com/mochi-ai/server/internal/config"
 )
 
@@ -90,6 +91,10 @@ func (g *ResponseGate) Decide(ctx context.Context, text, petName string) (bool, 
 		if strings.Contains(t, w) {
 			return true, "fastpath:address:" + w
 		}
+	}
+	// Phase C：信息类（天气/新闻等）零延迟放行 + 后续 LLM 并行联网搜索
+	if agent.NeedsWebSearch(t) {
+		return true, "fastpath:info_query"
 	}
 
 	runes := []rune(t)

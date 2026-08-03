@@ -54,7 +54,7 @@ import {
   visionSession,
 } from '@/services/visionCapture'
 import { hideSidePanelPopup, isTauri } from '@/services/chatWindow'
-import { listenTasksRefresh } from '@/services/proactiveSync'
+import { refreshPresenceChatPrefs } from '@/services/presenceChat'
 import {
   micPermissionDeniedMessage,
   resetTauriMicrophonePermission,
@@ -71,6 +71,7 @@ const petNameDraft = ref('')
 const savingName = ref(false)
 const nameError = ref('')
 const proactiveEnabled = ref(true)
+const presenceChatEnabled = ref(true)
 const morningGreeting = ref(true)
 const followUpEnabled = ref(true)
 const reminderVoice = ref(true)
@@ -222,6 +223,7 @@ function syncReminderVoiceLocal() {
 
 function applyPreferences(prefs: Awaited<ReturnType<typeof getUserPreferences>>) {
   proactiveEnabled.value = prefs.proactive_enabled !== false
+  presenceChatEnabled.value = prefs.presence_chat_enabled !== false
   quietStart.value = prefs.quiet_hours_start ?? 23
   quietEnd.value = prefs.quiet_hours_end ?? 8
   morningGreeting.value = prefs.morning_greeting !== false
@@ -277,6 +279,11 @@ async function savePref(patch: Parameters<typeof updateUserPreferences>[0]) {
 
 async function onProactiveToggle() {
   await savePref({ proactive_enabled: !proactiveEnabled.value })
+}
+
+async function onPresenceChatToggle() {
+  await savePref({ presence_chat_enabled: !presenceChatEnabled.value })
+  refreshPresenceChatPrefs()
 }
 
 async function onMorningToggle() {
@@ -1027,6 +1034,19 @@ onUnmounted(() => {
                 {{ proactiveEnabled ? '开' : '关' }}
               </button>
             </label>
+            <label class="toggle-row">
+              <span>看到我时聊聊</span>
+              <button
+                type="button"
+                class="toggle"
+                :class="{ on: presenceChatEnabled }"
+                :disabled="savingProactive || !proactiveEnabled"
+                @click="onPresenceChatToggle"
+              >
+                {{ presenceChatEnabled ? '开' : '关' }}
+              </button>
+            </label>
+            <p class="hint">摄像头确认你在面前时，Mochi 会主动找话题跟你聊（不是「想你了」那套）</p>
             <label class="toggle-row">
               <span>早安问候</span>
               <button

@@ -41,6 +41,8 @@ export interface TurnEndSignals {
   silenceMsConfig: number
   /** 3s pause_probe 之后用户是否已继续说话（续说后不再按「句中停顿」延长） */
   resumedAfterPauseProbe?: boolean
+  /** Tier-0 vision_pause_hint：服务端推断仍在组织语言 */
+  pauseHintComposing?: boolean
   now?: number
 }
 
@@ -97,6 +99,13 @@ export function evaluateTurnEnd(signals: TurnEndSignals): TurnEndDecision {
 
   // >3s 停顿且尚未续说：视为句中组织语言，延长等待（仅 pause_probe 后、续说前）
   const midPause = silence >= PAUSE_PROBE_MS && !signals.resumedAfterPauseProbe
+  if (midPause && signals.pauseHintComposing && unfinished) {
+    return {
+      ready: false,
+      reason: 'pause_hint_composing',
+      extendHoldMs: THINKING_HOLD_EXTEND_MS,
+    }
+  }
   if (midPause && unfinished) {
     return {
       ready: false,

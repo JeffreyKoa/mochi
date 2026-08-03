@@ -44,7 +44,7 @@ func TestRealtimePipelineApplyDefaults(t *testing.T) {
 	if p.TTSMinChars != 8 {
 		t.Fatalf("TTSMinChars=%d", p.TTSMinChars)
 	}
-	if p.TTSFirstMinChars != 3 {
+	if p.TTSFirstMinChars != 2 {
 		t.Fatalf("TTSFirstMinChars=%d", p.TTSFirstMinChars)
 	}
 	if p.TTSForceFlushChars != 24 {

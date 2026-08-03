@@ -9,12 +9,16 @@
  */
 
 import { getClientConfig } from '@/config'
+import { getVisionCaptureMinIntervalMs } from '@/services/lowPowerMode'
 import { isTauri } from '@/services/chatWindow'
 
 const VISION_JPEG_QUALITY = 0.85
 const WARMUP_MS = 180
 
-export type VisionFrameReason = 'speech_start' | 'audio_end' | 'object_refresh' | 'pause_probe'
+/** 上次成功抓拍时间戳，低配 5fps 节流用。 */
+let lastSnapshotAtMs = 0
+
+export type VisionFrameReason = 'speech_start' | 'audio_end' | 'object_refresh' | 'pause_probe' | 'glance'
 
 export type VisionStartResult = 'ok' | 'denied' | 'unavailable' | 'skipped'
 
@@ -188,11 +192,19 @@ export class VisionSession {
   /** 从已 warm 的流抓拍 JPEG；未 start 返回 null。 */
   async grabSnapshot(): Promise<ArrayBuffer | null> {
     if (!this.isActive() || !this.video) return null
+    const minInterval = getVisionCaptureMinIntervalMs()
+    if (minInterval > 0) {
+      const elapsed = Date.now() - lastSnapshotAtMs
+      if (lastSnapshotAtMs > 0 && elapsed < minInterval) {
+        await new Promise((r) => setTimeout(r, minInterval - elapsed))
+      }
+    }
     if (this.warming) {
       await this.warming.catch(() => {})
     }
     const buf = await snapshotFromVideo(this.video)
     if (buf) {
+      lastSnapshotAtMs = Date.now()
       console.info('[vision] snapshot_ok bytes=%d', buf.byteLength)
     }
     return buf
@@ -220,6 +232,15 @@ export const visionSession = new VisionSession()
 /** 启动会话级摄像头（startTalk 后调用）。 */
 export async function startVisionSession(): Promise<VisionStartResult> {
   return visionSession.start()
+}
+
+/**
+ * Phase D #12：后台预热摄像头 session（登录/ambient 或 startTalk 并行调用）。
+ * 幂等；失败不抛错。
+ */
+export function prewarmVisionSession(): Promise<VisionStartResult> {
+  if (!isVisionSessionWanted()) return Promise.resolve('skipped')
+  return startVisionSession().catch(() => 'unavailable' as VisionStartResult)
 }
 
 /** 结束会话级摄像头（endConversation / pauseVoiceForText 调用）。 */

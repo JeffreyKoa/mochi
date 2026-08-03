@@ -62,6 +62,21 @@ func TestRouteFocus_SkipWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestRouteFocus_SkipWeatherTopic(t *testing.T) {
+	topics := []string{"weather"}
+	f := RouteFocus(RouteInput{
+		UserText:      "深圳天气怎么样",
+		IsVoiceTurn:   true,
+		VisionEnabled: true,
+		HasFrame:      true,
+		SkipTopics:    topics,
+		DeicticExempt: true,
+	})
+	if f != FocusSkip {
+		t.Fatalf("expected skip for weather, got %s", f)
+	}
+}
+
 func TestRouteFocus_SceneNotMatchedOnChat(t *testing.T) {
 	f := RouteFocus(RouteInput{
 		UserText:      "今天天气不错",

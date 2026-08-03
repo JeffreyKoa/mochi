@@ -2,6 +2,7 @@ use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Size, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    WindowEvent,
 };
 
 mod activity;
@@ -9,6 +10,8 @@ mod webview_permissions;
 
 const PET_W: f64 = 280.0;
 const PET_H: f64 = 280.0;
+const LOGIN_W: f64 = 360.0;
+const LOGIN_H: f64 = 420.0;
 const CHAT_W: f64 = 320.0;
 const CHAT_H: f64 = 440.0;
 const CHAT_GAP: f64 = 8.0;
@@ -21,6 +24,8 @@ static LAST_CHAT_SYNC: Mutex<Option<Instant>> = Mutex::new(None);
 const CHAT_SYNC_MIN_MS: u64 = 100;
 
 static LAST_ON_LEFT: AtomicBool = AtomicBool::new(false);
+/// 防止 recover / focus 事件重入导致 WebView2 崩溃
+static PET_RECOVER_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
 fn resolve_pet_window(app: &AppHandle, label: Option<&str>) -> Option<WebviewWindow> {
     if let Some(name) = label {
@@ -32,27 +37,75 @@ fn resolve_pet_window(app: &AppHandle, label: Option<&str>) -> Option<WebviewWin
         .or_else(|| app.get_webview_window("main"))
 }
 
-fn show_pet_window(app: &AppHandle) {
-    let Some(window) = resolve_pet_window(app, None) else {
-        eprintln!("[tray] pet window not found");
-        return;
-    };
+/// Windows 最小化时坐标常为 -32000，Tauri center/unminimize 可能无效。
+#[cfg(windows)]
+fn win32_show_restore(window: &WebviewWindow) {
+    const SW_RESTORE: i32 = 9;
+    extern "system" {
+        fn ShowWindow(hWnd: isize, nCmdShow: i32) -> i32;
+    }
+    if let Ok(hwnd) = window.hwnd() {
+        unsafe {
+            ShowWindow(hwnd.0 as isize, SW_RESTORE);
+        }
+    }
+}
 
-    if let Err(e) = window.unminimize() {
-        eprintln!("[tray] unminimize: {e}");
+#[cfg(not(windows))]
+fn win32_show_restore(_window: &WebviewWindow) {}
+
+fn is_window_stuck(window: &WebviewWindow) -> bool {
+    match (window.outer_position(), window.outer_size()) {
+        (Ok(p), Ok(s)) => p.x < -4000 || p.y < -4000 || s.width < 120 || s.height < 120,
+        _ => true,
     }
-    if let Err(e) = window.show() {
-        eprintln!("[tray] show: {e}");
+}
+
+/// 强制恢复桌宠窗口：解除最小化、重置尺寸、移到主屏中央。
+fn recover_pet_window_impl(app: &AppHandle) {
+    if PET_RECOVER_IN_FLIGHT.swap(true, Ordering::SeqCst) {
+        return;
     }
-    if let Err(e) = window.set_always_on_top(true) {
-        eprintln!("[tray] always_on_top: {e}");
+
+    let result = (|| {
+        let window = resolve_pet_window(app, None)?;
+        let _ = window.set_resizable(true);
+        let _ = window.set_size(Size::Logical(LogicalSize::new(LOGIN_W, LOGIN_H)));
+
+        win32_show_restore(&window);
+        let _ = window.unminimize();
+
+        if let Ok(Some(monitor)) = window.primary_monitor() {
+            let scale = window.scale_factor().unwrap_or(1.0);
+            let w = (LOGIN_W * scale).round() as u32;
+            let h = (LOGIN_H * scale).round() as u32;
+            let _ = window.set_size(Size::Physical(PhysicalSize::new(w, h)));
+            let mon = monitor.position();
+            let mon_size = monitor.size();
+            let x = mon.x + (mon_size.width as i32 - w as i32) / 2;
+            let y = mon.y + (mon_size.height as i32 - h as i32) / 2;
+            let _ = window.set_position(PhysicalPosition::new(x, y));
+        } else {
+            let _ = window.center();
+        }
+
+        let _ = window.show();
+        let _ = window.set_always_on_top(true);
+        let _ = window.set_focus();
+        let _ = app.emit("pet-window-recover", ());
+        eprintln!("[pet] recover done");
+        Some(())
+    })();
+
+    PET_RECOVER_IN_FLIGHT.store(false, Ordering::SeqCst);
+
+    if result.is_none() {
+        eprintln!("[pet] recover: window not found");
     }
-    if let Err(e) = window.center() {
-        eprintln!("[tray] center: {e}");
-    }
-    if let Err(e) = window.set_focus() {
-        eprintln!("[tray] focus: {e}");
-    }
+}
+
+fn show_pet_window(app: &AppHandle) {
+    recover_pet_window_impl(app);
 }
 
 fn hide_pet_to_tray(window: &WebviewWindow) {
@@ -170,6 +223,12 @@ fn place_chat_beside_pet(app: &AppHandle, pet_label: Option<&str>) -> Result<(),
 }
 
 #[tauri::command]
+fn recover_pet_window(app: AppHandle) -> Result<(), String> {
+    recover_pet_window_impl(&app);
+    Ok(())
+}
+
+#[tauri::command]
 fn show_chat_window(app: AppHandle, label: Option<String>) -> Result<(), String> {
     let chat = resolve_chat_window(&app)?;
     place_chat_beside_pet(&app, label.as_deref())?;
@@ -244,6 +303,7 @@ pub fn run() {
             activity::get_activity_snapshot,
             reset_microphone_permission,
             sync_chat_beside_pet,
+            recover_pet_window,
         ])
         .setup(|app| {
             let pet = app
@@ -251,18 +311,24 @@ pub fn run() {
                 .or_else(|| app.get_webview_window("main"));
             if let Some(pet) = pet {
                 let _ = pet.set_shadow(false);
-                let _ = pet.center();
-                let _ = pet.show();
-                let _ = pet.set_always_on_top(true);
+                recover_pet_window_impl(app.handle());
 
                 // Close button / Alt+F4 → hide to tray; sync popup on move
                 let pet_for_close = pet.clone();
                 let app_for_move = app.handle().clone();
+                let app_for_recover = app.handle().clone();
+                let pet_for_recover = pet.clone();
                 pet.on_window_event(move |event| {
                     match event {
                         tauri::WindowEvent::CloseRequested { api, .. } => {
                             api.prevent_close();
                             hide_pet_to_tray(&pet_for_close);
+                        }
+                        WindowEvent::Focused(true) => {
+                            // 仅在窗口坐标异常时 recover，避免 focus 循环触发 Win32/WebView2 崩溃
+                            if is_window_stuck(&pet_for_recover) {
+                                recover_pet_window_impl(&app_for_recover);
+                            }
                         }
                         tauri::WindowEvent::Moved(pos) => {
                             if let Some(chat) = app_for_move.get_webview_window("chat") {

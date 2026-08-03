@@ -16,6 +16,7 @@ const (
 	MsgVisionFrame     = "vision_frame"
 	MsgNonOwnerTurn    = "non_owner_turn"
 	MsgUtteranceCancel = "utterance_cancel"
+	MsgSpeakOnly       = "speak_only"
 )
 
 // Server → Client message types
@@ -38,6 +39,7 @@ const (
 	MsgProactiveMessage  = "proactive_message"
 	MsgTTSStreamStart    = "tts_stream_start"
 	MsgBargeInConfig     = "barge_in_config"
+	MsgVisionPauseHint   = "vision_pause_hint"
 )
 
 type TTSStreamStart struct {
@@ -64,8 +66,16 @@ type AudioIn struct {
 type VisionFrameIn struct {
 	JPEG      string       `json:"jpeg"` // base64 encoded JPEG，日志禁止打印
 	Seq       int64        `json:"seq,omitempty"`
-	Reason    string       `json:"reason,omitempty"` // speech_start | audio_end | object_refresh
-	FaceProbe *FaceProbeIn `json:"face_probe,omitempty"`
+	Reason      string       `json:"reason,omitempty"` // speech_start | audio_end | object_refresh | pause_probe | glance
+	PartialText string       `json:"partial_text,omitempty"`
+	FaceProbe   *FaceProbeIn `json:"face_probe,omitempty"`
+}
+
+// VisionPauseHint Tier-0 pause_probe 回传：供客户端 turnEndArbiter 延长等待。
+type VisionPauseHint struct {
+	Expression string `json:"expression"`
+	Composing  bool   `json:"composing"`
+	Tier       string `json:"tier"` // tier0
 }
 
 // FaceProbeIn 客户端 ONNX 人脸匹配结果（P2）。
@@ -154,6 +164,11 @@ type ProactiveMessage struct {
 	Message    string `json:"message"`
 	Animation  string `json:"animation"`
 	ReminderID uint64 `json:"reminder_id,omitempty"`
+	Source     string `json:"source,omitempty"`
+}
+
+type SpeakOnlyInput struct {
+	Text string `json:"text"`
 }
 
 func marshalMsg(msgType string, data any, seq int64) ([]byte, error) {

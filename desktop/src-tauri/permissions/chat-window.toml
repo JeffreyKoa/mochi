@@ -6,4 +6,5 @@ commands.allow = [
   "hide_chat_window",
   "expand_pet_for_chat",
   "collapse_pet_chat",
+  "recover_pet_window",
 ]

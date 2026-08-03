@@ -82,6 +82,20 @@ export interface VisionClientConfig {
   snapshotOnAudioEnd: boolean
 }
 
+export interface CompanionPresenceConfig {
+  enabled: boolean
+  intervalSec: number
+  cooldownMin: number
+  dailyMax: number
+}
+
+export const DEFAULT_COMPANION_PRESENCE: CompanionPresenceConfig = {
+  enabled: true,
+  intervalSec: 45,
+  cooldownMin: 45,
+  dailyMax: 8,
+}
+
 export interface ClientConfig {
   apiBase: string
   realtimeEnabled: boolean
@@ -93,7 +107,11 @@ export interface ClientConfig {
   /** P2：举物语义 detected 时 mid-turn / submit 前补拍 */
   visionSnapshotOnObjectIntent: boolean
   visionSnapshotOnAudioEnd: boolean
+  /** Phase D：低配模式（降 FPS、限抓拍、关周期 ONNX） */
+  lowPowerMode: boolean
+  eventLoopProbeMs: number
   realtime: RealtimeClientConfig
+  companionPresence: CompanionPresenceConfig
 }
 
 export const DEFAULT_SILERO: RealtimeSileroVadConfig = {
@@ -162,7 +180,10 @@ let _clientConfig: ClientConfig = {
   visionSnapshotOnSpeechStart: false,
   visionSnapshotOnObjectIntent: true,
   visionSnapshotOnAudioEnd: true,
+  lowPowerMode: false,
+  eventLoopProbeMs: 1000,
   realtime: { ...DEFAULT_REALTIME },
+  companionPresence: { ...DEFAULT_COMPANION_PRESENCE },
 }
 
 function parseVisionBlock(data: Record<string, unknown>): Pick<
@@ -203,6 +224,10 @@ export function getFaceprintConfig(): RealtimeFaceprintConfig {
 
 export function getPresenceConfig(): RealtimePresenceConfig {
   return _clientConfig.realtime.presence
+}
+
+export function getCompanionPresenceConfig(): CompanionPresenceConfig {
+  return _clientConfig.companionPresence
 }
 
 export function setApiBase(url: string) {
@@ -336,6 +361,27 @@ function parseRealtimeBlock(raw: unknown): RealtimeClientConfig {
   return base
 }
 
+function parseClientBlock(data: Record<string, unknown>): Pick<ClientConfig, 'lowPowerMode' | 'eventLoopProbeMs'> {
+  const c = (data.client ?? {}) as Record<string, unknown>
+  const lowPower = !!(c.low_power_mode ?? c.lowPowerMode)
+  const probeMs = num(c.event_loop_probe_ms ?? c.eventLoopProbeMs, 1000)
+  return {
+    lowPowerMode: lowPower,
+    eventLoopProbeMs: probeMs,
+  }
+}
+
+function parseCompanionBlock(data: Record<string, unknown>): CompanionPresenceConfig {
+  const c = (data.companion ?? {}) as Record<string, unknown>
+  const base = { ...DEFAULT_COMPANION_PRESENCE }
+  return {
+    enabled: c.presence_chat_enabled !== false,
+    intervalSec: num(c.presence_chat_interval_sec, base.intervalSec),
+    cooldownMin: num(c.presence_chat_cooldown_min, base.cooldownMin),
+    dailyMax: num(c.presence_chat_daily_max, base.dailyMax),
+  }
+}
+
 function applyPublicConfig(base: string, data: Record<string, unknown>) {
   if (typeof data.api_base === 'string' && data.api_base) {
     setApiBase(data.api_base)
@@ -349,7 +395,9 @@ function applyPublicConfig(base: string, data: Record<string, unknown>) {
     growthEnabled: data.growth_enabled !== false,
     visionEnabled: !!data.vision_enabled,
     ...parseVisionBlock(data),
+    ...parseClientBlock(data),
     realtime: parseRealtimeBlock(data.realtime),
+    companionPresence: parseCompanionBlock(data),
   }
   // 服务端开启 vision 时，客户端默认 opt-in（用户可在设置里关）
   if (_clientConfig.visionEnabled && typeof window !== 'undefined') {
