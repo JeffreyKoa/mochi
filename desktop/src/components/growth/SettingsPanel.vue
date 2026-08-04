@@ -59,6 +59,13 @@ import {
 } from '@/services/visionCapture'
 import { hideSidePanelPopup, isTauri } from '@/services/chatWindow'
 import { refreshPresenceChatPrefs } from '@/services/presenceChat'
+import { listenTasksRefresh } from '@/services/proactiveSync'
+import { useRealtimeStore } from '@/stores/realtimeStore'
+import {
+  getVoiceSidecarStatus,
+  restartVoiceSidecars,
+  type VoiceSidecarStatus,
+} from '@/services/voiceSidecar'
 import {
   micPermissionDeniedMessage,
   resetTauriMicrophonePermission,
@@ -81,6 +88,8 @@ const followUpEnabled = ref(true)
 const reminderVoice = ref(true)
 const voiceReplyDefault = ref(true)
 const sttMode = ref<'auto' | 'local' | 'cloud'>('auto')
+const ttsMode = ref<'auto' | 'local' | 'cloud'>('auto')
+const rt = useRealtimeStore()
 const visionEnabled = ref(isVisionCaptureEnabled())
 const serverVisionEnabled = ref(false)
 const quietStart = ref(23)
@@ -108,6 +117,8 @@ const savingLearning = ref(false)
 const learningError = ref('')
 const showTaskHistory = ref(false)
 const voiceAdvancedOpen = ref(false)
+const voiceSidecarStatus = ref<VoiceSidecarStatus | null>(null)
+const voiceSidecarRestartBusy = ref(false)
 
 const voiceprintStatus = ref<VoiceprintStatus | null>(null)
 const voiceprintLoading = ref(false)
@@ -235,6 +246,7 @@ function applyPreferences(prefs: Awaited<ReturnType<typeof getUserPreferences>>)
   reminderVoice.value = prefs.reminder_voice !== false
   voiceReplyDefault.value = prefs.voice_reply_default !== false
   sttMode.value = prefs.stt_mode ?? 'auto'
+  ttsMode.value = prefs.tts_mode ?? 'auto'
   wellnessEnabled.value = prefs.wellness_nudges_enabled !== false
   wellnessDrink.value = prefs.wellness_drink !== false
   wellnessMeal.value = prefs.wellness_meal !== false
@@ -245,6 +257,7 @@ function applyPreferences(prefs: Awaited<ReturnType<typeof getUserPreferences>>)
   syncReminderVoiceLocal()
   localStorage.setItem('mochi_voice_reply_default', voiceReplyDefault.value ? '1' : '0')
   localStorage.setItem('mochi_stt_mode', sttMode.value)
+  localStorage.setItem('mochi_tts_mode', ttsMode.value)
 }
 
 async function loadPreferences() {
@@ -336,6 +349,35 @@ async function onWellnessMaxChange() {
 
 async function onSttModeChange() {
   await savePref({ stt_mode: sttMode.value })
+  void rt.refreshVoiceBackendPrefs()
+}
+
+async function onTtsModeChange() {
+  await savePref({ tts_mode: ttsMode.value })
+  void rt.refreshVoiceBackendPrefs()
+}
+
+async function refreshVoiceSidecarStatus() {
+  if (!isTauri()) return
+  voiceSidecarStatus.value = await getVoiceSidecarStatus()
+}
+
+async function onVoiceAdvancedToggle() {
+  voiceAdvancedOpen.value = !voiceAdvancedOpen.value
+  if (voiceAdvancedOpen.value) {
+    await refreshVoiceSidecarStatus()
+  }
+}
+
+async function onRestartVoiceSidecars() {
+  voiceSidecarRestartBusy.value = true
+  try {
+    voiceSidecarStatus.value = await restartVoiceSidecars()
+    await rt.refreshXasrSidecarProbe()
+    await rt.refreshXttsSidecarProbe()
+  } finally {
+    voiceSidecarRestartBusy.value = false
+  }
 }
 
 function toggleLearningTopic(id: string) {
@@ -990,6 +1032,9 @@ onUnmounted(() => {
               </label>
               <p class="hint">通过「眼睛」理解表情、手里东西和周围；结束对话后关闭</p>
             </template>
+            <p v-else class="hint">
+              视觉感知已在服务端关闭（<code>vision.enabled: false</code>）。专注语音时可保持关闭，需要时再改配置并重启 Server。
+            </p>
           </SettingsCard>
 
           <SettingsCard v-if="isTauri()" title="麦克风" hint="若权限被拒绝，请检查 Windows 隐私 → 麦克风">
@@ -1005,21 +1050,55 @@ onUnmounted(() => {
           </SettingsCard>
 
           <SettingsCard>
-            <button type="button" class="settings-advanced-toggle" @click="voiceAdvancedOpen = !voiceAdvancedOpen">
+            <button type="button" class="settings-advanced-toggle" @click="onVoiceAdvancedToggle">
               <span>高级</span>
               <span>{{ voiceAdvancedOpen ? '▲' : '▼' }}</span>
             </button>
             <div v-if="voiceAdvancedOpen" class="settings-advanced-body">
-              <p class="hint">语音识别模式</p>
+              <p class="hint">语音识别（STT）· 默认优先本地 X-ASR，不可达回退云端</p>
               <select v-model="sttMode" class="select-sm" @change="onSttModeChange">
-                <option value="auto">自动</option>
+                <option value="auto">自动（优先本地）</option>
                 <option value="local">本地</option>
                 <option value="cloud">云端</option>
               </select>
-              <p v-if="sttMode === 'local' || sttMode === 'auto'" class="hint">
-                本地模式优先连接本机 X-ASR（<code>ws://127.0.0.1:8766</code>）。
-                请先运行 <code>tools/x-asr/setup-and-start.bat</code>；不可达时回退 Web Speech。
-              </p>
+              <template v-if="sttMode === 'local' || sttMode === 'auto'">
+                <p v-if="isTauri()" class="hint">
+                  本地 STT 由客户端自动启动（{{ voiceSidecarStatus?.bundleMode === 'release' ? '安装包内置' : '开发 tools/' }} ·
+                  <code>ws://127.0.0.1:8766</code>）
+                </p>
+                <p v-else class="hint">
+                  本地 STT：<code>tools/x-asr/setup-and-start.bat</code>（<code>ws://127.0.0.1:8766</code>）
+                </p>
+              </template>
+              <p class="hint advanced-gap">语音合成（TTS）· 默认优先本地 Matcha，不可达回退云端</p>
+              <select v-model="ttsMode" class="select-sm" @change="onTtsModeChange">
+                <option value="auto">自动（优先本地）</option>
+                <option value="local">本地</option>
+                <option value="cloud">云端</option>
+              </select>
+              <template v-if="ttsMode === 'local' || ttsMode === 'auto'">
+                <p v-if="isTauri()" class="hint">
+                  本地 TTS 由客户端自动启动（{{ voiceSidecarStatus?.bundleMode === 'release' ? '安装包内置' : '开发 tools/' }} ·
+                  <code>http://127.0.0.1:8767</code>）
+                </p>
+                <p v-else class="hint">
+                  本地 TTS：<code>tools/x-tts/setup-and-start.bat</code>（<code>http://127.0.0.1:8767</code>）
+                </p>
+              </template>
+              <p v-else class="hint">始终使用云端 TTS（DashScope）</p>
+              <div v-if="isTauri() && voiceSidecarStatus" class="hint advanced-gap">
+                Sidecar：X-ASR {{ voiceSidecarStatus.xasr.state }} · X-TTS {{ voiceSidecarStatus.xtts.state }}
+                <span v-if="voiceSidecarStatus.xasr.message"> — {{ voiceSidecarStatus.xasr.message }}</span>
+              </div>
+              <button
+                v-if="isTauri()"
+                type="button"
+                class="btn-sm"
+                :disabled="voiceSidecarRestartBusy"
+                @click="onRestartVoiceSidecars"
+              >
+                {{ voiceSidecarRestartBusy ? '重启中…' : '重启本地语音服务' }}
+              </button>
               <p class="hint advanced-gap">在场声音感知 · 当前：{{ pet.ownerPresence }}</p>
               <p class="hint">
                 模型路径：<code>public/models/speaker/campp.onnx</code>、

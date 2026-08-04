@@ -1,0 +1,5 @@
+numpy
+soundfile
+sherpa-onnx
+huggingface_hub[cli]
+modelscope

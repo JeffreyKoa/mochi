@@ -94,6 +94,8 @@ type TextInput struct {
 type ClientCaps struct {
 	OpusDecode bool `json:"opus_decode"`
 	AecEnabled bool `json:"aec_enabled"` // WebView getUserMedia echoCancellation 实际生效
+	// LocalTTS：客户端自行合成播报，服务端仅下发 LLM 文本。
+	LocalTTS bool `json:"local_tts"`
 }
 
 // BargeInConfig 服务端下发的打断参数（AEC 握手后 echo_guard_ms 可缩短）。

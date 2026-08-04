@@ -22,21 +22,25 @@ export type VisionFrameReason = 'speech_start' | 'audio_end' | 'object_refresh' 
 
 export type VisionStartResult = 'ok' | 'denied' | 'unavailable' | 'skipped'
 
-/** 客户端是否开启视觉抓拍（localStorage 显式关=关；未设置且服务端开 vision=默认开）。 */
+/** 客户端是否开启视觉抓拍（服务端 vision_enabled 为总开关）。 */
 export function isVisionCaptureEnabled(): boolean {
+  if (!getClientConfig().visionEnabled) return false
   const stored = localStorage.getItem('mochi_vision_enabled')
   if (stored === '0') return false
   if (stored === '1') return true
-  return getClientConfig().visionEnabled
+  return false
 }
 
 export function setVisionCaptureEnabled(on: boolean) {
   localStorage.setItem('mochi_vision_enabled', on ? '1' : '0')
 }
 
-/** 服务端开启 vision 时，将未设置过的 localStorage 默认设为开。 */
+/** 服务端开启 vision 时，将未设置过的 localStorage 默认设为开；关闭时同步关。 */
 export function ensureVisionCaptureDefault() {
-  if (!getClientConfig().visionEnabled) return
+  if (!getClientConfig().visionEnabled) {
+    localStorage.setItem('mochi_vision_enabled', '0')
+    return
+  }
   if (localStorage.getItem('mochi_vision_enabled') == null) {
     localStorage.setItem('mochi_vision_enabled', '1')
   }

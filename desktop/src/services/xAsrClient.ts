@@ -24,6 +24,8 @@ export class XAsrClient {
   private startWaiter: { resolve: () => void; reject: (e: Error) => void } | null = null
   private finalWaiter: { resolve: (text: string) => void; reject: (e: Error) => void } | null = null
   private finalTimer: ReturnType<typeof setTimeout> | null = null
+  /** ping 等待 pong（走 handleMessage，避免 WebView2 下 addEventListener 不可靠）。 */
+  private pingWaiter: (() => void) | null = null
 
   setHandlers(handlers: XAsrClientHandlers) {
     this.handlers = handlers
@@ -93,25 +95,14 @@ export class XAsrClient {
     if (!this.connected) return false
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
-        this.ws?.removeEventListener('message', onMsg)
+        this.pingWaiter = null
         resolve(false)
       }, timeoutMs)
-
-      const onMsg = (ev: MessageEvent) => {
-        if (typeof ev.data !== 'string') return
-        try {
-          const msg = JSON.parse(ev.data) as XAsrServerMessage
-          if (msg.type === 'pong') {
-            clearTimeout(timer)
-            this.ws?.removeEventListener('message', onMsg)
-            resolve(true)
-          }
-        } catch {
-          // ignore
-        }
+      this.pingWaiter = () => {
+        clearTimeout(timer)
+        this.pingWaiter = null
+        resolve(true)
       }
-
-      this.ws?.addEventListener('message', onMsg)
       this.sendJson({ type: 'ping' })
     })
   }
@@ -200,6 +191,7 @@ export class XAsrClient {
 
   close() {
     this.sessionActive = false
+    this.pingWaiter = null
     this.rejectWaiters(new Error('x-asr client closed'))
     if (this.finalTimer) {
       clearTimeout(this.finalTimer)
@@ -252,7 +244,9 @@ export class XAsrClient {
         this.startWaiter?.reject(new Error(msg.text || 'x-asr error'))
         break
       case 'reset_ok':
+        break
       case 'pong':
+        this.pingWaiter?.()
         break
       default:
         break
@@ -266,12 +260,13 @@ export async function probeXAsrServer(
   timeoutMs = 2500,
 ): Promise<boolean> {
   const client = new XAsrClient()
-  const ok = await client.connect(url, timeoutMs)
-  if (!ok) {
+  const connected = await client.connect(url, timeoutMs)
+  if (!connected) {
     client.close()
     return false
   }
   const pong = await client.ping(timeoutMs)
   client.close()
-  return pong
+  // connect 成功即 sidecar 在听；ping 失败时仍视为 reachable（兼容旧 sidecar）
+  return pong || connected
 }

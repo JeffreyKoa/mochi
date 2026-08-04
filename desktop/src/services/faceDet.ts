@@ -120,7 +120,7 @@ export class FaceDetector {
         executionProviders: ['wasm'],
       })
       this.inputName = this.session.inputNames[0] ?? 'input.1'
-      this.outputNames = this.session.outputNames
+      this.outputNames = [...this.session.outputNames]
       // buffalo_l det_10g：9 路输出 = 3×score + 3×bbox + 3×kps（stride 8/16/32）
       const outCount = this.outputNames.length
       if (outCount === 9 || outCount === 6) {
@@ -138,7 +138,7 @@ export class FaceDetector {
 
   /** letterbox 缩放到 DET_SIZE，返回 blob [1,3,H,W] 与缩放比 */
   private prepareBlob(img: ImageData): { blob: Float32Array; scale: number; padW: number; padH: number } {
-    const { width: iw, height: ih, data } = img
+    const { width: iw, height: ih } = img
     const imRatio = ih / iw
     const modelRatio = 1 // 640x640 square
     let newW: number

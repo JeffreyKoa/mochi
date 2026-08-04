@@ -6,7 +6,12 @@ import {
   getEventLoopLagMs,
   EVENT_LOOP_LAG_WARN_MS,
 } from '@/services/eventLoopProbe'
+import {
+  getVoiceSidecarStatus,
+  type VoiceSidecarStatus,
+} from '@/services/voiceSidecar'
 import { getBaselineSampleCount } from '@/services/turnMetricsBaseline'
+import { isTauri } from '@/services/chatWindow'
 
 const rt = useRealtimeStore()
 const collapsed = ref(false)
@@ -24,6 +29,15 @@ function refreshLag() {
 const lagClass = computed(() =>
   eventLoopLagMs.value >= EVENT_LOOP_LAG_WARN_MS ? 'warn' : '',
 )
+
+const sidecarStatus = ref<VoiceSidecarStatus | null>(null)
+
+const sidecarManagedLabel = computed(() => {
+  if (!isTauri()) return 'browser'
+  const s = sidecarStatus.value
+  if (!s) return '…'
+  return s.bundleMode === 'release' ? `managed (${s.xasr.state}/${s.xtts.state})` : `dev (${s.xasr.state}/${s.xtts.state})`
+})
 
 const xasrSidecarLabel = computed(() => {
   const v = rt.xasrSidecarReachable
@@ -56,8 +70,16 @@ const metricsLines = computed(() => {
 onMounted(() => {
   raf = requestAnimationFrame(refreshLag)
   void rt.refreshXasrSidecarProbe()
+  void rt.refreshXttsSidecarProbe()
+  if (isTauri()) {
+    void getVoiceSidecarStatus().then((s) => { sidecarStatus.value = s })
+  }
   probeTimer = setInterval(() => {
     void rt.refreshXasrSidecarProbe()
+    void rt.refreshXttsSidecarProbe()
+    if (isTauri()) {
+      void getVoiceSidecarStatus().then((s) => { sidecarStatus.value = s })
+    }
   }, 15000)
 })
 
@@ -85,6 +107,10 @@ onUnmounted(() => {
         <span class="k">talking</span>
         <span class="v">{{ rt.talking }} / rest {{ rt.resting }}</span>
       </div>
+      <div class="row">
+        <span class="k">sidecar</span>
+        <span class="v">{{ sidecarManagedLabel }}</span>
+      </div>
       <div class="row" :class="xasrSidecarClass">
         <span class="k">xasrSidecar</span>
         <span class="v">{{ xasrSidecarLabel }}</span>
@@ -92,6 +118,14 @@ onUnmounted(() => {
       <div class="row">
         <span class="k">stt</span>
         <span class="v">{{ rt.sttBackendLabel || (rt.talking ? '…' : '—') }}</span>
+      </div>
+      <div class="row">
+        <span class="k">tts</span>
+        <span class="v">{{ rt.ttsBackendLabel || (rt.talking ? '…' : '—') }}</span>
+      </div>
+      <div class="row">
+        <span class="k">xttsSidecar</span>
+        <span class="v">{{ rt.xttsSidecarReachable === null ? '…' : rt.xttsSidecarReachable ? 'online' : 'offline' }}</span>
       </div>
       <div class="row">
         <span class="k">chunks</span>

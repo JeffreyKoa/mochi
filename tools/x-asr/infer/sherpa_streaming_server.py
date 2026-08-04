@@ -136,6 +136,8 @@ def build_energy_state(args, sample_rate: int) -> Optional[EnergyTailProbeState]
 
 async def handle_connection(websocket, args):
     logging.info("client connected")
+    # 连接级复用 recognizer，避免每轮 start 重建 ONNX（省 100–400ms）
+    shared_asr = build_asr(args)
     session: Optional[SessionState] = None
 
     try:
@@ -172,8 +174,9 @@ async def handle_connection(websocket, args):
             if msg_type == "start":
                 # 可选覆盖采样率
                 client_sr = int(payload.get("sample_rate", args.sample_rate))
+                shared_asr.reset()
                 session = SessionState(
-                    asr=build_asr(args),
+                    asr=shared_asr,
                     sample_rate=client_sr,
                     energy=build_energy_state(args, client_sr),
                 )
@@ -202,10 +205,12 @@ async def handle_connection(websocket, args):
                         ensure_ascii=False,
                     )
                 )
+                shared_asr.reset()
 
             elif msg_type == "reset":
+                shared_asr.reset()
                 session = SessionState(
-                    asr=build_asr(args),
+                    asr=shared_asr,
                     sample_rate=args.sample_rate,
                     energy=build_energy_state(args, args.sample_rate),
                 )

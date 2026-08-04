@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { postActivityHeartbeat } from './api'
 import { getAmbientPresenceSnapshot } from './ambientMic'
-import { isTauri, isTauriInvokeReady } from './chatWindow'
+import { isTauriInvokeReady } from './chatWindow'
 
 const HEARTBEAT_MS = 5 * 60 * 1000
 

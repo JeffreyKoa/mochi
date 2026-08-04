@@ -1,0 +1,6 @@
+# Mochi 安装包内置语音 sidecar 运行时依赖（不含下载工具）
+numpy
+websockets
+soundfile
+librosa
+sherpa-onnx

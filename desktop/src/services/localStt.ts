@@ -4,6 +4,8 @@ export interface LocalSTTCallbacks {
   onError?: (message: string) => void
 }
 
+import { isTauri } from '@/services/chatWindow'
+
 type SpeechRecognitionCtor = new () => SpeechRecognition
 
 function getSpeechRecognitionCtor(): SpeechRecognitionCtor | null {
@@ -26,19 +28,24 @@ export function isLocalSttSupported(): boolean {
 
 export type LocalSttBackend = 'xasr' | 'webspeech'
 
-/** 按配置解析本地 STT 后端：X-ASR 优先，不可达则 Web Speech。 */
+/** 按配置解析本地 STT 后端：X-ASR 优先；Tauri 下不回退 Web Speech（WebView2 不可靠）。 */
 export async function resolveLocalSttBackend(cfg: {
   xasr: { enabled: boolean; wsUrl: string }
 }): Promise<LocalSttBackend | null> {
   if (cfg.xasr.enabled) {
     const { probeXAsrServer } = await import('@/services/xAsrClient')
-    for (let attempt = 0; attempt < 2; attempt++) {
-      if (await probeXAsrServer(cfg.xasr.wsUrl, attempt === 0 ? 2500 : 4000)) {
+    const attempts = isTauri() ? 8 : 2
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      const timeout = attempt === 0 ? 4000 : 6000
+      if (await probeXAsrServer(cfg.xasr.wsUrl, timeout)) {
         return 'xasr'
       }
-      if (attempt === 0) {
-        await new Promise((r) => setTimeout(r, 400))
+      if (attempt < attempts - 1) {
+        await new Promise((r) => setTimeout(r, 800))
       }
+    }
+    if (isTauri()) {
+      return null
     }
   }
   if (isWebSpeechSttSupported()) {

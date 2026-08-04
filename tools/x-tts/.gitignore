@@ -1,0 +1,6 @@
+.venv/
+models/
+_hf_cache/
+__pycache__/
+*.wav
+*.mp3

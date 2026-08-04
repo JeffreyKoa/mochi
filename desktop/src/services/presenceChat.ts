@@ -74,7 +74,7 @@ function localDailyExceeded(max: number): boolean {
   return count >= max
 }
 
-function markLocalSent(cooldownMin: number) {
+function markLocalSent(_cooldownMin: number) {
   localStorage.setItem(LOCAL_COOLDOWN_KEY, String(Date.now()))
   const key = `${LOCAL_DAILY_KEY}:${todayKey()}`
   const count = Number(localStorage.getItem(key) ?? '0')

@@ -15,7 +15,6 @@ import { faceDetector, type FaceCropRect } from '@/services/faceDet'
 
 const ORT_BASE = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/'
 const REC_MODEL_URL = '/models/face/rec.onnx'
-const DET_MODEL_URL = '/models/face/det.onnx'
 const INPUT_SIZE = 112
 const MIN_FACE_SIDE = 48
 /** 低于此分视为「看不清脸」，不算 detected（中心 crop 误检）。 */

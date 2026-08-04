@@ -39,6 +39,7 @@ type Session struct {
 	turnLat        *TurnLatency
 	turnAudioBytes int
 	preferMP3      bool
+	localTTS       bool // client_caps：客户端本地 TTS，服务端跳过 DashScope TTS
 	echoGuardMS    int // 0 = 使用服务端默认
 
 	topicAnchor TopicAnchor
@@ -183,6 +184,18 @@ func (s *Session) PreferMP3() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.preferMP3
+}
+
+func (s *Session) SetLocalTTS(v bool) {
+	s.mu.Lock()
+	s.localTTS = v
+	s.mu.Unlock()
+}
+
+func (s *Session) LocalTTS() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.localTTS
 }
 
 // SetTurnPCM 保存本 turn 的用户 PCM（供声学情绪旁路）。

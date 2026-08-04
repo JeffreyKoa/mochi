@@ -20,7 +20,8 @@
 
     "tauri:dev": "tauri dev",
 
-    "tauri:build": "tauri build"
+    "tauri:build": "powershell -ExecutionPolicy Bypass -File ../scripts/prepare-voice-bundle.ps1 && tauri build",
+    "prepare:voice-bundle": "powershell -ExecutionPolicy Bypass -File ../scripts/prepare-voice-bundle.ps1"
 
   },
 

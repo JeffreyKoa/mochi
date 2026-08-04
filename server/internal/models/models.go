@@ -17,6 +17,7 @@ type User struct {
 	FollowUpEnabled    bool      `gorm:"default:true" json:"follow_up_enabled"`
 	VoiceReplyDefault  bool      `gorm:"default:true" json:"voice_reply_default"`
 	SttMode                string `gorm:"size:16;default:auto" json:"stt_mode"`
+	TtsMode                string `gorm:"size:16;default:auto" json:"tts_mode"`
 	WellnessNudgesEnabled  bool   `gorm:"default:true" json:"wellness_nudges_enabled"`
 	WellnessDrink          bool   `gorm:"default:true" json:"wellness_drink"`
 	WellnessMeal           bool   `gorm:"default:true" json:"wellness_meal"`

@@ -129,6 +129,7 @@ type UserPreferences struct {
 	FollowUpEnabled         bool                  `json:"follow_up_enabled"`
 	VoiceReplyDefault       bool                  `json:"voice_reply_default"`
 	SttMode                 string                `json:"stt_mode"`
+	TtsMode                 string                `json:"tts_mode"`
 	WellnessNudgesEnabled   bool                  `json:"wellness_nudges_enabled"`
 	WellnessDrink           bool                  `json:"wellness_drink"`
 	WellnessMeal            bool                  `json:"wellness_meal"`
@@ -150,6 +151,7 @@ func defaultPreferences(user models.User) *UserPreferences {
 		FollowUpEnabled:       user.FollowUpEnabled,
 		VoiceReplyDefault:     user.VoiceReplyDefault,
 		SttMode:               user.SttMode,
+		TtsMode:               user.TtsMode,
 		WellnessNudgesEnabled: user.WellnessNudgesEnabled,
 		WellnessDrink:         user.WellnessDrink,
 		WellnessMeal:          user.WellnessMeal,
@@ -164,6 +166,9 @@ func defaultPreferences(user models.User) *UserPreferences {
 	}
 	if prefs.SttMode == "" {
 		prefs.SttMode = "auto"
+	}
+	if prefs.TtsMode == "" {
+		prefs.TtsMode = "auto"
 	}
 	if prefs.LunchHour == 0 {
 		prefs.LunchHour = 12
@@ -204,6 +209,7 @@ type UpdatePreferencesInput struct {
 	FollowUpEnabled       *bool
 	VoiceReplyDefault     *bool
 	SttMode               *string
+	TtsMode               *string
 	WellnessNudgesEnabled *bool
 	WellnessDrink         *bool
 	WellnessMeal          *bool
@@ -264,6 +270,15 @@ func (s *Service) UpdatePreferences(userID uint64, in UpdatePreferencesInput) (*
 			updates["stt_mode"] = mode
 		default:
 			updates["stt_mode"] = "auto"
+		}
+	}
+	if in.TtsMode != nil {
+		mode := *in.TtsMode
+		switch mode {
+		case "local", "cloud", "auto":
+			updates["tts_mode"] = mode
+		default:
+			updates["tts_mode"] = "auto"
 		}
 	}
 	if in.WellnessNudgesEnabled != nil {

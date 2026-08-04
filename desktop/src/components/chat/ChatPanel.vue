@@ -10,7 +10,9 @@ import {
   claimVoiceOwner,
   getStoredVoiceOwner,
   releaseVoiceOwner,
+  setupVoiceOwnerListener,
 } from '@/services/voiceSessionOwner'
+import { warmUpMicrophoneAccess } from '@/utils/micPermission'
 import { useAuthStore } from '@/stores/authStore'
 
 const props = defineProps<{ floating?: boolean; compact?: boolean; docked?: boolean }>()
@@ -66,6 +68,7 @@ const auth = useAuthStore()
 let unlistenProactive: (() => void) | null = null
 let unlistenChatOpened: (() => void) | null = null
 let unlistenSidePanelOpened: (() => void) | null = null
+let unlistenVoiceOwner: (() => void) | null = null
 
 const showStreamingReply = computed(() => {
   if (!rt.replyText || !rt.processing) return false
@@ -143,7 +146,18 @@ async function acquireChatVoice(options?: { autoStartTalk?: boolean }) {
 
 async function onStartTalk() {
   await acquireChatVoice({ autoStartTalk: false })
-  await rt.startTalk()
+  const ok = await rt.startTalk()
+  if (!ok) {
+    rt.statusText = rt.statusText || '无法启动语音，请检查 X-ASR 服务'
+    return
+  }
+  // 与桌宠单击一致：点话筒即进入「正在听」
+  if (rt.resting) {
+    const wake = await rt.wakeListening({ manual: true })
+    if (!wake.ok && wake.reason === 'voiceprint_missing') {
+      rt.statusText = '请先在设置中录入主人声纹'
+    }
+  }
 }
 
 async function releaseChatVoice() {
@@ -186,6 +200,7 @@ async function sendText() {
 function onVoiceBtnClick() {
   if (voiceBtnMode.value === 'start') void onStartTalk()
   else if (voiceBtnMode.value === 'finish') void finishSpeaking()
+  else if (voiceBtnMode.value === 'resting') void rt.wakeListening({ manual: true })
 }
 
 onMounted(async () => {
@@ -212,6 +227,11 @@ onMounted(async () => {
   }
 
   if (props.floating && isTauri()) {
+    void warmUpMicrophoneAccess()
+    unlistenVoiceOwner = await setupVoiceOwnerListener('chat', {
+      onAcquire: () => rt.connectIfOwner(),
+      onYield: () => rt.yieldVoiceConnection(),
+    })
     try {
       const { listen } = await import('@tauri-apps/api/event')
       const onChatPanelShow = () => {
@@ -239,6 +259,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   void releaseChatVoice()
+  unlistenVoiceOwner?.()
+  unlistenVoiceOwner = null
   unlistenProactive?.()
   unlistenProactive = null
   unlistenChatOpened?.()

@@ -6,6 +6,7 @@ use tauri::{
 };
 
 mod activity;
+mod voice_sidecar;
 mod webview_permissions;
 
 const PET_W: f64 = 280.0;
@@ -16,6 +17,7 @@ const CHAT_W: f64 = 320.0;
 const CHAT_H: f64 = 440.0;
 const CHAT_GAP: f64 = 8.0;
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -233,6 +235,8 @@ fn show_chat_window(app: AppHandle, label: Option<String>) -> Result<(), String>
     let chat = resolve_chat_window(&app)?;
     place_chat_beside_pet(&app, label.as_deref())?;
     let _ = app.emit("side-panel-side-changed", LAST_ON_LEFT.load(Ordering::Relaxed));
+    // 聊天窗每次显示时重新预授权麦克风（独立 WebView2 实例）
+    webview_permissions::allow_media(&chat);
     chat.show().map_err(|e| e.to_string())?;
     let _ = chat.set_focus();
     Ok(())
@@ -304,8 +308,20 @@ pub fn run() {
             reset_microphone_permission,
             sync_chat_beside_pet,
             recover_pet_window,
+            voice_sidecar::get_voice_sidecar_status,
+            voice_sidecar::restart_voice_sidecars,
         ])
         .setup(|app| {
+            // 本地语音 sidecar：Release 用内置 bundle，Debug 用仓库 tools/
+            let bundle_mode = if voice_sidecar::resolve_bundled_voice_root(app.handle()).is_some() {
+                "release"
+            } else {
+                "dev"
+            };
+            let sidecar_mgr = Arc::new(voice_sidecar::VoiceSidecarManager::new(bundle_mode));
+            sidecar_mgr.start_all_async(app.handle().clone());
+            app.manage(sidecar_mgr);
+
             let pet = app
                 .get_webview_window("pet")
                 .or_else(|| app.get_webview_window("main"));
@@ -388,6 +404,9 @@ pub fn run() {
                     "show" => show_pet_window(app),
                     "recenter" => show_pet_window(app),
                     "quit" => {
+                        if let Some(mgr) = app.try_state::<Arc<voice_sidecar::VoiceSidecarManager>>() {
+                            mgr.stop_all();
+                        }
                         app.exit(0);
                     }
                     _ => {}
@@ -406,6 +425,13 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                if let Some(mgr) = app_handle.try_state::<Arc<voice_sidecar::VoiceSidecarManager>>() {
+                    mgr.stop_all();
+                }
+            }
+        });
 }

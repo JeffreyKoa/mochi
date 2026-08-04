@@ -446,6 +446,10 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 					log.Printf("[realtime] client_caps session=%s aec_enabled=false echo_guard_ms=%d", sessionID, echoGuard)
 				}
 				sess.SetEchoGuardMS(echoGuard)
+				if in.LocalTTS {
+					sess.SetLocalTTS(true)
+					log.Printf("[realtime] client_caps session=%s local_tts=true → skip server TTS", sessionID)
+				}
 				_ = sender.Send(MsgBargeInConfig, BargeInConfig{
 					EchoGuardMS:   echoGuard,
 					PeakThreshold: h.cfg.BargeIn.PeakThreshold,

@@ -83,6 +83,7 @@ func (h *Handler) UpdatePreferences(c *gin.Context) {
 		FollowUpEnabled         *bool   `json:"follow_up_enabled"`
 		VoiceReplyDefault       *bool   `json:"voice_reply_default"`
 		SttMode                 *string `json:"stt_mode"`
+		TtsMode                 *string `json:"tts_mode"`
 		WellnessNudgesEnabled   *bool   `json:"wellness_nudges_enabled"`
 		WellnessDrink           *bool   `json:"wellness_drink"`
 		WellnessMeal            *bool   `json:"wellness_meal"`
@@ -105,6 +106,7 @@ func (h *Handler) UpdatePreferences(c *gin.Context) {
 		FollowUpEnabled:         req.FollowUpEnabled,
 		VoiceReplyDefault:       req.VoiceReplyDefault,
 		SttMode:                 req.SttMode,
+		TtsMode:                 req.TtsMode,
 		WellnessNudgesEnabled:   req.WellnessNudgesEnabled,
 		WellnessDrink:           req.WellnessDrink,
 		WellnessMeal:            req.WellnessMeal,

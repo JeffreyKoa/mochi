@@ -7,4 +7,6 @@ commands.allow = [
   "expand_pet_for_chat",
   "collapse_pet_chat",
   "recover_pet_window",
+  "get_voice_sidecar_status",
+  "restart_voice_sidecars",
 ]

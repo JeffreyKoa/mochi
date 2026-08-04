@@ -20,6 +20,10 @@ mod imp {
         "http://127.0.0.1:1421",
         "https://tauri.localhost",
         "http://tauri.localhost",
+        "https://asset.localhost",
+        "http://asset.localhost",
+        "https://localhost",
+        "http://localhost",
     ];
 
     fn set_permission_state(

@@ -104,6 +104,7 @@ func (c ClientConfig) PublicClient() ClientPublicConfig {
 type RealtimeConfig struct {
 	Enabled        bool                   `yaml:"enabled"`
 	STTMode        string                 `yaml:"stt_mode"` // cloud | local | auto
+	TTSMode        string                 `yaml:"tts_mode"` // cloud | local | auto
 	PrewarmEnabled bool                   `yaml:"prewarm_enabled"`
 	Dashscope      RealtimeDashscope      `yaml:"dashscope"`
 	VAD            RealtimeVAD            `yaml:"vad"`
@@ -117,6 +118,27 @@ type RealtimeConfig struct {
 	Faceprint      RealtimeFaceprint      `yaml:"faceprint"`
 	Presence       RealtimePresence       `yaml:"presence"`
 	TopicAnchor    RealtimeTopicAnchor    `yaml:"topic_anchor"`
+	XASR           RealtimeXASR           `yaml:"xasr"`
+	XTTS           RealtimeXTTS           `yaml:"xtts"`
+}
+
+// RealtimeXASR 本地 X-ASR sidecar（公开给 Desktop，无密钥）。
+type RealtimeXASR struct {
+	Enabled               bool   `yaml:"enabled"`
+	WSURL                 string `yaml:"ws_url"`
+	ChunkMs               int    `yaml:"chunk_ms"`
+	SilenceMs             int    `yaml:"silence_ms"`
+	PartialStableMs       int    `yaml:"partial_stable_ms"`
+	MinCompleteSilenceMs  int    `yaml:"min_complete_silence_ms"`
+	UnfinishedSilenceMs   int    `yaml:"unfinished_silence_ms"`
+	SpeechEndSubmitMs     int    `yaml:"speech_end_submit_ms"`
+}
+
+// RealtimeXTTS 本地 X-TTS sidecar（公开给 Desktop，无密钥）。
+type RealtimeXTTS struct {
+	Enabled bool    `yaml:"enabled"`
+	BaseURL string  `yaml:"base_url"`
+	Speed   float64 `yaml:"speed"`
 }
 
 type RealtimeDashscope struct {
@@ -195,6 +217,7 @@ type RealtimeTopicAnchor struct {
 // RealtimePublicConfig is exposed via GET /api/v1/public/config (no secrets).
 type RealtimePublicConfig struct {
 	STTMode       string `json:"stt_mode"`
+	TTSMode       string `json:"tts_mode"`
 	SpeechLocale  string `json:"speech_locale"`
 	VAD           struct {
 		SilenceMS          int     `json:"silence_ms"`
@@ -245,6 +268,21 @@ type RealtimePublicConfig struct {
 		AmbientEnergyFloor float64 `json:"ambient_energy_floor"`
 		OwnerPresenceTTLSec int    `json:"owner_presence_ttl_sec"`
 	} `json:"presence"`
+	XASR struct {
+		Enabled              bool   `json:"enabled"`
+		WSURL                string `json:"ws_url"`
+		ChunkMs              int    `json:"chunk_ms"`
+		SilenceMs            int    `json:"silence_ms"`
+		PartialStableMs      int    `json:"partial_stable_ms"`
+		MinCompleteSilenceMs int    `json:"min_complete_silence_ms"`
+		UnfinishedSilenceMs  int    `json:"unfinished_silence_ms"`
+		SpeechEndSubmitMs    int    `json:"speech_end_submit_ms"`
+	} `json:"xasr"`
+	XTTS struct {
+		Enabled bool    `json:"enabled"`
+		BaseURL string  `json:"base_url"`
+		Speed   float64 `json:"speed"`
+	} `json:"xtts"`
 	TTSTransport string `json:"tts_transport"`
 }
 
@@ -702,6 +740,9 @@ func (r *RealtimeConfig) applyDefaults() {
 	if r.STTMode == "" {
 		r.STTMode = "auto"
 	}
+	if r.TTSMode == "" {
+		r.TTSMode = "auto"
+	}
 	if r.VAD.SilenceMS == 0 {
 		r.VAD.SilenceMS = 1200
 	}
@@ -863,6 +904,33 @@ func (r *RealtimeConfig) applyDefaults() {
 	if r.Gate.MaxTokens == 0 {
 		r.Gate.MaxTokens = 20
 	}
+	if r.XASR.WSURL == "" {
+		r.XASR.WSURL = "ws://127.0.0.1:8766"
+	}
+	if r.XASR.ChunkMs == 0 {
+		r.XASR.ChunkMs = 40
+	}
+	if r.XASR.SilenceMs == 0 {
+		r.XASR.SilenceMs = 600
+	}
+	if r.XASR.PartialStableMs == 0 {
+		r.XASR.PartialStableMs = 300
+	}
+	if r.XASR.MinCompleteSilenceMs == 0 {
+		r.XASR.MinCompleteSilenceMs = 450
+	}
+	if r.XASR.UnfinishedSilenceMs == 0 {
+		r.XASR.UnfinishedSilenceMs = 900
+	}
+	if r.XASR.SpeechEndSubmitMs == 0 {
+		r.XASR.SpeechEndSubmitMs = 200
+	}
+	if r.XTTS.BaseURL == "" {
+		r.XTTS.BaseURL = "http://127.0.0.1:8767"
+	}
+	if r.XTTS.Speed == 0 {
+		r.XTTS.Speed = 1.0
+	}
 }
 
 func (p *RealtimePipeline) applyDefaults() {
@@ -893,6 +961,7 @@ func (p *RealtimePipeline) applyDefaults() {
 func (r RealtimeConfig) PublicClient() RealtimePublicConfig {
 	out := RealtimePublicConfig{
 		STTMode:      r.STTMode,
+		TTSMode:      r.TTSMode,
 		SpeechLocale: "zh-CN",
 		TTSTransport: r.TTS.Transport,
 	}
@@ -937,6 +1006,17 @@ func (r RealtimeConfig) PublicClient() RealtimePublicConfig {
 	out.Presence.SpeechThreshold = r.Presence.SpeechThreshold
 	out.Presence.AmbientEnergyFloor = r.Presence.AmbientEnergyFloor
 	out.Presence.OwnerPresenceTTLSec = r.Presence.OwnerPresenceTTLSec
+	out.XASR.Enabled = r.XASR.Enabled
+	out.XASR.WSURL = r.XASR.WSURL
+	out.XASR.ChunkMs = r.XASR.ChunkMs
+	out.XASR.SilenceMs = r.XASR.SilenceMs
+	out.XASR.PartialStableMs = r.XASR.PartialStableMs
+	out.XASR.MinCompleteSilenceMs = r.XASR.MinCompleteSilenceMs
+	out.XASR.UnfinishedSilenceMs = r.XASR.UnfinishedSilenceMs
+	out.XASR.SpeechEndSubmitMs = r.XASR.SpeechEndSubmitMs
+	out.XTTS.Enabled = r.XTTS.Enabled
+	out.XTTS.BaseURL = r.XTTS.BaseURL
+	out.XTTS.Speed = r.XTTS.Speed
 	return out
 }
 

@@ -174,11 +174,12 @@ export class RealtimeSession {
     return this.send('speak_only', { text })
   }
 
-  async sendClientCaps(): Promise<boolean> {
+  async sendClientCaps(options?: { localTts?: boolean }): Promise<boolean> {
     const aecEnabled = await probeAecEnabled()
     return this.send('client_caps', {
       opus_decode: isOpusDecodeSupported(),
       aec_enabled: aecEnabled,
+      local_tts: options?.localTts ?? false,
     })
   }
 

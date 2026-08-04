@@ -61,6 +61,7 @@ export interface RealtimePresenceConfig {
 }
 
 export type SttMode = 'cloud' | 'local' | 'auto'
+export type TtsMode = 'cloud' | 'local' | 'auto'
 
 /** X-ASR 本地 sidecar（客户端优先 POC）。 */
 export interface RealtimeXasrConfig {
@@ -81,10 +82,21 @@ export interface RealtimeXasrConfig {
   speechEndSubmitMs: number
 }
 
+/** X-TTS Matcha sidecar（本地 TTS POC）。 */
+export interface RealtimeXttsConfig {
+  /** 是否尝试连接本地 X-TTS HTTP sidecar。 */
+  enabled: boolean
+  baseUrl: string
+  /** 合成语速。 */
+  speed: number
+}
+
 export interface RealtimeClientConfig {
   sttMode: SttMode
+  ttsMode: TtsMode
   speechLocale: string
   xasr: RealtimeXasrConfig
+  xtts: RealtimeXttsConfig
   vad: RealtimeVadConfig
   bargeIn: RealtimeBargeInConfig
   voiceprint: RealtimeVoiceprintConfig
@@ -145,18 +157,26 @@ export const DEFAULT_SILERO: RealtimeSileroVadConfig = {
 export const DEFAULT_XASR: RealtimeXasrConfig = {
   enabled: true,
   wsUrl: 'ws://127.0.0.1:8766',
-  chunkMs: 80,
-  silenceMs: 800,
-  partialStableMs: 600,
-  minCompleteSilenceMs: 700,
-  unfinishedSilenceMs: 1400,
-  speechEndSubmitMs: 450,
+  chunkMs: 40,
+  silenceMs: 600,
+  partialStableMs: 300,
+  minCompleteSilenceMs: 450,
+  unfinishedSilenceMs: 900,
+  speechEndSubmitMs: 200,
+}
+
+export const DEFAULT_XTTS: RealtimeXttsConfig = {
+  enabled: true,
+  baseUrl: 'http://127.0.0.1:8767',
+  speed: 1.0,
 }
 
 export const DEFAULT_REALTIME: RealtimeClientConfig = {
   sttMode: 'auto',
+  ttsMode: 'auto',
   speechLocale: 'zh-CN',
   xasr: { ...DEFAULT_XASR },
+  xtts: { ...DEFAULT_XTTS },
   vad: {
     silenceMs: 1800,
     minSpeechMs: 250,
@@ -287,6 +307,7 @@ function parseRealtimeBlock(raw: unknown): RealtimeClientConfig {
   const base = {
     ...DEFAULT_REALTIME,
     xasr: { ...DEFAULT_REALTIME.xasr },
+    xtts: { ...DEFAULT_REALTIME.xtts },
     vad: { ...DEFAULT_REALTIME.vad, silero: { ...DEFAULT_REALTIME.vad.silero } },
     bargeIn: { ...DEFAULT_REALTIME.bargeIn },
     voiceprint: { ...DEFAULT_REALTIME.voiceprint },
@@ -299,6 +320,11 @@ function parseRealtimeBlock(raw: unknown): RealtimeClientConfig {
   const mode = String(r.stt_mode ?? r.sttMode ?? base.sttMode)
   if (mode === 'cloud' || mode === 'local' || mode === 'auto') {
     base.sttMode = mode
+  }
+
+  const ttsMode = String(r.tts_mode ?? r.ttsMode ?? base.ttsMode)
+  if (ttsMode === 'cloud' || ttsMode === 'local' || ttsMode === 'auto') {
+    base.ttsMode = ttsMode
   }
 
   if (typeof r.speech_locale === 'string' && r.speech_locale) {
@@ -328,6 +354,16 @@ function parseRealtimeBlock(raw: unknown): RealtimeClientConfig {
         x.speech_end_submit_ms ?? x.speechEndSubmitMs,
         base.xasr.speechEndSubmitMs,
       ),
+    }
+  }
+
+  const xtts = r.xtts
+  if (xtts && typeof xtts === 'object') {
+    const t = xtts as Record<string, unknown>
+    base.xtts = {
+      enabled: t.enabled !== false,
+      baseUrl: String(t.base_url ?? t.baseUrl ?? base.xtts.baseUrl),
+      speed: num(t.speed, base.xtts.speed),
     }
   }
 
@@ -456,8 +492,8 @@ function applyPublicConfig(base: string, data: Record<string, unknown>) {
     realtime: parseRealtimeBlock(data.realtime),
     companionPresence: parseCompanionBlock(data),
   }
-  // 服务端开启 vision 时，客户端默认 opt-in（用户可在设置里关）
-  if (_clientConfig.visionEnabled && typeof window !== 'undefined') {
+  // 服务端 vision 开关同步到客户端 localStorage
+  if (typeof window !== 'undefined') {
     void import('@/services/visionCapture').then(({ ensureVisionCaptureDefault }) => {
       ensureVisionCaptureDefault()
     })
@@ -508,6 +544,17 @@ export function resolveSttMode(
   return 'cloud'
 }
 
+export function resolveTtsMode(
+  cfg: RealtimeClientConfig,
+  localSupported: boolean,
+): 'cloud' | 'local' {
+  if (cfg.ttsMode === 'local') return localSupported ? 'local' : 'cloud'
+  if (cfg.ttsMode === 'auto' && localSupported) {
+    return 'local'
+  }
+  return 'cloud'
+}
+
 /** 用户设置里的 stt_mode 覆盖 public config（设置页保存到 user preferences）。 */
 export function withUserSttMode(
   cfg: RealtimeClientConfig,
@@ -517,6 +564,23 @@ export function withUserSttMode(
     return { ...cfg, sttMode: mode }
   }
   return cfg
+}
+
+export function withUserTtsMode(
+  cfg: RealtimeClientConfig,
+  mode: string | undefined | null,
+): RealtimeClientConfig {
+  if (mode === 'cloud' || mode === 'local' || mode === 'auto') {
+    return { ...cfg, ttsMode: mode }
+  }
+  return cfg
+}
+
+export function readCachedTtsMode(): TtsMode | null {
+  if (typeof window === 'undefined') return null
+  const v = localStorage.getItem('mochi_tts_mode')
+  if (v === 'cloud' || v === 'local' || v === 'auto') return v
+  return null
 }
 
 export function readCachedSttMode(): SttMode | null {

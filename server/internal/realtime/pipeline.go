@@ -69,8 +69,10 @@ func NewPipeline(chatSvc *chat.Service, cfg config.RealtimeConfig, appCfg *confi
 		log.Printf("[vision] pipeline disabled (config vision.enabled=false)")
 	}
 	asrEp := dashscope.EndpointConfig{WSURL: cfg.Dashscope.ASRWSURL}
-	if cfg.ASR.Provider == "dashscope" && apiKey != "" {
+	if strings.ToLower(cfg.ASR.Provider) == "dashscope" && apiKey != "" {
 		p.asr = newDashscopeASR(dashscope.NewASRClient(apiKey, cfg.ASR.Model, cfg.ASR.SampleRate, asrEp))
+	} else if strings.ToLower(cfg.ASR.Provider) == "none" {
+		log.Printf("[realtime] asr.provider=none (client-side STT / text_input only)")
 	}
 
 	p.tts, p.ttsFormat = buildTTSSynth(cfg, apiKey, ep, ttsPreferMP3(cfg, false))
@@ -131,6 +133,10 @@ func (p *Pipeline) getTTSForSession(ctx context.Context, sess *Session) sessionT
 
 func buildTTSSynth(cfg config.RealtimeConfig, apiKey string, ep dashscope.EndpointConfig, preferMP3 bool) (TTSSynthesizer, string) {
 	format := "mp3"
+	if strings.ToLower(cfg.TTS.Provider) == "none" {
+		log.Printf("[realtime] tts.provider=none (client-side TTS)")
+		return nil, format
+	}
 	if apiKey == "" {
 		return nil, format
 	}
@@ -905,7 +911,7 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 
 	var segCh chan ttsSegment
 	var ttsDone chan struct{}
-	if withVoice && ttsSynth != nil {
+	if withVoice && ttsSynth != nil && !sess.LocalTTS() {
 		segCh = make(chan ttsSegment, 16)
 		ttsDone = make(chan struct{})
 		go func() {
@@ -972,7 +978,7 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 	}
 
 	// Thinking filler: play a short phrase if LLM is slow to respond.
-	if withVoice && p.tts != nil && p.cfg.ThinkingFiller.Enabled {
+	if withVoice && p.tts != nil && !sess.LocalTTS() && p.cfg.ThinkingFiller.Enabled {
 		go func() {
 			threshold := time.Duration(p.cfg.ThinkingFiller.ThresholdMS) * time.Millisecond
 			timer := time.NewTimer(threshold)
@@ -1076,7 +1082,7 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 			compliance*100, text.CountMoodTags(reply), text.CountSpeakSentences(reply), sess.ID)
 	}
 
-	if withVoice && p.tts != nil && segCh != nil {
+	if withVoice && p.tts != nil && !sess.LocalTTS() && segCh != nil {
 		if remainder := strings.TrimSpace(tokenBuf.String()); remainder != "" {
 			enqueueSeg(remainder, true)
 		}
@@ -1109,7 +1115,7 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 func (p *Pipeline) speakReply(ctx context.Context, sess *Session, send Sender, reply string) {
 	_ = send.Send(MsgLLMDone, LLMDone{Text: text.StripMoodTags(reply)})
 
-	if p.tts == nil {
+	if p.tts == nil || sess.LocalTTS() {
 		return
 	}
 

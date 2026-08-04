@@ -49,6 +49,12 @@ export default defineConfig(() => ({
         target: backendTarget,
         changeOrigin: true,
       },
+      // X-TTS sidecar：dev 同源代理，避免 localhost:1420 → 127.0.0.1:8767 的 CORS
+      '/x-tts': {
+        target: 'http://127.0.0.1:8767',
+        changeOrigin: true,
+        rewrite: (p: string) => p.replace(/^\/x-tts/, ''),
+      },
     },
   },
   envPrefix: ['VITE_', 'TAURI_'],

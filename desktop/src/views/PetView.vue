@@ -34,7 +34,7 @@ import {
   setupVoiceOwnerListener,
 } from '@/services/voiceSessionOwner'
 import { invoke } from '@tauri-apps/api/core'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { type UnlistenFn } from '@tauri-apps/api/event'
 import { playWakeGreeting, getWakeGreetingText } from '@/services/wakeGreeting'
 
 const { sidePanelOpen = false } = defineProps<{ sidePanelOpen?: boolean }>()

@@ -257,6 +257,8 @@ export interface UserPreferences {
   follow_up_enabled?: boolean
   voice_reply_default?: boolean
   stt_mode?: 'auto' | 'local' | 'cloud'
+  /** 本地 / 云端 TTS（可选，未保存时走 public config tts_mode）。 */
+  tts_mode?: 'auto' | 'local' | 'cloud'
   wellness_nudges_enabled?: boolean
   wellness_drink?: boolean
   wellness_meal?: boolean
