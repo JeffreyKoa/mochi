@@ -58,6 +58,7 @@ import {
 } from '@/services/turnEndArbiter'
 import { startEventLoopProbe, onEventLoopLag } from '@/services/eventLoopProbe'
 import { recordTurnMetricsBaseline } from '@/services/turnMetricsBaseline'
+import { textContainsPetName } from '@/services/petNameWake'
 
 /**
  * Turn phases — like talking to a person:
@@ -258,6 +259,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
   let ownerEmbedding: Float32Array | null = null
   let ownerFaceEmbedding: Float32Array | null = null
   let wakeProbeInFlight = false
+  /** 休息态：流式 ASR 探名，听到名字即唤醒主人（优先于声纹误拒） */
+  let nameProbeActive = false
+  let nameDetectedInProbe = false
   /** 最近一次唤醒 probe 的声纹得分（供拒答策略判断）。 */
   let lastWakeProbeScore: number | null = null
   /** 对话中声纹 stream_check 定时器。 */
@@ -681,7 +685,10 @@ export const useRealtimeStore = defineStore('realtime', () => {
 
   async function tryWakeFromResting() {
     const probe = await probeWakeFromResting()
-    if (probe === 'ok') return
+    if (probe === 'ok') {
+      endNameWakeProbe(false)
+      return
+    }
     // VAD 已报 speech_start 但声纹/分类器误拒：能量明显时仍唤醒（宠物点按场景）
     if (
       (probe === 'not_owner' || probe === 'not_speech') &&
@@ -691,12 +698,75 @@ export const useRealtimeStore = defineStore('realtime', () => {
         console.debug('[voiceprint] vad energy wake fallback peak=%s', micLevel.value.toFixed(3))
       }
       identityGate.markOwnerMatch()
+      endNameWakeProbe(false)
       wakeOnSpeech()
       return
     }
     if (probe === 'not_owner' && import.meta.env.DEV) {
       console.debug('[voiceprint] wake silent reject score=%s', lastWakeProbeScore?.toFixed(3) ?? 'null')
     }
+  }
+
+  /** 休息态检测到说话：并行启动「听名字」与声纹唤醒。 */
+  function startNameWakeProbe() {
+    if (phase !== 'resting' || !recording || nameProbeActive) return
+    if (!realtimeSession.isOpen()) return
+    nameProbeActive = true
+    nameDetectedInProbe = false
+    realtimeSession.sendAudioStart()
+    turnUploadStarted = true
+    flushPreRollAudio()
+    if (import.meta.env.DEV) {
+      console.debug('[name_wake] probe started')
+    }
+  }
+
+  function endNameWakeProbe(cancel: boolean) {
+    if (!nameProbeActive) return
+    nameProbeActive = false
+    if (cancel && phase === 'resting') {
+      turnUploadStarted = false
+      realtimeSession.sendUtteranceCancel()
+      if (import.meta.env.DEV) {
+        console.debug('[name_wake] probe cancelled (no name)')
+      }
+    }
+  }
+
+  /** 流式 ASR 已听到名字：升级为正式聆听，不再二次 audio_start。 */
+  function promoteNameProbeToWake() {
+    if (phase !== 'resting' || !recording) return
+    nameProbeActive = false
+    nameDetectedInProbe = true
+    identityGate.markOwnerMatch()
+    usePetStore().clearEmotionHold()
+    setPhase('user_speaking')
+    uploadSeq = uploadSeq || 0
+    heardSpeech = true
+    touchLastSpeechAt()
+    utteranceStartedAt = Date.now()
+    ambientPresence.setOwnerSpeaking(true)
+    identityGate.resetTurn()
+    ownerTurnUploadLock = true
+    turnUploadStarted = true
+    perception.onSpeechStart()
+    startStreamCheck()
+    startSilenceWatch()
+    statusText.value = '正在听...'
+    if (import.meta.env.DEV) {
+      console.debug('[name_wake] promoted to user_speaking')
+    }
+  }
+
+  async function beginRestingSpeechWake() {
+    if (phase !== 'resting' || !recording) return
+    if (!realtimeSession.isOpen()) {
+      await connectIfOwner()
+    }
+    if (realtimeSession.isOpen()) {
+      startNameWakeProbe()
+    }
+    await tryWakeFromResting()
   }
 
   function resetTurnTiming() {
@@ -1087,6 +1157,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
     utteranceStartedAt = 0
     bargeAccumMs = 0
     wakeAccumMs = 0
+    nameProbeActive = false
+    nameDetectedInProbe = false
+    turnUploadStarted = false
     ttsStartedAt = 0
     perception.resetTurn()
     lastFaceProbe = null
@@ -1319,7 +1392,14 @@ export const useRealtimeStore = defineStore('realtime', () => {
     if (!recording) return
 
     if (phase === 'resting' && ev === 'speech_start') {
-      void tryWakeFromResting()
+      void beginRestingSpeechWake()
+      return
+    }
+
+    if (phase === 'resting' && nameProbeActive && ev === 'speech_end') {
+      if (!nameDetectedInProbe) {
+        endNameWakeProbe(true)
+      }
       return
     }
 
@@ -1616,6 +1696,13 @@ export const useRealtimeStore = defineStore('realtime', () => {
         if (phase === 'resting') {
           speechVad?.feed(pcmToFloat(boosted))
           const vadSpeaking = speechVad?.isSpeaking() ?? false
+          // 名字探针：休息态也上传 PCM，供流式 ASR 识别「卡卡」等称呼
+          if (nameProbeActive && turnUploadStarted) {
+            uploadSeq++
+            chunksSentCount++
+            chunksSent.value = chunksSentCount
+            realtimeSession.sendAudio(arrayBufferToBase64(boosted), uploadSeq)
+          }
           // 需 VAD 认为在说话，或能量明显偏高，才尝试唤醒（避免杂音误触）
           if (peak >= params.wakePeak && (vadSpeaking || peak >= params.wakePeak * 2)) {
             wakeAccumMs += 20
@@ -1815,6 +1902,16 @@ export const useRealtimeStore = defineStore('realtime', () => {
         partialText.value = ev.text
         partialUpdatedAt = Date.now()
         perception.trackObjectIntentFromPartial(ev.text)
+        // 呼喊名字 → 立即唤醒并强制放行本 turn（服务端 gate fastpath:pet_name）
+        if (textContainsPetName(ev.text)) {
+          nameDetectedInProbe = true
+          identityGate.markOwnerMatch()
+          if (phase === 'resting' && nameProbeActive) {
+            promoteNameProbeToWake()
+          } else if (phase === 'resting') {
+            wakeOnSpeech()
+          }
+        }
         if (ev.text.trim() && !pet.isChatOpen) {
           pet.showPersistentBubble(`"${stripMoodTags(ev.text.trim())}"`)
         }

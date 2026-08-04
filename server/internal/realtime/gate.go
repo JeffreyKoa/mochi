@@ -65,7 +65,8 @@ func NewResponseGate(
 
 // Decide reports whether the turn should proceed to the LLM, plus a short
 // reason for logging. Fail-open: errors yield ok=true.
-func (g *ResponseGate) Decide(ctx context.Context, text, petName string) (bool, string) {
+// callNames: 宠物名及主人常用称呼，命中任一则必回应。
+func (g *ResponseGate) Decide(ctx context.Context, text string, callNames ...string) (bool, string) {
 	t := strings.TrimSpace(text)
 	if t == "" {
 		return false, "empty"
@@ -79,8 +80,11 @@ func (g *ResponseGate) Decide(ctx context.Context, text, petName string) (bool, 
 			return true, "fastpath:question_word:" + w
 		}
 	}
-	if petName != "" && strings.Contains(t, petName) {
-		return true, "fastpath:pet_name"
+	for _, name := range callNames {
+		n := strings.TrimSpace(name)
+		if n != "" && strings.Contains(t, n) {
+			return true, "fastpath:pet_name:" + n
+		}
 	}
 	for _, w := range g.shareWords {
 		if strings.Contains(t, w) {
@@ -102,7 +106,11 @@ func (g *ResponseGate) Decide(ctx context.Context, text, petName string) (bool, 
 		t = string(runes[:g.maxChars])
 	}
 
-	respond, err := g.askModel(ctx, t, petName)
+	petLabel := ""
+	if len(callNames) > 0 {
+		petLabel = callNames[0]
+	}
+	respond, err := g.askModel(ctx, t, petLabel)
 	if err != nil {
 		return true, "failopen:" + err.Error()
 	}

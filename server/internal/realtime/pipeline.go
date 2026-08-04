@@ -685,13 +685,13 @@ func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text
 	// Response gate: decide whether this utterance needs a reply at all
 	// (self-talk, background conversation, etc. are silently ignored).
 	if withVoice && p.gate != nil {
-		petName := ""
+		callNames := []string{}
 		if p.chat != nil {
-			if pet, err := p.chat.GetPetByUser(ctx, sess.UserID); err == nil && pet != nil {
-				petName = pet.Name
+			if pet, err := p.chat.GetPetByUser(ctx, sess.UserID); err == nil && pet != nil && pet.Name != "" {
+				callNames = append(callNames, pet.Name)
 			}
 		}
-		if ok, reason := p.gate.Decide(ctx, text, petName); !ok {
+		if ok, reason := p.gate.Decide(ctx, text, callNames...); !ok {
 			log.Printf("[realtime] gate dismiss session=%s text=%q reason=%s", sess.ID, text, reason)
 			p.abortTurnSilent(sess, send)
 			return
