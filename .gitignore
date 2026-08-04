@@ -30,3 +30,6 @@ desktop/src-tauri/bundle/voice/x-tts/
 tools/python-embed/
 services/emotion2vec/.venv
 services/emotion2vec/.__pycache__
+
+# ONNX 模型体积大，本地按 public/models/*/README.md 下载，勿提交
+desktop/public/models/**/*.onnx
