@@ -97,6 +97,24 @@ describe('turnEndArbiter', () => {
     expect(d.extendHoldMs).toBe(THINKING_HOLD_EXTEND_MS)
   })
 
+  it('x-asr partial without VAD peak can submit after silence', () => {
+    const partialUpdatedAt = 10_000 - 3000
+    const d = evaluateTurnEnd(
+      base({
+        partialText: '你好呀今天天气怎么样',
+        partialUpdatedAt,
+        lastSpeechAt: 0,
+        now: 10_000,
+        partialStableMs: 300,
+        minCompleteSilenceMs: 450,
+        silenceMsConfig: 600,
+        disablePauseProbe: true,
+      }),
+    )
+    expect(d.ready).toBe(true)
+    expect(d.reason).toBe('ready')
+  })
+
   it('respects thinking_hold', () => {
     const d = evaluateTurnEnd(
       base({

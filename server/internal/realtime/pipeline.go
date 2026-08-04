@@ -155,6 +155,11 @@ func buildTTSSynth(cfg config.RealtimeConfig, apiKey string, ep dashscope.Endpoi
 	return newDashscopeTTSSynth(client), format
 }
 
+// ASRConfigured 服务端是否配置了云端流式 ASR（provider=none 时为 false）。
+func (p *Pipeline) ASRConfigured() bool {
+	return p != nil && p.asr != nil
+}
+
 func (p *Pipeline) StartASRSession(ctx context.Context, onPartial ASRPartialHandler) (ASRSession, error) {
 	if p.asr == nil {
 		return nil, fmt.Errorf("asr not configured")

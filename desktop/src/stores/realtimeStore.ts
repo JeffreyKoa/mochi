@@ -469,6 +469,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
   }
   async function refreshXasrSidecarProbe() {
     const rt = getRealtimeConfig()
+    const prevReachable = xasrSidecarReachable.value
     if (!rt.xasr.enabled) {
       xasrSidecarReachable.value = false
       xasrSidecarProbeMisses = 0
@@ -495,7 +496,25 @@ export const useRealtimeStore = defineStore('realtime', () => {
     const ok = await probeXAsrServer(rt.xasr.wsUrl, 5000)
     xasrSidecarProbeMisses = ok ? 0 : xasrSidecarProbeMisses + 1
     xasrSidecarReachable.value = ok || xasrSidecarProbeMisses < 2
+    // sidecar 晚于会话启动时上线：尝试从 cloud 提升到 local
+    if (ok && prevReachable !== true) {
+      void maybePromoteLocalStt()
+    }
     return ok
+  }
+
+  /** X-ASR sidecar 迟就绪：已在 cloud 会话时提示；未录音则下次 startTalk 走 local。 */
+  async function maybePromoteLocalStt() {
+    if (effectiveSttMode === 'local' && localSttBackend === 'xasr') return
+    const rt = await getRealtimeWithUserPrefs()
+    if (!rt.xasr.enabled || !xasrSidecarReachable.value) return
+    if (resolveSttMode(rt, true) !== 'local') return
+    if (recording && effectiveSttMode === 'cloud') {
+      statusText.value = 'X-ASR 已就绪，请结束对话后重新点击开始语音'
+      if (import.meta.env.DEV) {
+        console.info('[realtime] x-asr sidecar online; restart talk to leave cloud STT')
+      }
+    }
   }
 
   async function refreshXttsSidecarProbe() {
@@ -1355,8 +1374,12 @@ export const useRealtimeStore = defineStore('realtime', () => {
     partialUpdatedAt = Date.now()
     perception.trackObjectIntentFromPartial(trimmed)
     heardSpeech = true
-    // X-ASR partial 来自推理 backlog，不应重置 VAD 静音计时
-    if (localSttBackend !== 'xasr') {
+    // X-ASR：首条 partial 须建立 lastSpeechAt；后续 partial 不刷新静音计时（避免 backlog 拖长句末）
+    if (localSttBackend === 'xasr') {
+      if (lastSpeechAt <= 0) {
+        touchLastSpeechAt()
+      }
+    } else {
       touchLastSpeechAt()
     }
     const pet = usePetStore()
@@ -2483,6 +2506,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
           },
           onError: (msg) => {
             console.warn('[xasr]', msg)
+            if (recording && phase === 'user_speaking') {
+              statusText.value = `语音识别异常：${msg}`
+            }
           },
         })
         sttBackendLabel.value = 'xasr'
@@ -2603,6 +2629,13 @@ export const useRealtimeStore = defineStore('realtime', () => {
       await startLocalTalk()
       await visionWarmPromise.catch(() => {})
       return recording
+    }
+
+    // Tauri + X-ASR：服务端 asr.provider=none，禁止静默回退云端（否则完全无法识别）
+    if (isTauri() && rt.xasr.enabled) {
+      statusText.value = 'X-ASR 未就绪，请重启应用或在设置 → 声音中重启本地语音服务'
+      console.warn('[realtime] cloud STT blocked on Tauri (server has no ASR)')
+      return false
     }
 
     await startCloudTalk()

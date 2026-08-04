@@ -182,7 +182,8 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 	var asrSess ASRSession
 	var asrMu sync.Mutex
 	var lastPartial string
-	streamingASR := h.pipeline != nil
+	// provider=none 时客户端本地 STT，服务端不创建 ASR session
+	streamingASR := h.pipeline != nil && h.pipeline.ASRConfigured()
 	var processing bool
 	var processingMu sync.Mutex
 	var textTurnActive bool

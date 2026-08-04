@@ -81,6 +81,12 @@ export function isUnfinishedSpeech(text: string): boolean {
   return false
 }
 
+/** 最近一次「有语音/识别活动」的时间戳（X-ASR partial 可能先于 VAD 能量更新）。 */
+function speechActivityAt(signals: TurnEndSignals): number {
+  const partialAt = signals.partialText.trim() ? signals.partialUpdatedAt : 0
+  return Math.max(signals.lastSpeechAt, partialAt)
+}
+
 /** 多模态轮次结束：是否可 submit（sendAudioEnd） */
 export function evaluateTurnEnd(signals: TurnEndSignals): TurnEndDecision {
   const now = signals.now ?? Date.now()
@@ -90,7 +96,8 @@ export function evaluateTurnEnd(signals: TurnEndSignals): TurnEndDecision {
   const unfinishedSilenceMs = signals.unfinishedSilenceMs ?? UNFINISHED_SILENCE_MS
   const pauseProbeMs = signals.disablePauseProbe ? Number.MAX_SAFE_INTEGER : PAUSE_PROBE_MS
 
-  if (!signals.heardSpeech || signals.lastSpeechAt <= 0) {
+  const activityAt = speechActivityAt(signals)
+  if (!signals.heardSpeech || activityAt <= 0) {
     return { ready: false, reason: 'no_speech_yet' }
   }
   if (signals.vadSpeaking) {
@@ -100,7 +107,7 @@ export function evaluateTurnEnd(signals: TurnEndSignals): TurnEndDecision {
     return { ready: false, reason: 'thinking_hold' }
   }
 
-  const silence = now - signals.lastSpeechAt
+  const silence = now - activityAt
   const partial = signals.partialText.trim()
   /** 判定句中可能未完（空 partial 不算未完，避免 ASR 延迟误拦） */
   const unfinished =
@@ -120,7 +127,7 @@ export function evaluateTurnEnd(signals: TurnEndSignals): TurnEndDecision {
     now - signals.speechEndedAt >= signals.speechEndSubmitMs &&
     now - signals.partialUpdatedAt >= partialStableMs
   ) {
-    const silenceSinceSpeech = now - signals.lastSpeechAt
+    const silenceSinceSpeech = now - activityAt
     const fastSilence = Math.min(signals.silenceMsConfig, minCompleteSilenceMs)
     if (silenceSinceSpeech >= fastSilence) {
       return { ready: true, reason: 'xasr_speech_end' }
