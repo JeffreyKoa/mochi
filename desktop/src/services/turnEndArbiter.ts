@@ -43,6 +43,15 @@ export interface TurnEndSignals {
   resumedAfterPauseProbe?: boolean
   /** Tier-0 vision_pause_hint：服务端推断仍在组织语言 */
   pauseHintComposing?: boolean
+  /** 本地 X-ASR：跳过 3s 眼动 pause_probe 延长 */
+  disablePauseProbe?: boolean
+  /** 覆盖默认 partial 稳定窗口 */
+  partialStableMs?: number
+  minCompleteSilenceMs?: number
+  unfinishedSilenceMs?: number
+  /** VAD speech_end 时刻（本地 X-ASR 加速提交） */
+  speechEndedAt?: number
+  speechEndSubmitMs?: number
   now?: number
 }
 
@@ -76,6 +85,11 @@ export function isUnfinishedSpeech(text: string): boolean {
 export function evaluateTurnEnd(signals: TurnEndSignals): TurnEndDecision {
   const now = signals.now ?? Date.now()
 
+  const partialStableMs = signals.partialStableMs ?? PARTIAL_STABLE_MS
+  const minCompleteSilenceMs = signals.minCompleteSilenceMs ?? MIN_COMPLETE_SILENCE_MS
+  const unfinishedSilenceMs = signals.unfinishedSilenceMs ?? UNFINISHED_SILENCE_MS
+  const pauseProbeMs = signals.disablePauseProbe ? Number.MAX_SAFE_INTEGER : PAUSE_PROBE_MS
+
   if (!signals.heardSpeech || signals.lastSpeechAt <= 0) {
     return { ready: false, reason: 'no_speech_yet' }
   }
@@ -93,12 +107,28 @@ export function evaluateTurnEnd(signals: TurnEndSignals): TurnEndDecision {
     isUnfinishedSpeech(partial) || (partial.length > 0 && partial.length < 12)
 
   // ASR 仍在更新 → 嘴还在动（流式延迟），不提交
-  if (partial && now - signals.partialUpdatedAt < PARTIAL_STABLE_MS) {
+  if (partial && now - signals.partialUpdatedAt < partialStableMs) {
     return { ready: false, reason: 'partial_unstable' }
   }
 
+  // 本地 X-ASR：VAD 已 speech_end 且 partial 稳定 → 更短路径提交
+  if (
+    signals.speechEndedAt &&
+    signals.speechEndSubmitMs &&
+    !signals.vadSpeaking &&
+    partial &&
+    now - signals.speechEndedAt >= signals.speechEndSubmitMs &&
+    now - signals.partialUpdatedAt >= partialStableMs
+  ) {
+    const silenceSinceSpeech = now - signals.lastSpeechAt
+    const fastSilence = Math.min(signals.silenceMsConfig, minCompleteSilenceMs)
+    if (silenceSinceSpeech >= fastSilence) {
+      return { ready: true, reason: 'xasr_speech_end' }
+    }
+  }
+
   // >3s 停顿且尚未续说：视为句中组织语言，延长等待（仅 pause_probe 后、续说前）
-  const midPause = silence >= PAUSE_PROBE_MS && !signals.resumedAfterPauseProbe
+  const midPause = silence >= pauseProbeMs && !signals.resumedAfterPauseProbe
   if (midPause && signals.pauseHintComposing && unfinished) {
     return {
       ready: false,
@@ -124,11 +154,11 @@ export function evaluateTurnEnd(signals: TurnEndSignals): TurnEndDecision {
   }
 
   const requiredSilence = unfinished
-    ? UNFINISHED_SILENCE_MS
-    : Math.max(signals.silenceMsConfig, MIN_COMPLETE_SILENCE_MS)
+    ? unfinishedSilenceMs
+    : Math.max(signals.silenceMsConfig, minCompleteSilenceMs)
 
   if (silence < requiredSilence) {
-    if (silence >= PAUSE_PROBE_MS) {
+    if (!signals.disablePauseProbe && silence >= PAUSE_PROBE_MS) {
       return { ready: false, reason: 'silence_short', shouldPauseProbe: true }
     }
     return { ready: false, reason: 'silence_short' }

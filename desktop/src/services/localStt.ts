@@ -15,8 +15,36 @@ function getSpeechRecognitionCtor(): SpeechRecognitionCtor | null {
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null
 }
 
-export function isLocalSttSupported(): boolean {
+export function isWebSpeechSttSupported(): boolean {
   return getSpeechRecognitionCtor() != null
+}
+
+/** 同步：是否可能存在任一本地 STT（Web Speech；X-ASR 需异步 probe）。 */
+export function isLocalSttSupported(): boolean {
+  return isWebSpeechSttSupported()
+}
+
+export type LocalSttBackend = 'xasr' | 'webspeech'
+
+/** 按配置解析本地 STT 后端：X-ASR 优先，不可达则 Web Speech。 */
+export async function resolveLocalSttBackend(cfg: {
+  xasr: { enabled: boolean; wsUrl: string }
+}): Promise<LocalSttBackend | null> {
+  if (cfg.xasr.enabled) {
+    const { probeXAsrServer } = await import('@/services/xAsrClient')
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (await probeXAsrServer(cfg.xasr.wsUrl, attempt === 0 ? 2500 : 4000)) {
+        return 'xasr'
+      }
+      if (attempt === 0) {
+        await new Promise((r) => setTimeout(r, 400))
+      }
+    }
+  }
+  if (isWebSpeechSttSupported()) {
+    return 'webspeech'
+  }
+  return null
 }
 
 /** Device-native STT via Web Speech API (OpenClaw Native Talk style). */

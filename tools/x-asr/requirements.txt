@@ -1,0 +1,6 @@
+numpy
+websockets
+soundfile
+librosa
+sherpa-onnx
+huggingface_hub[cli]

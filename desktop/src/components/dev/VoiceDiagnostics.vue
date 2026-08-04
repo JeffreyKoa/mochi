@@ -13,6 +13,7 @@ const collapsed = ref(false)
 const eventLoopLagMs = ref(0)
 const eventLoopMaxLagMs = ref(0)
 let raf = 0
+let probeTimer: ReturnType<typeof setInterval> | null = null
 
 function refreshLag() {
   eventLoopLagMs.value = getEventLoopLagMs()
@@ -23,6 +24,19 @@ function refreshLag() {
 const lagClass = computed(() =>
   eventLoopLagMs.value >= EVENT_LOOP_LAG_WARN_MS ? 'warn' : '',
 )
+
+const xasrSidecarLabel = computed(() => {
+  const v = rt.xasrSidecarReachable
+  if (v === null) return '…'
+  if (v && rt.sttBackendLabel === 'xasr') return 'online (session)'
+  return v ? 'online' : 'offline'
+})
+
+const xasrSidecarClass = computed(() => {
+  if (rt.xasrSidecarReachable === false) return 'warn'
+  if (rt.xasrSidecarReachable === true) return 'ok'
+  return ''
+})
 
 const metricsLines = computed(() => {
   const m = rt.lastTurnMetrics
@@ -41,10 +55,15 @@ const metricsLines = computed(() => {
 
 onMounted(() => {
   raf = requestAnimationFrame(refreshLag)
+  void rt.refreshXasrSidecarProbe()
+  probeTimer = setInterval(() => {
+    void rt.refreshXasrSidecarProbe()
+  }, 15000)
 })
 
 onUnmounted(() => {
   cancelAnimationFrame(raf)
+  if (probeTimer) clearInterval(probeTimer)
 })
 </script>
 
@@ -65,6 +84,14 @@ onUnmounted(() => {
       <div class="row">
         <span class="k">talking</span>
         <span class="v">{{ rt.talking }} / rest {{ rt.resting }}</span>
+      </div>
+      <div class="row" :class="xasrSidecarClass">
+        <span class="k">xasrSidecar</span>
+        <span class="v">{{ xasrSidecarLabel }}</span>
+      </div>
+      <div class="row">
+        <span class="k">stt</span>
+        <span class="v">{{ rt.sttBackendLabel || (rt.talking ? '…' : '—') }}</span>
       </div>
       <div class="row">
         <span class="k">chunks</span>
@@ -136,6 +163,10 @@ onUnmounted(() => {
 .row.warn .v {
   color: #ff6b6b;
   font-weight: 600;
+}
+
+.row.ok .v {
+  color: #6bff8c;
 }
 
 .k {

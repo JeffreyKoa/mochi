@@ -62,9 +62,29 @@ export interface RealtimePresenceConfig {
 
 export type SttMode = 'cloud' | 'local' | 'auto'
 
+/** X-ASR 本地 sidecar（客户端优先 POC）。 */
+export interface RealtimeXasrConfig {
+  /** 是否尝试连接本地 X-ASR WebSocket。 */
+  enabled: boolean
+  wsUrl: string
+  /** 客户端发送 PCM 的聚合块时长（毫秒）。 */
+  chunkMs: number
+  /** 句末静音达到此值可提交（本地比云端更短）。 */
+  silenceMs: number
+  /** partial 稳定多久视为不再更新。 */
+  partialStableMs: number
+  /** 完整句最短句末静音。 */
+  minCompleteSilenceMs: number
+  /** 疑似未完句所需静音。 */
+  unfinishedSilenceMs: number
+  /** VAD speech_end 后加速提交：距 speech_end 至少此毫秒且 partial 已稳定。 */
+  speechEndSubmitMs: number
+}
+
 export interface RealtimeClientConfig {
   sttMode: SttMode
   speechLocale: string
+  xasr: RealtimeXasrConfig
   vad: RealtimeVadConfig
   bargeIn: RealtimeBargeInConfig
   voiceprint: RealtimeVoiceprintConfig
@@ -122,9 +142,21 @@ export const DEFAULT_SILERO: RealtimeSileroVadConfig = {
   preSpeechPadMs: 300,
 }
 
+export const DEFAULT_XASR: RealtimeXasrConfig = {
+  enabled: true,
+  wsUrl: 'ws://127.0.0.1:8766',
+  chunkMs: 80,
+  silenceMs: 800,
+  partialStableMs: 600,
+  minCompleteSilenceMs: 700,
+  unfinishedSilenceMs: 1400,
+  speechEndSubmitMs: 450,
+}
+
 export const DEFAULT_REALTIME: RealtimeClientConfig = {
   sttMode: 'auto',
   speechLocale: 'zh-CN',
+  xasr: { ...DEFAULT_XASR },
   vad: {
     silenceMs: 1800,
     minSpeechMs: 250,
@@ -254,6 +286,7 @@ function parseSileroBlock(raw: unknown, base: RealtimeSileroVadConfig): Realtime
 function parseRealtimeBlock(raw: unknown): RealtimeClientConfig {
   const base = {
     ...DEFAULT_REALTIME,
+    xasr: { ...DEFAULT_REALTIME.xasr },
     vad: { ...DEFAULT_REALTIME.vad, silero: { ...DEFAULT_REALTIME.vad.silero } },
     bargeIn: { ...DEFAULT_REALTIME.bargeIn },
     voiceprint: { ...DEFAULT_REALTIME.voiceprint },
@@ -272,6 +305,30 @@ function parseRealtimeBlock(raw: unknown): RealtimeClientConfig {
     base.speechLocale = r.speech_locale
   } else if (typeof r.speechLocale === 'string' && r.speechLocale) {
     base.speechLocale = r.speechLocale
+  }
+
+  const xasr = r.xasr
+  if (xasr && typeof xasr === 'object') {
+    const x = xasr as Record<string, unknown>
+    base.xasr = {
+      enabled: x.enabled !== false,
+      wsUrl: String(x.ws_url ?? x.wsUrl ?? base.xasr.wsUrl),
+      chunkMs: num(x.chunk_ms ?? x.chunkMs, base.xasr.chunkMs),
+      silenceMs: num(x.silence_ms ?? x.silenceMs, base.xasr.silenceMs),
+      partialStableMs: num(x.partial_stable_ms ?? x.partialStableMs, base.xasr.partialStableMs),
+      minCompleteSilenceMs: num(
+        x.min_complete_silence_ms ?? x.minCompleteSilenceMs,
+        base.xasr.minCompleteSilenceMs,
+      ),
+      unfinishedSilenceMs: num(
+        x.unfinished_silence_ms ?? x.unfinishedSilenceMs,
+        base.xasr.unfinishedSilenceMs,
+      ),
+      speechEndSubmitMs: num(
+        x.speech_end_submit_ms ?? x.speechEndSubmitMs,
+        base.xasr.speechEndSubmitMs,
+      ),
+    }
   }
 
   const vad = r.vad
@@ -445,5 +502,26 @@ export function resolveSttMode(
   localSupported: boolean,
 ): 'cloud' | 'local' {
   if (cfg.sttMode === 'local') return localSupported ? 'local' : 'cloud'
+  if (cfg.sttMode === 'auto' && localSupported) {
+    return 'local'
+  }
   return 'cloud'
+}
+
+/** 用户设置里的 stt_mode 覆盖 public config（设置页保存到 user preferences）。 */
+export function withUserSttMode(
+  cfg: RealtimeClientConfig,
+  mode: string | undefined | null,
+): RealtimeClientConfig {
+  if (mode === 'cloud' || mode === 'local' || mode === 'auto') {
+    return { ...cfg, sttMode: mode }
+  }
+  return cfg
+}
+
+export function readCachedSttMode(): SttMode | null {
+  if (typeof window === 'undefined') return null
+  const v = localStorage.getItem('mochi_stt_mode')
+  if (v === 'cloud' || v === 'local' || v === 'auto') return v
+  return null
 }

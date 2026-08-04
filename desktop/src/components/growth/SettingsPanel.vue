@@ -28,6 +28,10 @@ import {
 import { PCMCapture } from '@/services/pcmCapture'
 import { pcmToFloat } from '@/services/sileroSpeechVad'
 import { SpeakerVerifier } from '@/services/speakerVerifier'
+import {
+  cacheVoiceprintEmbedding,
+  clearVoiceprintEmbeddingCache,
+} from '@/services/voiceprintCache'
 import { FaceVerifier } from '@/services/faceVerifier'
 import {
   CATEGORY_LABELS,
@@ -435,6 +439,9 @@ async function loadVoiceprintStatus() {
   voiceprintError.value = ''
   try {
     voiceprintStatus.value = await getVoiceprintStatus()
+    if (voiceprintStatus.value?.enrolled && voiceprintStatus.value.embedding?.length) {
+      cacheVoiceprintEmbedding(voiceprintStatus.value.embedding)
+    }
   } catch (e) {
     voiceprintStatus.value = null
     voiceprintError.value = e instanceof Error ? e.message : '加载失败'
@@ -518,7 +525,7 @@ async function startVoiceprintEnroll() {
     })
     voiceprintStatus.value = status
     enrollProgress.value = '录入成功'
-    localStorage.setItem('mochi_owner_embedding', JSON.stringify(Array.from(avg)))
+    cacheVoiceprintEmbedding(Array.from(avg))
   } catch (e) {
     voiceprintError.value = e instanceof Error ? e.message : '录入失败'
   } finally {
@@ -533,7 +540,7 @@ async function onDeleteVoiceprint() {
   try {
     await deleteVoiceprint()
     voiceprintStatus.value = { enrolled: false }
-    localStorage.removeItem('mochi_owner_embedding')
+    clearVoiceprintEmbeddingCache()
   } catch (e) {
     voiceprintError.value = e instanceof Error ? e.message : '删除失败'
   }
@@ -1009,7 +1016,10 @@ onUnmounted(() => {
                 <option value="local">本地</option>
                 <option value="cloud">云端</option>
               </select>
-              <p v-if="prefsError" class="error">{{ prefsError }}</p>
+              <p v-if="sttMode === 'local' || sttMode === 'auto'" class="hint">
+                本地模式优先连接本机 X-ASR（<code>ws://127.0.0.1:8766</code>）。
+                请先运行 <code>tools/x-asr/setup-and-start.bat</code>；不可达时回退 Web Speech。
+              </p>
               <p class="hint advanced-gap">在场声音感知 · 当前：{{ pet.ownerPresence }}</p>
               <p class="hint">
                 模型路径：<code>public/models/speaker/campp.onnx</code>、
