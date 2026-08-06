@@ -267,6 +267,10 @@ export const usePetStore = defineStore('pet', () => {
     showBubble.value = false
   }
 
+  function isEmotionHoldActive(): boolean {
+    return Date.now() < emotionHoldUntil && heldEmotionAnim !== null
+  }
+
   function syncAnimationFromState() {
     if (isRoaming.value) return
     if (Date.now() < emotionHoldUntil && heldEmotionAnim) {
@@ -334,6 +338,7 @@ export const usePetStore = defineStore('pet', () => {
     triggerHappyBurst,
     setServerAnimation,
     clearEmotionHold,
+    isEmotionHoldActive,
     setFacing,
     setRoaming,
     showSpeechBubble,

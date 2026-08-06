@@ -96,11 +96,35 @@ func (s *Service) AcousticClient() AcousticClient {
 	return s.acoustic
 }
 
-// BuildHint 融合缓存、文本 QuickDetect、声学与视觉情绪。
+// BuildHint 融合缓存、V3c 语义分类（或 QuickDetect）、声学与视觉情绪。
 func (s *Service) BuildHint(ctx context.Context, petID uint64, userMsg string, acoustic AcousticHint, visual vision.Hint) Hint {
 	cached := s.GetCached(ctx, petID)
-	quick := QuickDetect(userMsg)
-	merged := MergeAcousticHint(cached, quick, acoustic, s.minAcousticConf)
+
+	var base Hint
+	if s.classifyEnabled && s.ai != nil && strings.TrimSpace(userMsg) != "" {
+		// 文字聊天与 REST 路径：与语音 Pipeline 对齐，用语义分类识别 subtle 情绪
+		ins := s.ClassifyUtterance(ctx, userMsg, acoustic, visual)
+		base = HintFromInsight(ins)
+	} else {
+		base = QuickDetect(userMsg)
+	}
+
+	// 分类偶发漏判时，关键词 QuickDetect 兜底共情
+	if !base.NeedsEmpathy {
+		qd := QuickDetect(userMsg)
+		if qd.NeedsEmpathy {
+			base.NeedsEmpathy = true
+			if base.UserMood == "" || base.UserMood == "neutral" {
+				base.UserMood = qd.UserMood
+			}
+			if base.Intent == "chat" || base.Intent == "ask" {
+				base.Intent = qd.Intent
+			}
+			base.Temperature = qd.Temperature
+		}
+	}
+
+	merged := MergeAcousticHint(cached, base, acoustic, s.minAcousticConf)
 	minVisual := s.minVisualConf
 	if minVisual <= 0 {
 		minVisual = 0.6
@@ -111,6 +135,9 @@ func (s *Service) BuildHint(ctx context.Context, petID uint64, userMsg string, a
 var ventKeywords = []string{
 	"烦", "累", "崩溃", "骂", "委屈", "难过", "伤心", "焦虑", "压力", "抑郁",
 	"受不了", "不想干", "好烦", "烦死", "气死", "破防", "emo", "烦透了",
+	"算了", "无聊", "孤单", "孤独", "郁闷", "心累", "好累", "撑不住", "好难",
+	"难受", "不开心", "没劲", "绝望", "无助", "迷茫", "委屈", "想哭", "烦人",
+	"不想", "讨厌", "糟心", "闹心", "心塞", "摆烂", "内耗",
 }
 
 func QuickDetect(message string) Hint {

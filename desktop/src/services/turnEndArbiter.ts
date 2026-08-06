@@ -100,7 +100,18 @@ export function evaluateTurnEnd(signals: TurnEndSignals): TurnEndDecision {
   if (!signals.heardSpeech || activityAt <= 0) {
     return { ready: false, reason: 'no_speech_yet' }
   }
-  if (signals.vadSpeaking) {
+
+  const partial = signals.partialText.trim()
+
+  // 本地 X-ASR：VAD 已 speech_end + partial 稳定时，勿被 redemption 拖住永不提交
+  const xasrSpeechEndReady =
+    !!signals.speechEndedAt &&
+    !!signals.speechEndSubmitMs &&
+    !!partial &&
+    now - signals.partialUpdatedAt >= partialStableMs &&
+    now - signals.speechEndedAt >= signals.speechEndSubmitMs
+
+  if (signals.vadSpeaking && !xasrSpeechEndReady) {
     return { ready: false, reason: 'vad_speaking' }
   }
   if (now < signals.thinkingHoldUntil) {
@@ -108,7 +119,6 @@ export function evaluateTurnEnd(signals: TurnEndSignals): TurnEndDecision {
   }
 
   const silence = now - activityAt
-  const partial = signals.partialText.trim()
   /** 判定句中可能未完（空 partial 不算未完，避免 ASR 延迟误拦） */
   const unfinished =
     isUnfinishedSpeech(partial) || (partial.length > 0 && partial.length < 12)
@@ -118,15 +128,8 @@ export function evaluateTurnEnd(signals: TurnEndSignals): TurnEndDecision {
     return { ready: false, reason: 'partial_unstable' }
   }
 
-  // 本地 X-ASR：VAD 已 speech_end 且 partial 稳定 → 更短路径提交
-  if (
-    signals.speechEndedAt &&
-    signals.speechEndSubmitMs &&
-    !signals.vadSpeaking &&
-    partial &&
-    now - signals.speechEndedAt >= signals.speechEndSubmitMs &&
-    now - signals.partialUpdatedAt >= partialStableMs
-  ) {
+  // 本地 X-ASR：VAD 已 speech_end 且 partial 稳定 → 更短路径提交（含 redemption 中 vadSpeaking）
+  if (xasrSpeechEndReady) {
     const silenceSinceSpeech = now - activityAt
     const fastSilence = Math.min(signals.silenceMsConfig, minCompleteSilenceMs)
     if (silenceSinceSpeech >= fastSilence) {

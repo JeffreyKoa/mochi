@@ -15,6 +15,8 @@ export type RealtimeEvent =
   | { type: 'tts_done' }
   | { type: 'interrupted' }
   | { type: 'turn_ack' }
+  | { type: 'turn_dismiss'; reason: string }
+  | { type: 'tts_synth_segment'; text: string; mood: string; rate: number }
   | { type: 'turn_metrics'; metrics: TurnMetrics }
   | { type: 'animation'; state: string }
   | { type: 'barge_in_config'; echoGuardMs: number; peakThreshold: number; bargeInMs: number; aecEnabled: boolean }
@@ -161,10 +163,16 @@ export class RealtimeSession {
     return this.send('interrupt', {})
   }
 
-  sendTextInput(text: string, options?: { voiceReply?: boolean }): boolean {
-    const data: { text: string; voice_reply?: boolean } = { text }
+  sendTextInput(
+    text: string,
+    options?: { voiceReply?: boolean; turnPcm?: string },
+  ): boolean {
+    const data: { text: string; voice_reply?: boolean; turn_pcm?: string } = { text }
     if (options?.voiceReply) {
       data.voice_reply = true
+    }
+    if (options?.turnPcm) {
+      data.turn_pcm = options.turnPcm
     }
     return this.send('text_input', data)
   }
@@ -275,6 +283,17 @@ export class RealtimeSession {
         break
       case 'turn_ack':
         this.emit({ type: 'turn_ack' })
+        break
+      case 'turn_dismiss':
+        this.emit({ type: 'turn_dismiss', reason: String(data.reason ?? '') })
+        break
+      case 'tts_synth_segment':
+        this.emit({
+          type: 'tts_synth_segment',
+          text: String(data.text ?? ''),
+          mood: String(data.mood ?? ''),
+          rate: Number(data.rate ?? 1),
+        })
         break
       case 'turn_metrics':
         this.emit({

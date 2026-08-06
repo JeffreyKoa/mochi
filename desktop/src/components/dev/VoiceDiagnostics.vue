@@ -31,6 +31,17 @@ const lagClass = computed(() =>
 )
 
 const sidecarStatus = ref<VoiceSidecarStatus | null>(null)
+const ttsTestBusy = ref(false)
+
+async function runTtsTest() {
+  if (ttsTestBusy.value) return
+  ttsTestBusy.value = true
+  try {
+    await rt.testLocalTts()
+  } finally {
+    ttsTestBusy.value = false
+  }
+}
 
 const sidecarManagedLabel = computed(() => {
   if (!isTauri()) return 'browser'
@@ -104,6 +115,10 @@ onUnmounted(() => {
         <span class="v">{{ rt.perceptionPhase }}</span>
       </div>
       <div class="row">
+        <span class="k">server</span>
+        <span class="v">{{ rt.serverSessionState }}</span>
+      </div>
+      <div class="row">
         <span class="k">talking</span>
         <span class="v">{{ rt.talking }} / rest {{ rt.resting }}</span>
       </div>
@@ -127,6 +142,9 @@ onUnmounted(() => {
         <span class="k">xttsSidecar</span>
         <span class="v">{{ rt.xttsSidecarReachable === null ? '…' : rt.xttsSidecarReachable ? 'online' : 'offline' }}</span>
       </div>
+      <button type="button" class="voice-diag__test" :disabled="ttsTestBusy" @click="runTtsTest">
+        {{ ttsTestBusy ? 'TTS…' : 'Test TTS' }}
+      </button>
       <div class="row">
         <span class="k">chunks</span>
         <span class="v">{{ rt.chunksSent }}</span>
@@ -212,5 +230,22 @@ onUnmounted(() => {
   padding-top: 4px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
   color: #aaa;
+}
+
+.voice-diag__test {
+  margin-top: 4px;
+  width: 100%;
+  padding: 3px 6px;
+  font: inherit;
+  cursor: pointer;
+  color: #8cf;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+}
+
+.voice-diag__test:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 </style>

@@ -1,6 +1,7 @@
 /**
  * 16kHz mono PCM capture, 20ms per chunk (640 bytes)
  */
+import { MIC_CAPTURE_CONSTRAINTS } from '@/utils/micPermission'
 import workletUrl from './pcm-worklet.processor.ts?url'
 
 const TARGET_RATE = 16000
@@ -12,13 +13,7 @@ type ChunkHandler = (pcm: ArrayBuffer, seq: number) => void
 export async function probeAecEnabled(): Promise<boolean> {
   if (!navigator.mediaDevices?.getUserMedia) return false
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-    })
+    const stream = await navigator.mediaDevices.getUserMedia(MIC_CAPTURE_CONSTRAINTS)
     const track = stream.getAudioTracks()[0]
     const enabled = track ? readTrackAecEnabled(track) : false
     stream.getTracks().forEach((t) => t.stop())

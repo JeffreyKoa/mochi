@@ -25,6 +25,8 @@ logging.basicConfig(
 )
 log = logging.getLogger("x-tts")
 
+SIDECAR_VERSION = "1"
+
 # 全局 TTS 引擎（启动时加载一次）
 _TTS: sherpa_onnx.OfflineTts | None = None
 _SAMPLE_RATE = 16000
@@ -150,6 +152,7 @@ class TtsHandler(BaseHTTPRequestHandler):
                     "status": "ok",
                     "engine": "sherpa-onnx-matcha-zh-en",
                     "sample_rate": _SAMPLE_RATE if _TTS else None,
+                    "version": SIDECAR_VERSION,
                 },
             )
             return

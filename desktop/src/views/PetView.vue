@@ -24,7 +24,7 @@ import {
 } from '@/services/chatWindow'
 import { getClientConfig, initClientConfig } from '@/config'
 import PetCanvas from '@/components/pet/PetCanvas.vue'
-import { warmUpMicrophoneAccess, micPermissionDeniedMessage } from '@/utils/micPermission'
+import { ensureTauriMicrophoneAccess, micPermissionDeniedMessage } from '@/utils/micPermission'
 import { onLipSync } from '@/services/voice'
 import {
   claimVoiceOwner,
@@ -297,7 +297,7 @@ onMounted(async () => {
   }
 
   if (isTauri() && auth.isLoggedIn) {
-    void warmUpMicrophoneAccess()
+    void ensureTauriMicrophoneAccess()
   }
 
   if (auth.isLoggedIn) {
@@ -516,15 +516,24 @@ function openChatFromMenu() {
 
 async function startVoiceInteraction() {
   roamer?.pause()
-  // 点击即反馈，≤300ms 本地 TTS，不阻塞后续 connect
-  giveWakeFeedback()
-
   await initClientConfig().catch(() => {})
   if (!getClientConfig().realtimeEnabled) {
     pet.showSpeechBubble('语音对话未开启，请用聊天打字~')
     roamer?.resume()
     return false
   }
+
+  // 麦克风未授权时不播放「在呢主人」，避免误导用户以为已在听
+  if (isTauri()) {
+    const micOk = await ensureTauriMicrophoneAccess()
+    if (!micOk) {
+      pet.showSpeechBubble(micPermissionDeniedMessage(), 8000)
+      roamer?.resume()
+      return false
+    }
+  }
+
+  giveWakeFeedback()
 
   if (isTauri()) {
     rt.setVoiceWindow('pet')
@@ -591,6 +600,7 @@ async function handlePetTap() {
       return
     }
     if (rt.processing) {
+      pet.showSpeechBubble('Mochi 正在想，请稍等~', 2500)
       return
     }
     return

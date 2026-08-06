@@ -278,8 +278,22 @@ fn sync_chat_beside_pet(app: AppHandle) -> Result<(), String> {
 /// 重置 WebView2 内 localhost 麦克风权限（曾点「阻止」后从前端调用）
 #[tauri::command]
 fn reset_microphone_permission(app: AppHandle) -> Result<(), String> {
+    let wins = collect_mic_webviews(&app)?;
+    webview_permissions::reset_microphone_for_app(&wins);
+    Ok(())
+}
+
+/// 预授权麦克风（动态 Origin + PermissionRequested，供启动 / 修复后验证前调用）
+#[tauri::command]
+fn ensure_microphone_permission(app: AppHandle) -> Result<(), String> {
+    let wins = collect_mic_webviews(&app)?;
+    webview_permissions::allow_media_for_app(&wins);
+    Ok(())
+}
+
+fn collect_mic_webviews(app: &AppHandle) -> Result<Vec<WebviewWindow>, String> {
     let mut wins = Vec::new();
-    if let Some(w) = resolve_pet_window(&app, None) {
+    if let Some(w) = resolve_pet_window(app, None) {
         wins.push(w);
     }
     if let Some(w) = app.get_webview_window("chat") {
@@ -288,8 +302,7 @@ fn reset_microphone_permission(app: AppHandle) -> Result<(), String> {
     if wins.is_empty() {
         return Err("webview not found".into());
     }
-    webview_permissions::reset_microphone_for_app(&wins);
-    Ok(())
+    Ok(wins)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -306,10 +319,15 @@ pub fn run() {
             collapse_pet_chat,
             activity::get_activity_snapshot,
             reset_microphone_permission,
+            ensure_microphone_permission,
             sync_chat_beside_pet,
             recover_pet_window,
             voice_sidecar::get_voice_sidecar_status,
             voice_sidecar::restart_voice_sidecars,
+            voice_sidecar::restart_xasr_sidecar,
+            voice_sidecar::restart_xtts_sidecar,
+            voice_sidecar::get_voice_log_dir,
+            voice_sidecar::open_voice_logs,
         ])
         .setup(|app| {
             // 本地语音 sidecar：Release 用内置 bundle，Debug 用仓库 tools/
@@ -345,6 +363,8 @@ pub fn run() {
                             if is_window_stuck(&pet_for_recover) {
                                 recover_pet_window_impl(&app_for_recover);
                             }
+                            // 焦点回到桌宠时重新预授权麦克风（WebView2 权限偶发丢失）
+                            webview_permissions::allow_media(&pet_for_recover);
                         }
                         tauri::WindowEvent::Moved(pos) => {
                             if let Some(chat) = app_for_move.get_webview_window("chat") {

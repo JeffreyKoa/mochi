@@ -89,8 +89,7 @@ impl VoiceSidecarManager {
     }
 
     pub fn stop_all(&self) {
-        self.stop_slot(&self.xasr);
-        self.stop_slot(&self.xtts);
+        self.force_release_all();
     }
 
     pub fn status(&self) -> VoiceSidecarStatus {
@@ -106,9 +105,42 @@ impl VoiceSidecarManager {
     }
 
     pub fn restart_all(&self, app: &AppHandle) {
-        self.stop_all();
+        eprintln!("[voice-sidecar] restarting x-asr + x-tts");
+        self.force_release_all();
         self.start_one(app, true);
         self.start_one(app, false);
+    }
+
+    /// 单独重启 X-ASR 或 X-TTS（设置页分开操作）：先杀旧进程/释放端口，再拉起。
+    pub fn restart_one(&self, app: &AppHandle, is_xasr: bool) {
+        let slot_mutex = if is_xasr { &self.xasr } else { &self.xtts };
+        let port = if is_xasr { XASR_PORT } else { XTTS_PORT };
+        let name = if is_xasr { "x-asr" } else { "x-tts" };
+        eprintln!("[voice-sidecar] restarting {name} on port {port}");
+        self.force_release_port(slot_mutex, port, name);
+        self.start_one(app, is_xasr);
+    }
+
+    /// 停止托管子进程，并清理占用端口的孤儿 sidecar（重启时必须，否则 port busy → external 假成功）。
+    fn force_release_port(&self, slot_mutex: &Mutex<SidecarSlot>, port: u16, log_name: &str) {
+        self.stop_slot(slot_mutex);
+        kill_listeners_on_port(port);
+        if !wait_port_free(port, 12) {
+            append_sidecar_log_note(
+                log_name,
+                &format!("warn: port {port} still busy after kill, retrying listeners"),
+            );
+            kill_listeners_on_port(port);
+            let _ = wait_port_free(port, 5);
+        }
+        append_sidecar_log_note(log_name, &format!("released port {port} before (re)start"));
+    }
+
+    /// 退出应用时：两个端口 + 可能残留的 bundled python 一并清理。
+    fn force_release_all(&self) {
+        self.force_release_port(&self.xasr, XASR_PORT, "x-asr");
+        self.force_release_port(&self.xtts, XTTS_PORT, "x-tts");
+        kill_orphan_bundled_python();
     }
 
     fn stop_slot(&self, slot_mutex: &Mutex<SidecarSlot>) {
@@ -133,6 +165,10 @@ impl VoiceSidecarManager {
             slot.state = "external".into();
             slot.managed = false;
             slot.message = Some(format!("port {port} already in use — reusing existing service"));
+            append_sidecar_log_note(
+                slot.name,
+                &format!("external reuse, port {port} busy — logs stay with the existing process"),
+            );
             eprintln!("[voice-sidecar] {}: port {} busy, reuse", slot.name, port);
             return;
         }
@@ -142,7 +178,8 @@ impl VoiceSidecarManager {
             Err(e) => {
                 slot.state = "skipped".into();
                 slot.managed = false;
-                slot.message = Some(e);
+                slot.message = Some(e.clone());
+                append_sidecar_log_note(slot.name, &format!("skipped: {e}"));
                 return;
             }
         };
@@ -188,6 +225,26 @@ struct LaunchSpec {
 }
 
 fn resolve_launch(app: &AppHandle, is_xasr: bool) -> Result<LaunchSpec, String> {
+    // Debug 默认走 tools/ venv，避免 bundled Python 锁住 bundle/voice DLL 导致 tauri dev 重建失败。
+    // 需验证安装包内 voice 时：set MOCHI_USE_BUNDLED_VOICE=1
+    #[cfg(debug_assertions)]
+    {
+        let force_bundle = std::env::var("MOCHI_USE_BUNDLED_VOICE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if !force_bundle {
+            match build_dev_launch(is_xasr) {
+                Ok(spec) => {
+                    eprintln!("[voice-sidecar] debug: using dev tools venv ({})", spec.summary);
+                    return Ok(spec);
+                }
+                Err(e) => {
+                    eprintln!("[voice-sidecar] debug: dev venv unavailable ({e}), try bundled");
+                }
+            }
+        }
+    }
+
     if let Some(bundle) = resolve_bundled_voice_root(app) {
         return build_bundled_launch(&bundle, is_xasr);
     }
@@ -237,10 +294,60 @@ fn resolve_dev_tools_root() -> PathBuf {
 }
 
 fn sidecar_log_path(name: &str) -> PathBuf {
+    voice_log_dir().join(format!("{name}.log"))
+}
+
+/// 非托管 sidecar（端口占用 / 跳过）时也写一条说明，避免 x-asr.log 看起来是空文件。
+fn append_sidecar_log_note(log_name: &str, message: &str) {
+    use std::io::Write;
+    let log_path = sidecar_log_path(log_name);
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        let _ = writeln!(f);
+        let _ = writeln!(f, "----- {log_name} ({message}) -----");
+    }
+}
+
+/// 本地 sidecar 日志目录（安装版：%LOCALAPPDATA%\\Mochi\\logs）。
+pub fn voice_log_dir() -> PathBuf {
     let base = std::env::var("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."));
-    base.join("Mochi").join("logs").join(format!("{name}.log"))
+    base.join("Mochi").join("logs")
+}
+
+#[tauri::command]
+pub fn get_voice_log_dir() -> String {
+    voice_log_dir().to_string_lossy().into_owned()
+}
+
+/// 用系统文件管理器打开 sidecar 日志目录。
+#[tauri::command]
+pub fn open_voice_logs() -> Result<(), String> {
+    let dir = voice_log_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create log dir: {e}"))?;
+    open_dir_in_explorer(&dir)
+}
+
+fn open_dir_in_explorer(dir: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        std::process::Command::new("explorer")
+            .arg(dir)
+            .spawn()
+            .map_err(|e| format!("open explorer: {e}"))?;
+        return Ok(());
+    }
+    #[cfg(not(windows))]
+    {
+        Err("open_voice_logs is only supported on Windows".into())
+    }
 }
 
 /// 等待 sidecar 监听端口（模型加载可能 10–30s）。
@@ -368,12 +475,22 @@ fn build_bundled_launch(voice_root: &Path, is_xasr: bool) -> Result<LaunchSpec, 
 
     if is_xasr {
         let root = voice_root.join("x-asr");
+        let infer_dir = root.join("infer");
         let model_dir = pick_xasr_model_dir(&root)?;
         let chunk = if model_dir.ends_with("480ms-model") {
             "480ms"
         } else {
             "160ms"
         };
+        // 嵌入式 Python 不会自动把 infer/ 加入 sys.path，须显式写入 PYTHONPATH
+        let py_path = (
+            "PYTHONPATH".to_string(),
+            format!(
+                "{};{}",
+                infer_dir.to_string_lossy(),
+                site_packages.to_string_lossy()
+            ),
+        );
         Ok(LaunchSpec {
             program: python,
             cwd: root.clone(),
@@ -459,16 +576,128 @@ fn port_in_use(port: u16) -> bool {
     TcpListener::bind(("127.0.0.1", port)).is_err()
 }
 
+/// 等待端口释放（旧 sidecar 退出后 TIME_WAIT 通常很快）。
+fn wait_port_free(port: u16, timeout_secs: u64) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    while Instant::now() < deadline {
+        if !port_in_use(port) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    !port_in_use(port)
+}
+
+/// 结束监听指定端口的进程（含 Rust 未跟踪的孤儿 sidecar）。
+fn kill_listeners_on_port(port: u16) {
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        // PowerShell：按 LocalPort 找 OwningProcess 并强杀
+        let ps = format!(
+            "Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | \
+             ForEach-Object {{ Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }}"
+        );
+        let ok = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &ps,
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            return;
+        }
+        // 回退：解析 netstat
+        kill_listeners_on_port_netstat(port);
+        return;
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = port;
+    }
+}
+
+#[cfg(windows)]
+fn kill_listeners_on_port_netstat(port: u16) {
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let needle = format!(":{port}");
+    let output = Command::new("netstat")
+        .args(["-ano", "-p", "tcp"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+    let Ok(output) = output else {
+        return;
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut pids = std::collections::HashSet::new();
+    for line in text.lines() {
+        if !line.contains("LISTENING") || !line.contains(&needle) {
+            continue;
+        }
+        if let Some(pid) = line.split_whitespace().last() {
+            if pid.chars().all(|c| c.is_ascii_digit()) {
+                pids.insert(pid.to_string());
+            }
+        }
+    }
+    for pid in pids {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid, "/T", "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+/// 结束 bundled voice 目录下仍存活的 python.exe（应用退出 / 双端重启时用）。
+fn kill_orphan_bundled_python() {
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let ps = r#"Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.ExecutablePath -like '*\bundle\voice\runtime\python.exe' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"#;
+        let _ = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                ps,
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
 fn spawn_hidden(launch: &LaunchSpec, log_name: &str) -> Result<Child, String> {
+    use std::io::Write;
+
     let log_path = sidecar_log_path(log_name);
     if let Some(parent) = log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let log_file = std::fs::OpenOptions::new()
+    let mut log_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&log_path)
         .map_err(|e| format!("open log {}: {e}", log_path.display()))?;
+    // 每次拉起 sidecar 写分隔行，便于在 x-asr.log 里区分启动批次
+    let _ = writeln!(log_file, "");
+    let _ = writeln!(
+        log_file,
+        "----- {log_name} sidecar launch ({}) -----",
+        launch.summary
+    );
 
     let mut cmd = Command::new(&launch.program);
     cmd.current_dir(&launch.cwd)
@@ -518,5 +747,23 @@ pub fn restart_voice_sidecars(
     manager: tauri::State<'_, std::sync::Arc<VoiceSidecarManager>>,
 ) -> VoiceSidecarStatus {
     manager.restart_all(&app);
+    manager.status()
+}
+
+#[tauri::command]
+pub fn restart_xasr_sidecar(
+    app: AppHandle,
+    manager: tauri::State<'_, std::sync::Arc<VoiceSidecarManager>>,
+) -> VoiceSidecarStatus {
+    manager.restart_one(&app, true);
+    manager.status()
+}
+
+#[tauri::command]
+pub fn restart_xtts_sidecar(
+    app: AppHandle,
+    manager: tauri::State<'_, std::sync::Arc<VoiceSidecarManager>>,
+) -> VoiceSidecarStatus {
+    manager.restart_one(&app, false);
     manager.status()
 }

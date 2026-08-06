@@ -171,12 +171,17 @@ func BuildVolatileLayer(ctx CompanionContext) string {
 	topicBlock := formatTopicAnchorBlock(ctx)
 	identityBlock := formatVisualIdentityBlock(ctx.VisualSpeaker)
 
+	empathyRule := ""
+	if ctx.Emotion.NeedsEmpathy || ctx.Emotion.Intent == "vent" {
+		empathyRule = "\n- 共情优先：主人需要陪伴；可基于原话做合理情感回应（如「听起来挺累的」），禁止编造具体行程/事实。"
+	}
+
 	return fmt.Sprintf(`【此刻】
 - 时间：%s %d点
 - 自身：心情%s（%d/100）| 亲密度 %d/100 | 饥饿 %d/100 | 精力 %d/100%s
 - 主人：%s%s
 - 策略：%s
-- %s%s%s`,
+- %s%s%s%s`,
 		weekday, now.Hour(),
 		moodDesc, ctx.State.Mood,
 		ctx.State.Love, ctx.State.Hungry, ctx.State.Energy,
@@ -187,6 +192,7 @@ func BuildVolatileLayer(ctx CompanionContext) string {
 		moodDirective,
 		topicBlock,
 		identityBlock,
+		empathyRule,
 	)
 }
 
@@ -204,6 +210,10 @@ func formatVisualIdentityBlock(speaker string) string {
 
 // formatTopicAnchorBlock L3 话题锚点：优先回答待回答问句，减少跑题（P1）。
 func formatTopicAnchorBlock(ctx CompanionContext) string {
+	// 倾诉/共情场景不钉话题，避免答非所问
+	if ctx.Emotion.NeedsEmpathy || ctx.Emotion.Intent == "vent" {
+		return ""
+	}
 	ta := ctx.TopicAnchor
 	if ta.CurrentTopic == "" && ta.OpenQuestion == "" {
 		return ""

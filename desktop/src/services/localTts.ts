@@ -1,7 +1,7 @@
 import { resolveXTtsFetchBase, synthesizeXTts } from '@/services/xTtsClient'
 import { stripMoodTags } from '@/utils/stripMoodTags'
 
-const STRONG_PUNCT = /[。！？!?；;]/
+const STRONG_PUNCT = /[。！？!?；;～~]/
 const WEAK_PUNCT = /[，,、]/
 
 /** 按句切分（中英标点），供整段合成。 */
@@ -68,17 +68,26 @@ export async function synthesizeLocalSpeechSegments(
   baseUrl: string,
   text: string,
   onSegment: (wav: ArrayBuffer, index: number) => void,
+  speed = 1.0,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   const segments = splitTtsSentences(text)
   if (segments.length === 0) return false
 
   const base = resolveXTtsFetchBase(baseUrl)
+  const synthOpts = { speed, signal }
   let ok = false
-  let nextPromise: Promise<ArrayBuffer | null> | null = synthesizeXTts(base, segments[0]!)
+  let nextPromise: Promise<ArrayBuffer | null> | null = synthesizeXTts(
+    base,
+    segments[0]!,
+    synthOpts,
+  )
 
   for (let i = 0; i < segments.length; i++) {
+    if (signal?.aborted) break
     const wav = await nextPromise!
-    nextPromise = i + 1 < segments.length ? synthesizeXTts(base, segments[i + 1]!) : null
+    nextPromise =
+      i + 1 < segments.length ? synthesizeXTts(base, segments[i + 1]!, synthOpts) : null
     if (!wav || wav.byteLength === 0) continue
     ok = true
     onSegment(wav, i)
@@ -90,10 +99,12 @@ export async function synthesizeLocalSpeechSegments(
 export async function synthesizeLocalSpeech(
   baseUrl: string,
   text: string,
+  speed = 1.0,
+  signal?: AbortSignal,
 ): Promise<ArrayBuffer | null> {
   const clean = stripMoodTags(text).trim()
   if (!clean) return null
-  return synthesizeXTts(resolveXTtsFetchBase(baseUrl), clean)
+  return synthesizeXTts(resolveXTtsFetchBase(baseUrl), clean, { speed, signal })
 }
 
 /** 流式本地 TTS：随 llm_token 增量切句合成。 */
@@ -104,11 +115,14 @@ export class LocalTtsStreamer {
   private flushedCount = 0
   private chain: Promise<void> = Promise.resolve()
   private cancelled = false
+  /** barge-in 时 abort 进行中的 HTTP 合成 */
+  private abortCtrl = new AbortController()
   gotAudio = false
 
   constructor(
     private baseUrl: string,
     private onSegment: (wav: ArrayBuffer, index: number) => void,
+    private speed = 1.0,
   ) {}
 
   /** 追加 LLM token。 */
@@ -140,17 +154,20 @@ export class LocalTtsStreamer {
     return this.gotAudio
   }
 
+  /** 取消排队与进行中的合成（barge-in / 新轮次）。 */
   cancel() {
     this.cancelled = true
+    this.abortCtrl.abort()
   }
 
   private scheduleSynth(sentence: string) {
     const idx = this.segmentIndex++
     const base = resolveXTtsFetchBase(this.baseUrl)
+    const signal = this.abortCtrl.signal
     this.chain = this.chain.then(async () => {
-      if (this.cancelled) return
-      const wav = await synthesizeXTts(base, sentence)
-      if (this.cancelled || !wav || wav.byteLength === 0) return
+      if (this.cancelled || signal.aborted) return
+      const wav = await synthesizeXTts(base, sentence, { speed: this.speed, signal })
+      if (this.cancelled || signal.aborted || !wav || wav.byteLength === 0) return
       this.gotAudio = true
       this.onSegment(wav, idx)
     })

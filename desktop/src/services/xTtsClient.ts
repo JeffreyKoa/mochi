@@ -4,7 +4,11 @@ export interface XTtsHealth {
   status: string
   engine?: string
   sample_rate?: number
+  version?: string
 }
+
+/** 与 sidecar 内置版本对齐；不匹配时 DEV 告警。 */
+export const EXPECTED_XTTS_VERSION = '1'
 
 const DEFAULT_TIMEOUT_MS = 15000
 const PROBE_TIMEOUT_MS = 2500
@@ -47,7 +51,20 @@ export async function probeXTtsReachable(
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   try {
     const res = await fetch(`${base}/health`, { signal: ctrl.signal })
-    return res.ok
+    if (!res.ok) return false
+    try {
+      const health = (await res.json()) as XTtsHealth
+      if (health.version && health.version !== EXPECTED_XTTS_VERSION && import.meta.env.DEV) {
+        console.warn(
+          '[x-tts] sidecar version mismatch: got %s expected %s',
+          health.version,
+          EXPECTED_XTTS_VERSION,
+        )
+      }
+    } catch {
+      // health JSON 解析失败仍视为 reachable
+    }
+    return true
   } catch {
     return false
   } finally {
@@ -72,7 +89,7 @@ export async function fetchXTtsHealth(baseUrl: string): Promise<XTtsHealth | nul
 export async function synthesizeXTts(
   baseUrl: string,
   text: string,
-  options?: { speed?: number; pcm?: boolean; timeoutMs?: number },
+  options?: { speed?: number; pcm?: boolean; timeoutMs?: number; signal?: AbortSignal },
 ): Promise<ArrayBuffer | null> {
   const trimmed = text.trim()
   if (!trimmed) return null
@@ -81,6 +98,15 @@ export async function synthesizeXTts(
   const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+  // 外部 signal（barge-in）与超时合并
+  const onExternalAbort = () => ctrl.abort()
+  if (options?.signal) {
+    if (options.signal.aborted) {
+      clearTimeout(timer)
+      return null
+    }
+    options.signal.addEventListener('abort', onExternalAbort, { once: true })
+  }
 
   try {
     const res = await fetch(`${base}/synthesize`, {
@@ -105,5 +131,6 @@ export async function synthesizeXTts(
     return null
   } finally {
     clearTimeout(timer)
+    options?.signal?.removeEventListener('abort', onExternalAbort)
   }
 }

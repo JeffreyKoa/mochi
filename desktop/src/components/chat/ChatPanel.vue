@@ -12,7 +12,7 @@ import {
   releaseVoiceOwner,
   setupVoiceOwnerListener,
 } from '@/services/voiceSessionOwner'
-import { warmUpMicrophoneAccess } from '@/utils/micPermission'
+import { ensureTauriMicrophoneAccess } from '@/utils/micPermission'
 import { useAuthStore } from '@/stores/authStore'
 
 const props = defineProps<{ floating?: boolean; compact?: boolean; docked?: boolean }>()
@@ -96,7 +96,14 @@ const displayItems = computed((): DisplayItem[] => {
 
 const voiceStatus = computed(() => {
   if (!realtimeEnabled.value) return { text: '文字模式', tone: 'idle' as const }
-  if (!rt.talking) return { text: '未开始', tone: 'idle' as const }
+  if (!rt.talking) {
+    // startTalk 失败时 statusText 有具体原因，避免只显示「未开始」误导用户
+    const hint = rt.statusText?.trim()
+    if (hint && /声纹|麦克风|未就绪|连接|X-ASR|语音/.test(hint)) {
+      return { text: '待启动', tone: 'idle' as const }
+    }
+    return { text: '未开始', tone: 'idle' as const }
+  }
   if (rt.resting) return { text: '休息中', tone: 'resting' as const }
   if (rt.userSpeaking) return { text: '正在听', tone: 'listening' as const }
   if (rt.processing) return { text: '在想…', tone: 'thinking' as const }
@@ -140,7 +147,10 @@ async function acquireChatVoice(options?: { autoStartTalk?: boolean }) {
   }
 
   if (autoStartTalk && realtimeEnabled.value && !rt.talking) {
-    await rt.startTalk().catch(() => {})
+    const ok = await rt.startTalk()
+    if (!ok && !rt.statusText) {
+      rt.statusText = '无法启动语音，请检查麦克风与 X-ASR'
+    }
   }
 }
 
@@ -194,6 +204,7 @@ async function sendText() {
   const text = textInput.value.trim()
   if (!text) return
   textInput.value = ''
+  auth.syncFromStorage()
   await rt.sendTextMessage(text)
 }
 
@@ -227,7 +238,7 @@ onMounted(async () => {
   }
 
   if (props.floating && isTauri()) {
-    void warmUpMicrophoneAccess()
+    void ensureTauriMicrophoneAccess()
     unlistenVoiceOwner = await setupVoiceOwnerListener('chat', {
       onAcquire: () => rt.connectIfOwner(),
       onYield: () => rt.yieldVoiceConnection(),
@@ -250,6 +261,12 @@ onMounted(async () => {
     } catch {
       // optional
     }
+    // side-panel-opened 可能在 listener 注册前已发出，挂载后补一次自动连麦
+    void acquireChatVoice().catch(() => {
+      if (!rt.statusText) {
+        rt.statusText = realtimeEnabled.value ? '连接失败' : '文字模式'
+      }
+    })
   } else {
     await acquireChatVoice().catch(() => {
       rt.statusText = realtimeEnabled.value ? '连接失败' : '文字模式'
@@ -315,7 +332,9 @@ onUnmounted(() => {
             class="system-line"
           >
             {{ item.message.content }}
-            <span v-if="item.message.dismissed" class="system-sub">已听到 · 未回应</span>
+            <span v-if="item.message.dismissed" class="system-sub">
+              已听到 · 未回应{{ item.message.dismissReason ? `（${item.message.dismissReason}）` : '' }}
+            </span>
           </div>
           <div
             v-else
@@ -343,6 +362,7 @@ onUnmounted(() => {
       </div>
 
       <footer class="chat-composer">
+        <p v-if="rt.statusText" class="composer-status">{{ rt.statusText }}</p>
         <p v-if="!realtimeEnabled" class="realtime-hint">当前未开启实时语音，请使用文字聊天</p>
         <div v-else class="composer-row">
           <button
@@ -662,6 +682,14 @@ onUnmounted(() => {
   padding: 8px 12px 12px;
   background: var(--mochi-surface, #fff);
   border-top: 1px solid var(--mochi-border, #f0f0f0);
+}
+
+.composer-status {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: #c2410c;
+  line-height: 1.4;
+  text-align: center;
 }
 
 .realtime-hint {

@@ -259,7 +259,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 		processingMu.Unlock()
 	}
 
-	processTextInput := func(text string, withVoice bool) {
+	processTextInput := func(text string, withVoice bool, turnPCM []byte) {
 		text = strings.TrimSpace(text)
 		if text == "" {
 			return
@@ -306,7 +306,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 				processing = false
 				processingMu.Unlock()
 			}()
-			h.pipeline.OnTextInput(ctx, sess, text, sender, withVoice)
+			h.pipeline.OnTextInput(ctx, sess, text, sender, withVoice, turnPCM)
 		}()
 	}
 
@@ -447,9 +447,12 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 					log.Printf("[realtime] client_caps session=%s aec_enabled=false echo_guard_ms=%d", sessionID, echoGuard)
 				}
 				sess.SetEchoGuardMS(echoGuard)
+				// 双向同步：sidecar 下线时客户端会发 local_tts=false，须恢复服务端 TTS
+				sess.SetLocalTTS(in.LocalTTS)
 				if in.LocalTTS {
-					sess.SetLocalTTS(true)
 					log.Printf("[realtime] client_caps session=%s local_tts=true → skip server TTS", sessionID)
+				} else {
+					log.Printf("[realtime] client_caps session=%s local_tts=false → server TTS enabled", sessionID)
 				}
 				_ = sender.Send(MsgBargeInConfig, BargeInConfig{
 					EchoGuardMS:   echoGuard,
@@ -575,7 +578,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 			if err := json.Unmarshal(data, &in); err != nil {
 				continue
 			}
-			processTextInput(in.Text, in.VoiceReply)
+			processTextInput(in.Text, in.VoiceReply, decodeTurnPCM(in.TurnPCM))
 
 		case MsgSpeakOnly:
 			var in SpeakOnlyInput
@@ -728,6 +731,20 @@ func (h *Handler) writePump(conn *websocket.Conn, out <-chan WSMessage, done <-c
 			return
 		}
 	}
+}
+
+// decodeTurnPCM 解码客户端附带的 turn PCM（base64 int16 LE）。
+func decodeTurnPCM(b64 string) []byte {
+	b64 = strings.TrimSpace(b64)
+	if b64 == "" {
+		return nil
+	}
+	pcm, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		log.Printf("[realtime] turn_pcm decode error: %v", err)
+		return nil
+	}
+	return pcm
 }
 
 func truncatePartial(s string, n int) string {

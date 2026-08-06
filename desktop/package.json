@@ -18,10 +18,12 @@
 
     "tauri": "tauri",
 
+    "pretauri:dev": "powershell -ExecutionPolicy Bypass -File ../scripts/stop-voice-sidecars.ps1",
+
     "tauri:dev": "tauri dev",
 
-    "tauri:build": "powershell -ExecutionPolicy Bypass -File ../scripts/prepare-voice-bundle.ps1 && tauri build",
-    "prepare:voice-bundle": "powershell -ExecutionPolicy Bypass -File ../scripts/prepare-voice-bundle.ps1"
+    "tauri:build": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/prepare-voice-bundle.ps1 && tauri build && powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/copy-nsis-installer.ps1",
+    "prepare:voice-bundle": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/prepare-voice-bundle.ps1"
 
   },
 

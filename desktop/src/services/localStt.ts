@@ -29,19 +29,22 @@ export function isLocalSttSupported(): boolean {
 export type LocalSttBackend = 'xasr' | 'webspeech'
 
 /** 按配置解析本地 STT 后端：X-ASR 优先；Tauri 下不回退 Web Speech（WebView2 不可靠）。 */
-export async function resolveLocalSttBackend(cfg: {
-  xasr: { enabled: boolean; wsUrl: string }
-}): Promise<LocalSttBackend | null> {
+export async function resolveLocalSttBackend(
+  cfg: { xasr: { enabled: boolean; wsUrl: string } },
+  /** sidecar 已通过 waitForVoiceSidecarsReady 时减少重复探测。 */
+  opts?: { maxAttempts?: number; timeoutMs?: number },
+): Promise<LocalSttBackend | null> {
   if (cfg.xasr.enabled) {
     const { probeXAsrServer } = await import('@/services/xAsrClient')
-    const attempts = isTauri() ? 8 : 2
+    const attempts = opts?.maxAttempts ?? (isTauri() ? 3 : 2)
+    const baseTimeout = opts?.timeoutMs ?? (isTauri() ? 5000 : 4000)
     for (let attempt = 0; attempt < attempts; attempt++) {
-      const timeout = attempt === 0 ? 4000 : 6000
+      const timeout = baseTimeout + attempt * 1000
       if (await probeXAsrServer(cfg.xasr.wsUrl, timeout)) {
         return 'xasr'
       }
       if (attempt < attempts - 1) {
-        await new Promise((r) => setTimeout(r, 800))
+        await new Promise((r) => setTimeout(r, 500))
       }
     }
     if (isTauri()) {

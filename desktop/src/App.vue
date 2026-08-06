@@ -67,6 +67,14 @@ async function applyPopupPanelMode(mode: 'chat' | 'settings', token?: string | n
   }
   if (mode === 'settings') {
     growth.openSettings()
+    // 设置页不占语音 WS，把 /ws/voice 还给桌宠
+    if (isTauri()) {
+      const { claimVoiceOwner, getStoredVoiceOwner } = await import('@/services/voiceSessionOwner')
+      if (getStoredVoiceOwner() === 'chat') {
+        await claimVoiceOwner('pet')
+      }
+      await rt.yieldVoiceConnection()
+    }
   } else {
     await loadUserData()
   }

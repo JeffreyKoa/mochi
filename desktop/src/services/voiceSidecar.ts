@@ -36,26 +36,74 @@ export async function getVoiceSidecarStatus(): Promise<VoiceSidecarStatus | null
   }
 }
 
-/** 重启本地语音服务（设置页 / 诊断用）。 */
+/** 同时重启 X-ASR + X-TTS（诊断等批量场景用）。 */
 export async function restartVoiceSidecars(): Promise<VoiceSidecarStatus | null> {
   if (!isTauri()) return null
   try {
     return await invoke<VoiceSidecarStatus>('restart_voice_sidecars')
   } catch (e) {
-    console.warn('[voice-sidecar] restart failed', e)
+    console.warn('[voice-sidecar] restart all failed', e)
     return null
+  }
+}
+
+/** 仅重启 X-ASR 语音识别 sidecar。 */
+export async function restartXAsrSidecar(): Promise<VoiceSidecarStatus | null> {
+  if (!isTauri()) return null
+  try {
+    return await invoke<VoiceSidecarStatus>('restart_xasr_sidecar')
+  } catch (e) {
+    console.warn('[voice-sidecar] restart x-asr failed', e)
+    return null
+  }
+}
+
+/** 仅重启 X-TTS 语音合成 sidecar。 */
+export async function restartXTtsSidecar(): Promise<VoiceSidecarStatus | null> {
+  if (!isTauri()) return null
+  try {
+    return await invoke<VoiceSidecarStatus>('restart_xtts_sidecar')
+  } catch (e) {
+    console.warn('[voice-sidecar] restart x-tts failed', e)
+    return null
+  }
+}
+
+/** sidecar 日志目录（Windows：%LOCALAPPDATA%\\Mochi\\logs）。 */
+export async function getVoiceLogDir(): Promise<string | null> {
+  if (!isTauri()) return null
+  try {
+    return await invoke<string>('get_voice_log_dir')
+  } catch {
+    return null
+  }
+}
+
+/** 用资源管理器打开 sidecar 日志目录。 */
+export async function openVoiceLogs(): Promise<boolean> {
+  if (!isTauri()) return false
+  try {
+    await invoke('open_voice_logs')
+    return true
+  } catch (e) {
+    console.warn('[voice-sidecar] open logs failed', e)
+    return false
   }
 }
 
 /** 等待 sidecar 端口就绪（Release 冷启动模型加载较慢）。 */
 export async function waitForVoiceSidecarsReady(opts?: {
   timeoutMs?: number
+  /** 是否同时等待 X-TTS（默认：config 中 xtts.enabled 为 true 时等待）。 */
+  requireXtts?: boolean
 }): Promise<boolean> {
   if (!isTauri()) return true
   const timeoutMs = opts?.timeoutMs ?? 90_000
   const deadline = Date.now() + timeoutMs
   const cfg = getRealtimeConfig()
   const { probeXAsrServer } = await import('@/services/xAsrClient')
+  const { probeXTtsReachable } = await import('@/services/xTtsClient')
+  const requireXtts = opts?.requireXtts ?? cfg.xtts.enabled
 
   while (Date.now() < deadline) {
     const st = await getVoiceSidecarStatus()
@@ -63,12 +111,45 @@ export async function waitForVoiceSidecarsReady(opts?: {
       console.warn('[voice-sidecar] x-asr unavailable:', st?.xasr.message)
       return false
     }
-    if (await probeXAsrServer(cfg.xasr.wsUrl, 4000)) {
+    if (requireXtts && st?.xtts.state === 'error') {
+      console.warn('[voice-sidecar] x-tts unavailable:', st?.xtts.message)
+      return false
+    }
+    const xasrOk = await probeXAsrServer(cfg.xasr.wsUrl, 4000)
+    const xttsOk = !requireXtts || (await probeXTtsReachable(cfg.xtts.baseUrl, 4000))
+    if (xasrOk && xttsOk) {
       return true
     }
     await new Promise((r) => setTimeout(r, 1500))
   }
-  console.warn('[voice-sidecar] x-asr not ready within timeout')
+  console.warn('[voice-sidecar] sidecar not ready within timeout (xasr/xtts)')
+  return false
+}
+
+/** 仅等待 X-TTS HTTP sidecar（文字聊天 / 纯 TTS 场景）。 */
+export async function waitForXTtsSidecarReady(opts?: {
+  timeoutMs?: number
+}): Promise<boolean> {
+  const cfg = getRealtimeConfig()
+  if (!cfg.xtts.enabled) return false
+  const timeoutMs = opts?.timeoutMs ?? 60_000
+  const deadline = Date.now() + timeoutMs
+  const { probeXTtsReachable } = await import('@/services/xTtsClient')
+
+  while (Date.now() < deadline) {
+    if (isTauri()) {
+      const st = await getVoiceSidecarStatus()
+      if (st?.xtts.state === 'error') {
+        console.warn('[voice-sidecar] x-tts unavailable:', st?.xtts.message)
+        return false
+      }
+    }
+    if (await probeXTtsReachable(cfg.xtts.baseUrl, 4000)) {
+      return true
+    }
+    await new Promise((r) => setTimeout(r, 1500))
+  }
+  console.warn('[voice-sidecar] x-tts not ready within timeout')
   return false
 }
 
@@ -83,7 +164,7 @@ export async function bootstrapVoiceSidecars(): Promise<VoiceSidecarStatus | nul
   }
   // 后台等待就绪，不阻塞 UI
   void waitForVoiceSidecarsReady({ timeoutMs: 90_000 }).then((ok) => {
-    if (ok) console.info('[voice-sidecar] x-asr port ready')
+    if (ok) console.info('[voice-sidecar] x-asr + x-tts ports ready')
   })
   return st
 }

@@ -123,7 +123,10 @@ func intentStrategy(intent string, rapport uint8, needsEmpathy bool) string {
 		}
 		return "轻松接梗，保持友好。"
 	case "ask":
-		return "主人有问题：只回答有依据的内容；需要事实时先检索或依据记忆/视觉；没有依据不要猜，不知道就直说不知道。"
+		if needsEmpathy {
+			return "主人有问题但情绪也需要被看见：先一句共情或确认感受，再回答有依据的部分；没有依据不要编造。"
+		}
+		return "主人有问题：结合记忆、上下文和主人原话回答；不确定就直说不太确定，不要编造。"
 	case "plan":
 		return "主人在说安排：可调用 reminder/todo 工具；确认要短、像伙伴答应，不是助手播报。"
 	default:

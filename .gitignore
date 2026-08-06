@@ -28,6 +28,7 @@ desktop/src-tauri/bundle/voice/runtime/
 desktop/src-tauri/bundle/voice/x-asr/
 desktop/src-tauri/bundle/voice/x-tts/
 tools/python-embed/
+.build-tmp/
 services/emotion2vec/.venv
 services/emotion2vec/.__pycache__
 

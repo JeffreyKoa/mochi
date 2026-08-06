@@ -4,6 +4,7 @@
  */
 import { XAsrClient, type XAsrClientHandlers } from '@/services/xAsrClient'
 import type { LocalSTTCallbacks } from '@/services/localStt'
+import { isTauri } from '@/services/chatWindow'
 
 /** beginUtterance 完成前暂存 PCM，避免首包丢失。 */
 const MAX_PENDING_PCM = 80
@@ -49,8 +50,8 @@ export class XAsrSTT {
     return this.client.ping(timeoutMs)
   }
 
-  /** 连接 sidecar。 */
-  async connect(): Promise<boolean> {
+  /** 连接 sidecar；Tauri 侧默认超时更长（WebView2 冷握手较慢）。 */
+  async connect(timeoutMs?: number): Promise<boolean> {
     const handlers: XAsrClientHandlers = {
       onPartial: (text) => {
         const trimmed = text.trim()
@@ -63,7 +64,21 @@ export class XAsrSTT {
       },
     }
     this.client.setHandlers(handlers)
-    return this.client.connect(this.wsUrl)
+    const ms = timeoutMs ?? (isTauri() ? 8000 : 4000)
+    return this.client.connect(this.wsUrl, ms)
+  }
+
+  /** 带退避重试的连接（startTalk 前已探测过 sidecar 时仍可能偶发超时）。 */
+  async connectWithRetry(opts?: { attempts?: number; timeoutMs?: number }): Promise<boolean> {
+    const attempts = opts?.attempts ?? (isTauri() ? 3 : 2)
+    const timeoutMs = opts?.timeoutMs ?? (isTauri() ? 8000 : 4000)
+    for (let i = 0; i < attempts; i++) {
+      if (await this.connect(timeoutMs)) return true
+      if (i < attempts - 1) {
+        await new Promise((r) => setTimeout(r, 400 + i * 300))
+      }
+    }
+    return false
   }
 
   /** 注册回调；不自动开 utterance。 */

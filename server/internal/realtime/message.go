@@ -32,6 +32,8 @@ const (
 	MsgTTSDone      = "tts_done"
 	MsgInterrupted  = "interrupted"
 	MsgTurnAck      = "turn_ack"
+	MsgTurnDismiss  = "turn_dismiss"
+	MsgTTSSynthSegment = "tts_synth_segment"
 	MsgAnimation    = "animation"
 	MsgError        = "error"
 	MsgAck          = "ack"
@@ -88,6 +90,8 @@ type FaceProbeIn struct {
 type TextInput struct {
 	Text       string `json:"text"`
 	VoiceReply bool   `json:"voice_reply,omitempty"`
+	// TurnPCM：本地 X-ASR 路径附带的 turn 音频（base64 int16 LE 16kHz mono），供声学情绪识别。
+	TurnPCM string `json:"turn_pcm,omitempty"`
 }
 
 // ClientCaps advertises playback capabilities so the server can pick a compatible TTS transport.
@@ -171,6 +175,18 @@ type ProactiveMessage struct {
 
 type SpeakOnlyInput struct {
 	Text string `json:"text"`
+}
+
+// TurnDismiss gate/noise 静默拒绝时告知客户端原因。
+type TurnDismiss struct {
+	Reason string `json:"reason"`
+}
+
+// TTSSynthSegment 本地 TTS 模式：服务端按句下发 mood prosody，客户端 X-TTS 合成。
+type TTSSynthSegment struct {
+	Text string  `json:"text"`
+	Mood string  `json:"mood,omitempty"`
+	Rate float64 `json:"rate"`
 }
 
 func marshalMsg(msgType string, data any, seq int64) ([]byte, error) {

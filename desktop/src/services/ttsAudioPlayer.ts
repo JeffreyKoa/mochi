@@ -81,7 +81,14 @@ export class TTSAudioQueue {
   /** Flush current segment buffer into the sequential play queue. */
   flushSegment() {
     if (this.segmentBuffer.length === 0) return
-    this.playQueue.push(mergeArrayBuffers(this.segmentBuffer))
+    // WAV 每段自带 RIFF 头，不能 merge；逐段入队顺序播放（本地 X-TTS 多句合成）。
+    if (this.segmentFormat === 'wav') {
+      for (const buf of this.segmentBuffer) {
+        this.playQueue.push(buf)
+      }
+    } else {
+      this.playQueue.push(mergeArrayBuffers(this.segmentBuffer))
+    }
     this.playFormat = this.segmentFormat
     this.segmentBuffer = []
     void this.drainPlayQueue()

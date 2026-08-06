@@ -115,6 +115,28 @@ describe('turnEndArbiter', () => {
     expect(d.reason).toBe('ready')
   })
 
+  it('x-asr speech_end can submit while vad still in redemption', () => {
+    const now = 10_000
+    const partialUpdatedAt = now - 500
+    const d = evaluateTurnEnd(
+      base({
+        vadSpeaking: true,
+        partialText: '小尾巴为什么你不回应',
+        partialUpdatedAt,
+        lastSpeechAt: partialUpdatedAt,
+        speechEndedAt: now - 300,
+        speechEndSubmitMs: 200,
+        partialStableMs: 300,
+        minCompleteSilenceMs: 450,
+        silenceMsConfig: 600,
+        disablePauseProbe: true,
+        now,
+      }),
+    )
+    expect(d.ready).toBe(true)
+    expect(d.reason).toBe('xasr_speech_end')
+  })
+
   it('respects thinking_hold', () => {
     const d = evaluateTurnEnd(
       base({

@@ -9,4 +9,6 @@ commands.allow = [
   "recover_pet_window",
   "get_voice_sidecar_status",
   "restart_voice_sidecars",
+  "restart_xasr_sidecar",
+  "restart_xtts_sidecar",
 ]

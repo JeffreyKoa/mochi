@@ -13,13 +13,14 @@ import { TTSAudioQueue, isOpusDecodeSupported } from '@/services/ttsAudioPlayer'
 import { HybridSpeechVad, pcmToFloat, type VADEvent } from '@/services/sileroSpeechVad'
 import { LocalSTT, resolveLocalSttBackend, isWebSpeechSttSupported, type LocalSttBackend } from '@/services/localStt'
 import { isTauri } from '@/services/chatWindow'
-import { waitForVoiceSidecarsReady } from '@/services/voiceSidecar'
+import { waitForVoiceSidecarsReady, waitForXTtsSidecarReady } from '@/services/voiceSidecar'
 import { XAsrSTT } from '@/services/xAsrStt'
 import { SpeakerVerifier } from '@/services/speakerVerifier'
 import { SoundEventClassifier } from '@/services/soundEventClassifier'
 import { getRealtimeConfig, getVoiceprintConfig, getFaceprintConfig, getPresenceConfig, getClientConfig, initClientConfig, resolveSttMode, resolveTtsMode, withUserSttMode, withUserTtsMode, readCachedSttMode, readCachedTtsMode } from '@/config'
-import { synthesizeLocalSpeechSegments, LocalTtsStreamer } from '@/services/localTts'
-import { probeXTtsReachable } from '@/services/xTtsClient'
+import { synthesizeLocalSpeechSegments, synthesizeLocalSpeech, LocalTtsStreamer } from '@/services/localTts'
+import { probeXTtsReachable, synthesizeXTts } from '@/services/xTtsClient'
+import { encodeTurnPcmBase64 } from '@/utils/turnPcm'
 import { micPermissionDeniedMessage } from '@/utils/micPermission'
 import { stripMoodTags } from '@/utils/stripMoodTags'
 import {
@@ -176,6 +177,8 @@ export const useRealtimeStore = defineStore('realtime', () => {
   const turnPhase = ref<TurnPhase>('idle')
   /** DEV 诊断：Orchestrator 内部感知相位（listen/endpoint/think/speak）。 */
   const perceptionPhase = ref<PerceptionPhase>('idle')
+  /** DEV 诊断：服务端 SessionState（listening/thinking/speaking/idle）。 */
+  const serverSessionState = ref<string>('idle')
   const lastSpeechAtMs = ref(0)
   const eventLoopLagMs = ref(0)
 
@@ -190,8 +193,14 @@ export const useRealtimeStore = defineStore('realtime', () => {
   let localSttBackend: LocalSttBackend | null = null
   let effectiveSttMode: 'cloud' | 'local' = 'cloud'
   let effectiveTtsMode: 'cloud' | 'local' = 'cloud'
-  /** 流式本地 TTS：随 llm_token 按句合成。 */
+  /** 流式本地 TTS：随 llm_token 按句合成（REST 回退等无服务端 segment 时用）。 */
   let localTtsStreamer: LocalTtsStreamer | null = null
+  /** 本地 TTS 轮次 abort（barge-in / 新轮次）。 */
+  let localTtsAbortCtrl: AbortController | null = null
+  /** 服务端 tts_synth_segment 在途合成数。 */
+  let serverTtsSynthPending = 0
+  /** 本地 TTS 时由服务端按句下发 mood prosody。 */
+  let localTtsViaServerSegments = false
   let params = defaultRuntimeParams()
   let recording = false
   let phase: TurnPhase = 'idle'
@@ -217,7 +226,12 @@ export const useRealtimeStore = defineStore('realtime', () => {
   let wakeAccumMs = 0
   let textSending = false
   let pendingTextTurn: string | null = null
+  /** 语音轮次已提交、等待 LLM/TTS 的文本（WS 断线 REST 回退用）。 */
+  let pendingVoiceTurn: string | null = null
+  /** X-ASR 本地已 submit 的文本，用于忽略服务端 echo 的 asr_final。 */
+  let lastLocalSubmittedText: string | null = null
   let textViaRest = false
+  let voiceViaRest = false
   let turnAckWaiter: { resolve: (ok: boolean) => void; timer: ReturnType<typeof setTimeout> } | null =
     null
   let turnStartAt = 0
@@ -309,7 +323,10 @@ export const useRealtimeStore = defineStore('realtime', () => {
     xasrUploadMutedUntil = Date.now() + (ms ?? params.echoGuardMs)
     partialText.value = ''
     partialUpdatedAt = 0
-    turnUploadStarted = false
+    // processing/播报阶段本就不上传；勿在 TTS 分段回调里反复关 turnUploadStarted
+    if (phase === 'user_speaking' || phase === 'resting') {
+      turnUploadStarted = false
+    }
     void xAsrStt?.cancelUtterance()
   }
 
@@ -414,7 +431,6 @@ export const useRealtimeStore = defineStore('realtime', () => {
   let pauseHintComposing = false
   /** 本 turn 在途视觉/提交可 abort（barge-in / 新 wake）。 */
   let turnAbortController: AbortController | null = null
-  let speechEndSubmitTimer: ReturnType<typeof setTimeout> | null = null
   const pcmRing = new Float32Array(PCM_RING_SAMPLES)
   let pcmRingWrite = 0
 
@@ -477,25 +493,25 @@ export const useRealtimeStore = defineStore('realtime', () => {
     }
 
     if (xAsrStt?.isSidecarConnected) {
-      const ok = await xAsrStt.pingSidecar(5000)
+      const ok = await xAsrStt.pingSidecar(3000)
       if (ok) {
         xasrSidecarProbeMisses = 0
         xasrSidecarReachable.value = true
         return true
       }
       xasrSidecarProbeMisses++
-      if (xasrSidecarProbeMisses < 3) {
+      // 会话内 ping 失败：仍用独立探测，避免长连接卡死时误报 online
+      if (xasrSidecarProbeMisses < 2) {
         xasrSidecarReachable.value = true
         return true
       }
-      xasrSidecarReachable.value = false
-      return false
     }
 
     const { probeXAsrServer } = await import('@/services/xAsrClient')
-    const ok = await probeXAsrServer(rt.xasr.wsUrl, 5000)
+    const ok = await probeXAsrServer(rt.xasr.wsUrl, 4000)
     xasrSidecarProbeMisses = ok ? 0 : xasrSidecarProbeMisses + 1
-    xasrSidecarReachable.value = ok || xasrSidecarProbeMisses < 2
+    // 连续 3 次失败才标 offline（sidecar 加载模型时可能短暂拒连）
+    xasrSidecarReachable.value = ok || xasrSidecarProbeMisses < 3
     // sidecar 晚于会话启动时上线：尝试从 cloud 提升到 local
     if (ok && prevReachable !== true) {
       void maybePromoteLocalStt()
@@ -503,16 +519,24 @@ export const useRealtimeStore = defineStore('realtime', () => {
     return ok
   }
 
-  /** X-ASR sidecar 迟就绪：已在 cloud 会话时提示；未录音则下次 startTalk 走 local。 */
+  /** X-ASR sidecar 迟就绪：resting 时热切换到 local，无需重开对话。 */
   async function maybePromoteLocalStt() {
     if (effectiveSttMode === 'local' && localSttBackend === 'xasr') return
     const rt = await getRealtimeWithUserPrefs()
     if (!rt.xasr.enabled || !xasrSidecarReachable.value) return
     if (resolveSttMode(rt, true) !== 'local') return
-    if (recording && effectiveSttMode === 'cloud') {
-      statusText.value = 'X-ASR 已就绪，请结束对话后重新点击开始语音'
+    if (!recording) return
+    if (phase !== 'resting' && phase !== 'idle') {
+      if (effectiveSttMode === 'cloud') {
+        statusText.value = 'X-ASR 已就绪，请结束对话后重新点击开始语音'
+      }
+      return
+    }
+    // resting 态可热切换：下次 startTalk 走 local；若已在 cloud 会话则提示重开
+    if (effectiveSttMode === 'cloud') {
+      statusText.value = 'X-ASR 已就绪，说话时会优先用本地识别'
       if (import.meta.env.DEV) {
-        console.info('[realtime] x-asr sidecar online; restart talk to leave cloud STT')
+        console.info('[realtime] x-asr sidecar online during resting')
       }
     }
   }
@@ -586,13 +610,69 @@ export const useRealtimeStore = defineStore('realtime', () => {
 
   /** 本地 TTS 音频入队（流式 / 整段共用）。 */
   function deliverLocalTtsSegment(wav: ArrayBuffer, _index: number) {
+    // barge-in 后丢弃 in-flight 合成结果
+    if (localTtsAbortCtrl?.signal.aborted) return
     if (effectiveSttMode === 'local' && localSttBackend === 'xasr') {
       muteXAsrDuringPlayback()
     }
     setPhase('agent_speaking')
+    serverSessionState.value = 'speaking'
     if (!ttsStartedAt) ttsStartedAt = Date.now()
     statusText.value = 'Mochi 正在说话...（大声说话可打断）'
     ttsPlayer.enqueue(wav, 'wav', markPlaybackStart)
+    // 每句 WAV 独立成段，合成下一句时可并行播放上一句
+    ttsPlayer.flushSegment()
+  }
+
+  /** 新轮次本地 TTS：重置 abort 控制器。 */
+  function beginLocalTtsTurn() {
+    localTtsAbortCtrl?.abort()
+    localTtsAbortCtrl = new AbortController()
+    serverTtsSynthPending = 0
+    localTtsViaServerSegments = effectiveTtsMode === 'local'
+  }
+
+  /** 服务端 tts_synth_segment → X-TTS 合成（含 mood rate）。 */
+  async function synthesizeServerTtsSegment(text: string, rate: number) {
+    const trimmed = text.trim()
+    if (!trimmed || !localTtsAbortCtrl || localTtsAbortCtrl.signal.aborted) return
+    const rt = getRealtimeConfig()
+    if (!rt.xtts.enabled) return
+    serverTtsSynthPending++
+    try {
+      const wav = await synthesizeXTts(rt.xtts.baseUrl, trimmed, {
+        speed: rate > 0 ? rate : rt.xtts.speed,
+        signal: localTtsAbortCtrl.signal,
+      })
+      if (localTtsAbortCtrl?.signal.aborted || !wav || wav.byteLength === 0) return
+      deliverLocalTtsSegment(wav, 0)
+    } finally {
+      serverTtsSynthPending = Math.max(0, serverTtsSynthPending - 1)
+    }
+  }
+
+  async function maybeFinishLocalTtsTurn() {
+    if (serverTtsSynthPending > 0) return
+    handleTtsTurnComplete()
+  }
+
+  function mapDismissReason(reason: string): string {
+    const r = reason.trim()
+    if (r === 'noise_filler') return '嗯、啊等语气词，Mochi 在听但没接话'
+    if (r.startsWith('gate:')) return '这句话像是自言自语或背景音，暂不回应'
+    if (r === 'empty_asr') return '未识别到有效内容'
+    if (r === 'empty_llm') return 'Mochi 一时想不出该怎么回'
+    return '已听到，暂不需要回应'
+  }
+
+  /** 办公专注 DND：连续对话改 resting，减少打扰。 */
+  function readFocusWorkDnd(): boolean {
+    if (typeof window === 'undefined') return false
+    return localStorage.getItem('mochi_focus_work_dnd') === '1'
+  }
+
+  function shouldPreferContinuousListen(): boolean {
+    return !readFocusWorkDnd()
   }
 
   function ensureLocalTtsStreamer(): LocalTtsStreamer | null {
@@ -600,7 +680,11 @@ export const useRealtimeStore = defineStore('realtime', () => {
     const rt = getRealtimeConfig()
     if (!rt.xtts.enabled) return null
     if (!localTtsStreamer) {
-      localTtsStreamer = new LocalTtsStreamer(rt.xtts.baseUrl, deliverLocalTtsSegment)
+      localTtsStreamer = new LocalTtsStreamer(
+        rt.xtts.baseUrl,
+        deliverLocalTtsSegment,
+        rt.xtts.speed,
+      )
     }
     return localTtsStreamer
   }
@@ -608,21 +692,59 @@ export const useRealtimeStore = defineStore('realtime', () => {
   function resetLocalTtsStreamer() {
     localTtsStreamer?.cancel()
     localTtsStreamer = null
+    localTtsAbortCtrl?.abort()
+    localTtsAbortCtrl = null
+    serverTtsSynthPending = 0
+  }
+
+  /** 本地 TTS 时服务端 gate 静默拒绝：只有 tts_done、无 llm 输出，须收尾避免 processing 卡 45s。 */
+  function shouldHandleLocalTtsServerDismiss(): boolean {
+    if (effectiveTtsMode !== 'local') return false
+    if (phase !== 'processing') return false
+    if (localTtsStreamer) return false
+    if (replyText.value.trim()) return false
+    return true
+  }
+
+  function clearPendingTurnState() {
+    pendingTextTurn = null
+    pendingVoiceTurn = null
+    lastLocalSubmittedText = null
+  }
+
+  /** 读取用户「默认语音回复」偏好（设置页 voice_reply_default）。 */
+  async function readVoiceReplyDefault(): Promise<boolean> {
+    try {
+      const prefs = await getUserPreferences()
+      return prefs.voice_reply_default !== false
+    } catch {
+      if (typeof window === 'undefined') return true
+      return localStorage.getItem('mochi_voice_reply_default') !== '0'
+    }
   }
 
   /** 本地 Matcha TTS：按句合成并送入播放队列。 */
-  async function enqueueLocalTts(text: string) {
-    if (effectiveTtsMode !== 'local') return
+  async function enqueueLocalTts(text: string): Promise<boolean> {
+    if (effectiveTtsMode !== 'local') return false
     const rt = getRealtimeConfig()
-    if (!rt.xtts.enabled) return
+    if (!rt.xtts.enabled) return false
 
-    const ok = await synthesizeLocalSpeechSegments(rt.xtts.baseUrl, text, deliverLocalTtsSegment)
-    if (!ok && import.meta.env.DEV) {
+    const ok = await synthesizeLocalSpeechSegments(
+      rt.xtts.baseUrl,
+      text,
+      deliverLocalTtsSegment,
+      rt.xtts.speed,
+      localTtsAbortCtrl?.signal,
+    )
+    if (!ok) {
       console.warn('[localTts] synthesis failed or empty text')
+      statusText.value = '本地语音合成失败，请检查 X-TTS 是否在运行'
+      return false
     }
     // 本地 TTS 忽略服务端 tts_done（服务端在 llm_done 后立即下发），由客户端在合成入队后收尾。
     ttsPlayer.flushSegment()
     handleTtsTurnComplete()
+    return true
   }
 
   /** 一轮 TTS 播报结束（云端 tts_done 或本地合成完成后调用）。 */
@@ -636,6 +758,11 @@ export const useRealtimeStore = defineStore('realtime', () => {
         enterContinuousListen('我在这儿，你说~')
         usePetStore().syncAnimationFromState()
       })
+      return
+    }
+    // 文字聊天 + 本地 TTS：等 WAV 播完再 finishTextTurn
+    if (textSending && effectiveTtsMode === 'local') {
+      ttsPlayer.markDone(() => finishTextTurn())
       return
     }
     if (phase !== 'resting' && phase !== 'idle') {
@@ -654,6 +781,59 @@ export const useRealtimeStore = defineStore('realtime', () => {
     }
     const reachable = await refreshXttsSidecarProbe()
     return resolveTtsMode(rt, reachable)
+  }
+
+  /** 连接/发消息前确保 X-TTS 已探测并同步 client_caps。 */
+  async function syncLocalTtsCaps(opts?: { waitSidecar?: boolean }) {
+    const rt = await getRealtimeWithUserPrefs()
+    if (
+      opts?.waitSidecar &&
+      rt.xtts.enabled &&
+      resolveTtsMode(rt, true) !== 'cloud'
+    ) {
+      await waitForXTtsSidecarReady({ timeoutMs: isTauri() ? 60_000 : 8_000 })
+    }
+    effectiveTtsMode = await resolveEffectiveTtsMode(rt)
+    ttsBackendLabel.value = effectiveTtsMode === 'local' ? 'matcha' : 'cloud'
+    if (realtimeSession.isOpen()) {
+      await realtimeSession.sendClientCaps({ localTts: effectiveTtsMode === 'local' })
+    }
+    return effectiveTtsMode
+  }
+
+  /** 诊断：直接合成并播放测试句（不依赖 LLM）。 */
+  async function testLocalTts(sample = '你好，我是 Mochi，本地语音合成测试。'): Promise<boolean> {
+    await initClientConfig().catch(() => {})
+    const rt = getRealtimeConfig()
+    if (!rt.xtts.enabled) {
+      statusText.value = '本地 TTS 未启用（config xtts.enabled）'
+      return false
+    }
+    const ready = await waitForXTtsSidecarReady({ timeoutMs: isTauri() ? 30_000 : 8_000 })
+    if (!ready) {
+      statusText.value = 'X-TTS 未就绪，请在设置中重启 X-TTS'
+      xttsSidecarReachable.value = false
+      return false
+    }
+    xttsSidecarReachable.value = true
+    const wav = await synthesizeLocalSpeech(rt.xtts.baseUrl, sample, rt.xtts.speed)
+    if (!wav?.byteLength) {
+      statusText.value = 'X-TTS 合成失败'
+      return false
+    }
+    ttsPlayer.stop()
+    setPhase('agent_speaking')
+    statusText.value = '正在播放本地 TTS 测试...'
+    deliverLocalTtsSegment(wav, 0)
+    ttsPlayer.flushSegment()
+    await new Promise<void>((resolve) => {
+      ttsPlayer.markDone(() => {
+        setPhase('idle')
+        statusText.value = '本地 TTS 测试完成'
+        resolve()
+      })
+    })
+    return true
   }
 
   async function loadOwnerFaceprint() {
@@ -1068,7 +1248,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
         turnUploadStarted = false
         return
       }
-      realtimeSession.sendAudioStart()
+      if (shouldUploadPcmToServer()) {
+        realtimeSession.sendAudioStart()
+      }
       flushPreRollAudio()
     }
 
@@ -1191,7 +1373,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
   }
 
   function commitAssistantMessage(text: string) {
-    const trimmed = text.trim()
+    const trimmed = stripMoodTags(text.trim())
     if (!trimmed) return
     const last = messages.value[messages.value.length - 1]
     if (last?.role === 'assistant' && last.content === trimmed) return
@@ -1233,6 +1415,13 @@ export const useRealtimeStore = defineStore('realtime', () => {
     turnAckWaiter = null
   }
 
+  /** 是否应向服务端上传 PCM（Tauri + X-ASR 时服务端 asr.provider=none，仅走 text_input）。 */
+  function shouldUploadPcmToServer(): boolean {
+    if (effectiveSttMode === 'local') return false
+    if (isTauri() && getRealtimeConfig().xasr.enabled) return false
+    return true
+  }
+
   function syncReplyBubble(text: string) {
     const pet = usePetStore()
     if (pet.isChatOpen || pet.isReminderBubbleActive()) return
@@ -1253,8 +1442,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
     }
     partialText.value = ''
     textSending = false
-    pendingTextTurn = null
+    clearPendingTurnState()
     textViaRest = false
+    voiceViaRest = false
     const finalReply = replyText.value.trim()
     const hadVoice = ttsPlayer.hadPlayback
     if (finalReply) {
@@ -1285,10 +1475,16 @@ export const useRealtimeStore = defineStore('realtime', () => {
           hint = isOpusDecodeSupported()
             ? '文字已回复，语音播放失败，请检查音量'
             : '文字已回复（当前环境不支持 Opus，已请求 MP3）'
-          enterContinuousListen(hint)
-        } else {
+          if (shouldPreferContinuousListen()) {
+            enterContinuousListen(hint)
+          } else {
+            enterResting(hint)
+          }
+        } else if (shouldPreferContinuousListen()) {
           // 正常一轮对话结束：保持聆听，避免「说一句停一句」的问答机感
           enterContinuousListen()
+        } else {
+          enterResting('专注模式：需要时请叫我')
         }
         usePetStore().syncAnimationFromState()
       })
@@ -1301,19 +1497,11 @@ export const useRealtimeStore = defineStore('realtime', () => {
     }
   }
 
-  function clearSpeechEndSubmitTimer() {
-    if (speechEndSubmitTimer) {
-      clearTimeout(speechEndSubmitTimer)
-      speechEndSubmitTimer = null
-    }
-  }
-
   function clearSilenceWatch() {
     if (silenceTimer) {
       clearInterval(silenceTimer)
       silenceTimer = null
     }
-    clearSpeechEndSubmitTimer()
   }
 
   function clearTtsWatchdog() {
@@ -1374,14 +1562,8 @@ export const useRealtimeStore = defineStore('realtime', () => {
     partialUpdatedAt = Date.now()
     perception.trackObjectIntentFromPartial(trimmed)
     heardSpeech = true
-    // X-ASR：首条 partial 须建立 lastSpeechAt；后续 partial 不刷新静音计时（避免 backlog 拖长句末）
-    if (localSttBackend === 'xasr') {
-      if (lastSpeechAt <= 0) {
-        touchLastSpeechAt()
-      }
-    } else {
-      touchLastSpeechAt()
-    }
+    // X-ASR：partial 变化即刷新活动时间（配合 speech_end 仲裁句末）
+    touchLastSpeechAt()
     const pet = usePetStore()
     if (textContainsPetName(trimmed)) {
       nameDetectedInProbe = true
@@ -1432,14 +1614,21 @@ export const useRealtimeStore = defineStore('realtime', () => {
 
   /** X-ASR 本地模式：静音仲裁后 finish utterance 并提交文本。 */
   async function submitLocalXAsrUtterance(force = false) {
+    if (submitLock && !force) return
+
     if (force && !hadMeaningfulAudio() && !partialText.value.trim()) {
       finishEmptyCapture('no_audio')
       return
     }
 
     if (!force) {
-      if (speechVad?.isSpeaking()) return
-      if (!evaluateTurnEnd(buildTurnEndSignals()).ready) return
+      if (speechVad?.isSpeaking()) {
+        const sig = buildTurnEndSignals()
+        const decision = evaluateTurnEnd(sig)
+        if (!decision.ready) return
+      } else if (!evaluateTurnEnd(buildTurnEndSignals()).ready) {
+        return
+      }
     }
 
     clearSilenceWatch()
@@ -1484,6 +1673,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
 
     if (!ownerOk) {
       if (import.meta.env.DEV) console.debug('[xasr] reject submit: not owner voice')
+      usePetStore().showSpeechBubble('我没听清是不是你，请再说一遍~', 3000)
       partialText.value = ''
       void xAsrStt?.cancelUtterance()
       enterResting()
@@ -1510,6 +1700,8 @@ export const useRealtimeStore = defineStore('realtime', () => {
     clearSilenceWatch()
     submitLock = true
     setPhase('processing')
+    serverSessionState.value = 'thinking'
+    beginLocalTtsTurn()
     heardSpeech = false
     partialText.value = ''
     statusText.value = '处理中...'
@@ -1517,15 +1709,23 @@ export const useRealtimeStore = defineStore('realtime', () => {
     playbackMarked = false
 
     commitUserMessage(trimmed, 'voice')
+    lastLocalSubmittedText = trimmed
+    pendingVoiceTurn = trimmed
     replyText.value = ''
     startTtsWatchdog()
 
     resetTurnAbort()
-    // 文本先送 LLM；视觉快照并行，不阻塞首 token
-    const sent = realtimeSession.sendTextInput(trimmed, { voiceReply: true })
+    // 附 turn PCM 供服务端声学情绪；文本先送 LLM，视觉快照并行
+    const turnPcm =
+      effectiveSttMode === 'local' && localSttBackend === 'xasr'
+        ? encodeTurnPcmBase64(snapshotRecentPcm(3))
+        : undefined
+    const sent = realtimeSession.sendTextInput(trimmed, { voiceReply: true, turnPcm })
     void perception.prepareBeforeSubmit(trimmed)
       if (!sent) {
         submitLock = false
+        pendingVoiceTurn = null
+        lastLocalSubmittedText = null
         messages.value.pop()
         enterResting()
         statusText.value = '发送失败，请重试'
@@ -1659,13 +1859,16 @@ export const useRealtimeStore = defineStore('realtime', () => {
 
     setPhase('user_speaking')
     identityGate.markOwnerMatch()
-    ownerTurnUploadLock = false
+    // 连续对话：等同手动唤醒，免等 stream_check 才开 PCM
+    ownerTurnUploadLock = true
     ambientPresence.setOwnerSpeaking(true)
     statusText.value = hint ?? '还在呢，继续说~'
     usePetStore().setAnimation('happy')
 
     partialText.value = ''
     partialUpdatedAt = 0
+    xasrSpeechEndedAt = 0
+    speechVad?.reset()
     void xAsrStt?.cancelUtterance()
 
     // TTS 结束后需更长回声保护 + 声纹门控后再开 X-ASR
@@ -1685,7 +1888,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
         startStreamCheck()
         startSilenceWatch()
       } else {
-        realtimeSession.sendAudioStart()
+        if (shouldUploadPcmToServer()) {
+          realtimeSession.sendAudioStart()
+        }
         startStreamCheck()
         startSilenceWatch()
       }
@@ -1761,7 +1966,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
       if (effectiveSttMode === 'local' && localSttBackend === 'xasr' && shouldFeedXAsrPcm()) {
         xAsrStt?.feedPcm(boosted)
       } else if (effectiveSttMode !== 'local' || localSttBackend !== 'xasr') {
-        realtimeSession.sendAudio(arrayBufferToBase64(boosted), uploadSeq)
+        if (shouldUploadPcmToServer()) {
+          realtimeSession.sendAudio(arrayBufferToBase64(boosted), uploadSeq)
+        }
       }
     }
   }
@@ -1800,8 +2007,12 @@ export const useRealtimeStore = defineStore('realtime', () => {
         flushPreRollAudio()
       })
     } else {
-      realtimeSession.sendAudioStart()
-      flushPreRollAudio()
+      if (shouldUploadPcmToServer()) {
+        realtimeSession.sendAudioStart()
+        flushPreRollAudio()
+      } else {
+        flushPreRollAudio()
+      }
     }
     perception.onSpeechStart()
     startStreamCheck()
@@ -1957,7 +2168,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
       return
     }
 
-    const sent = realtimeSession.sendAudioEnd()
+    const sent = shouldUploadPcmToServer() ? realtimeSession.sendAudioEnd() : true
     if (!sent) {
       submitLock = false
       enterResting()
@@ -1988,7 +2199,6 @@ export const useRealtimeStore = defineStore('realtime', () => {
     if (phase !== 'user_speaking') return
 
     if (ev === 'speech_start') {
-      clearSpeechEndSubmitTimer()
       xasrSpeechEndedAt = 0
       heardSpeech = true
       touchLastSpeechAt()
@@ -2021,7 +2231,6 @@ export const useRealtimeStore = defineStore('realtime', () => {
           xasrSpeechEndedAt = Date.now()
         }
       }
-      clearSpeechEndSubmitTimer()
       return
     }
   }
@@ -2030,12 +2239,14 @@ export const useRealtimeStore = defineStore('realtime', () => {
     if (phase !== 'agent_speaking') return
     if (!ttsPlayer.hadPlayback && !replyText.value.trim()) return
     cancelTurnAbort()
+    resetLocalTtsStreamer()
     ttsPlayer.stop()
     clearTtsWatchdog()
     replyText.value = ''
     usePetStore().releaseVoiceBubble(0)
     realtimeSession.sendInterrupt()
-    enterResting()
+    // 与正常轮次结束对齐：打断后可直接接下一句
+    enterContinuousListen('你说~')
   }
 
   function interruptForReminder() {
@@ -2135,18 +2346,62 @@ export const useRealtimeStore = defineStore('realtime', () => {
       })
       if (reply) {
         commitAssistantMessage(reply)
+        replyText.value = reply
       }
-      finishTextTurn()
+      await syncLocalTtsCaps({ waitSidecar: true })
+      if (effectiveTtsMode === 'local' && reply?.trim()) {
+        const ok = await enqueueLocalTts(reply)
+        if (!ok) {
+          finishTextTurn()
+        }
+      } else {
+        finishTextTurn()
+      }
     } catch (e) {
       textViaRest = false
+      voiceViaRest = false
       textSending = false
-      pendingTextTurn = null
+      clearPendingTurnState()
       clearTtsWatchdog()
       setPhase('idle')
       const last = messages.value[messages.value.length - 1]
       if (last?.role === 'user' && last.content === trimmed) {
         messages.value.pop()
       }
+      statusText.value = e instanceof Error ? e.message : '发送失败，请重试'
+    }
+  }
+
+  /** 语音轮次 WS 断线：REST 拉 LLM + 本地 TTS（与 sendTextViaRest 类似）。 */
+  async function sendVoiceViaRest(trimmed: string) {
+    if (voiceViaRest || textViaRest) return
+    voiceViaRest = true
+    pendingVoiceTurn = null
+    clearTurnAckWait()
+    statusText.value = '连接断开，改用文字通道...'
+    replyText.value = ''
+    try {
+      const reply = await streamChatMessage(trimmed, (token) => {
+        replyText.value += token
+        syncReplyBubble(replyText.value)
+      })
+      if (reply) {
+        commitAssistantMessage(reply)
+        replyText.value = reply
+      }
+      await syncLocalTtsCaps({ waitSidecar: true })
+      if (effectiveTtsMode === 'local' && reply?.trim()) {
+        const ok = await enqueueLocalTts(reply)
+        if (!ok) {
+          finishTextTurn()
+        }
+      } else {
+        finishTextTurn()
+      }
+    } catch (e) {
+      voiceViaRest = false
+      clearTtsWatchdog()
+      enterResting('连接中断，请再说一次')
       statusText.value = e instanceof Error ? e.message : '发送失败，请重试'
     }
   }
@@ -2158,6 +2413,10 @@ export const useRealtimeStore = defineStore('realtime', () => {
       statusText.value = 'Mochi 正在回复，请稍候...'
       return
     }
+
+    // 弹窗 chat 与 pet 分 WebView，发送前同步 token
+    const { useAuthStore } = await import('@/stores/authStore')
+    useAuthStore().syncFromStorage()
 
     await pauseVoiceForText()
 
@@ -2183,8 +2442,14 @@ export const useRealtimeStore = defineStore('realtime', () => {
       return
     }
 
+    await syncLocalTtsCaps({ waitSidecar: true })
+
+    const voiceReply = await readVoiceReplyDefault()
     const ackWait = beginTurnAckWait(TEXT_TURN_ACK_MS)
-    const sent = realtimeSession.sendTextInput(trimmed)
+    const sent = realtimeSession.sendTextInput(
+      trimmed,
+      voiceReply ? { voiceReply: true } : undefined,
+    )
     if (!sent) {
       await sendTextViaRest(trimmed)
       return
@@ -2225,10 +2490,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     unsub = realtimeSession.on(handleEvent)
     try {
       await realtimeSession.connect()
-      const rt = await getRealtimeWithUserPrefs()
-      effectiveTtsMode = await resolveEffectiveTtsMode(rt)
-      ttsBackendLabel.value = effectiveTtsMode === 'local' ? 'matcha' : 'cloud'
-      await realtimeSession.sendClientCaps({ localTts: effectiveTtsMode === 'local' })
+      await syncLocalTtsCaps({ waitSidecar: true })
     } catch {
       connected.value = false
       detachHandler()
@@ -2318,7 +2580,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
             uploadSeq++
             chunksSentCount++
             chunksSent.value = chunksSentCount
-            realtimeSession.sendAudio(arrayBufferToBase64(boosted), uploadSeq)
+            if (shouldUploadPcmToServer()) {
+              realtimeSession.sendAudio(arrayBufferToBase64(boosted), uploadSeq)
+            }
           }
           // 需 VAD 认为在说话，或能量明显偏高，才尝试唤醒（避免杂音误触）
           if (peak >= params.wakePeak && (vadSpeaking || peak >= params.wakePeak * 2)) {
@@ -2360,7 +2624,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
           chunksSentCount++
           chunksSent.value = chunksSentCount
           if (peak > peakSeen) peakSeen = peak
-          realtimeSession.sendAudio(arrayBufferToBase64(boosted), uploadSeq)
+          if (shouldUploadPcmToServer()) {
+            realtimeSession.sendAudio(arrayBufferToBase64(boosted), uploadSeq)
+          }
           return
         }
 
@@ -2410,9 +2676,6 @@ export const useRealtimeStore = defineStore('realtime', () => {
           xAsrStt &&
           shouldFeedXAsrPcm()
         ) {
-          if (phase === 'user_speaking') {
-            void xAsrStt.ensureUtterance()
-          }
           xAsrStt.feedPcm(boosted)
           chunksSentCount++
           chunksSent.value = chunksSentCount
@@ -2477,9 +2740,13 @@ export const useRealtimeStore = defineStore('realtime', () => {
     }
   }
 
-  async function startLocalTalk() {
+  /** @param preResolvedBackend startTalk 已解析过后端时可跳过重复 WS 探测 */
+  async function startLocalTalk(preResolvedBackend?: LocalSttBackend | null) {
     const rt = getRealtimeConfig()
-    localSttBackend = await resolveLocalSttBackend(rt)
+    localSttBackend =
+      preResolvedBackend !== undefined
+        ? preResolvedBackend
+        : await resolveLocalSttBackend(rt)
 
     if (!localSttBackend) {
       effectiveSttMode = 'cloud'
@@ -2496,7 +2763,8 @@ export const useRealtimeStore = defineStore('realtime', () => {
     try {
       if (localSttBackend === 'xasr') {
         xAsrStt = new XAsrSTT(rt.xasr.wsUrl, 16000, rt.xasr.chunkMs)
-        const ok = await xAsrStt.connect()
+        // sidecar 刚重启或探测密集时，单次 3s connect 易超时
+        const ok = await xAsrStt.connectWithRetry()
         if (!ok) throw new Error('x-asr sidecar unreachable')
         xAsrStt.prepare({
           onPartial: handleLocalSttPartial,
@@ -2541,7 +2809,14 @@ export const useRealtimeStore = defineStore('realtime', () => {
         return
       }
       if (localSttBackend === 'xasr' && isTauri()) {
-        statusText.value = 'X-ASR 连接失败，请确认 sidecar 已启动后重试'
+        const msg = e instanceof Error ? e.message : String(e)
+        if (msg.includes('unreachable') || msg.includes('not connected') || msg.includes('websocket')) {
+          statusText.value = 'X-ASR 连接失败，请确认 sidecar 已启动后重试'
+        } else if (msg.includes('NotAllowed') || msg.includes('microphone') || msg.includes('麦克风')) {
+          statusText.value = '麦克风不可用，请检查系统权限与设备'
+        } else {
+          statusText.value = `本地语音启动失败：${msg}`
+        }
         throw e
       }
       effectiveSttMode = 'cloud'
@@ -2574,26 +2849,40 @@ export const useRealtimeStore = defineStore('realtime', () => {
     realtimeSession.sendPrewarm()
 
     let rt = await getRealtimeWithUserPrefs()
+    let xasrSidecarReady = false
     if (isTauri() && rt.xasr.enabled) {
       statusText.value = '正在启动本地语音识别...'
-      const sidecarOk = await waitForVoiceSidecarsReady({ timeoutMs: 90_000 })
+      const sidecarOk = await waitForVoiceSidecarsReady({
+        timeoutMs: 90_000,
+        requireXtts: rt.xtts.enabled && resolveTtsMode(rt, true) !== 'cloud',
+      })
       if (!sidecarOk) {
         const st = await import('@/services/voiceSidecar').then((m) => m.getVoiceSidecarStatus())
         const hint = st?.xasr.message ?? '请重启应用或在设置中重启本地语音服务'
-        statusText.value = `X-ASR 未就绪：${hint}`
-        console.warn('[realtime] x-asr sidecar not ready', st)
+        statusText.value = `本地语音未就绪：${hint}`
+        console.warn('[realtime] voice sidecar not ready', st)
         return false
       }
+      xasrSidecarReady = true
+      // sidecar 刚就绪时留短窗口，避免与最后一次探测 WS 争用
+      await new Promise((r) => setTimeout(r, 300))
+    } else if (rt.xtts.enabled && resolveTtsMode(rt, true) !== 'cloud') {
+      statusText.value = '正在启动本地语音合成...'
+      const ttsOk = await waitForXTtsSidecarReady({ timeoutMs: isTauri() ? 60_000 : 8_000 })
+      if (!ttsOk) {
+        statusText.value = 'X-TTS 未就绪，请稍后在设置中重启'
+        console.warn('[realtime] x-tts sidecar not ready')
+      }
     }
-    const localBackend = await resolveLocalSttBackend(rt)
+    // waitForVoiceSidecarsReady 已通过则不再开新 WS 探测（避免启动卡顿/争连）
+    const localBackend: LocalSttBackend | null = xasrSidecarReady
+      ? 'xasr'
+      : await resolveLocalSttBackend(rt, {
+          maxAttempts: isTauri() && rt.xasr.enabled ? 2 : undefined,
+          timeoutMs: isTauri() ? 6000 : undefined,
+        })
     effectiveSttMode = resolveSttMode(rt, localBackend !== null)
-    effectiveTtsMode = await resolveEffectiveTtsMode(rt)
-    ttsBackendLabel.value = effectiveTtsMode === 'local' ? 'matcha' : 'cloud'
-    if (realtimeSession.isOpen()) {
-      await realtimeSession.sendClientCaps({ localTts: effectiveTtsMode === 'local' })
-    }
-    void refreshXasrSidecarProbe()
-    void refreshXttsSidecarProbe()
+    await syncLocalTtsCaps()
 
     if (effectiveSttMode === 'cloud') {
       sttBackendLabel.value = 'cloud'
@@ -2625,23 +2914,54 @@ export const useRealtimeStore = defineStore('realtime', () => {
     submitLock = false
     micLevel.value = 0
 
-    if (effectiveSttMode === 'local') {
-      await startLocalTalk()
+    // 语音会话依赖麦克风；提前验证，避免 X-ASR/WS 白跑后 silent fail
+    {
+      const { ensureTauriMicrophoneAccess, micPermissionDeniedMessage, warmUpMicrophoneAccess } =
+        await import('@/utils/micPermission')
+      const micOk = isTauri()
+        ? await ensureTauriMicrophoneAccess()
+        : await warmUpMicrophoneAccess()
+      if (!micOk) {
+        statusText.value = micPermissionDeniedMessage()
+        return false
+      }
+    }
+
+    try {
+      if (effectiveSttMode === 'local') {
+        await startLocalTalk(localBackend)
+        void refreshXasrSidecarProbe()
+        void refreshXttsSidecarProbe()
+        await visionWarmPromise.catch(() => {})
+        return recording
+      }
+
+      // Tauri + X-ASR：服务端 asr.provider=none，禁止静默回退云端（否则完全无法识别）
+      if (isTauri() && rt.xasr.enabled) {
+        statusText.value = 'X-ASR 未就绪，请重启应用或在设置 → 声音中重启本地语音服务'
+        console.warn('[realtime] cloud STT blocked on Tauri (server has no ASR)')
+        return false
+      }
+
+      await startCloudTalk()
       await visionWarmPromise.catch(() => {})
       return recording
-    }
-
-    // Tauri + X-ASR：服务端 asr.provider=none，禁止静默回退云端（否则完全无法识别）
-    if (isTauri() && rt.xasr.enabled) {
-      statusText.value = 'X-ASR 未就绪，请重启应用或在设置 → 声音中重启本地语音服务'
-      console.warn('[realtime] cloud STT blocked on Tauri (server has no ASR)')
+    } catch (e) {
+      const err = e as DOMException
+      if (err?.name === 'NotAllowedError') {
+        const { micPermissionDeniedMessage } = await import('@/utils/micPermission')
+        statusText.value = micPermissionDeniedMessage()
+      } else if (err?.name === 'NotFoundError') {
+        statusText.value = '未检测到麦克风设备'
+      } else if (!statusText.value) {
+        statusText.value = '无法启动麦克风'
+      }
+      talking.value = false
+      recording = false
+      setPhase('idle')
+      resting.value = false
       return false
     }
-
-    await startCloudTalk()
-    await visionWarmPromise.catch(() => {})
-    // 保持 resting，等用户说话（VAD）或再次点击（manual wake）；勿在此自动 wakeOnSpeech
-    return recording
   }
 
   async function initAmbientPresence() {
@@ -2727,6 +3047,14 @@ export const useRealtimeStore = defineStore('realtime', () => {
         }
         const finalText = (ev.text.trim() || partialText.value.trim())
         partialText.value = ''
+        // X-ASR 已本地 submit 过同一文本：忽略服务端 echo，避免重置 replyText / 重复 watchdog
+        if (
+          lastLocalSubmittedText &&
+          finalText === lastLocalSubmittedText &&
+          (phase === 'processing' || phase === 'agent_speaking')
+        ) {
+          break
+        }
         if (!finalText) {
           startTtsWatchdog()
           break
@@ -2742,33 +3070,49 @@ export const useRealtimeStore = defineStore('realtime', () => {
         break
       }
       case 'llm_token':
-        if (textViaRest) break
+        if (textViaRest || voiceViaRest) break
         if (recording && phase === 'processing') {
           statusText.value = 'Mochi 正在回复...'
         }
-        replyText.value += ev.token
+        replyText.value = stripMoodTags(replyText.value + ev.token)
         syncReplyBubble(replyText.value)
-        if (effectiveTtsMode === 'local') {
+        if (effectiveTtsMode === 'local' && !localTtsViaServerSegments) {
           ensureLocalTtsStreamer()?.append(ev.token)
         }
         break
+      case 'tts_synth_segment':
+        if (effectiveTtsMode !== 'local') break
+        void synthesizeServerTtsSegment(ev.text, ev.rate)
+        break
       case 'llm_done':
-        if (textViaRest) break
-        replyText.value = ev.text
-        syncReplyBubble(ev.text)
+        if (textViaRest || voiceViaRest) break
+        pendingVoiceTurn = null
+        replyText.value = stripMoodTags(ev.text)
+        syncReplyBubble(replyText.value)
         if (effectiveTtsMode === 'local' && ev.text.trim()) {
-          const streamer = localTtsStreamer
-          if (streamer) {
-            void streamer.finish().then((ok) => {
-              localTtsStreamer = null
-              if (!ok && import.meta.env.DEV) {
-                console.warn('[localTts] streaming synthesis produced no audio')
-              }
-              ttsPlayer.flushSegment()
-              handleTtsTurnComplete()
-            })
+          if (localTtsViaServerSegments) {
+            // 服务端按句下发 tts_synth_segment，收尾在 tts_done
           } else {
-            void enqueueLocalTts(ev.text)
+            const streamer = localTtsStreamer
+            if (streamer) {
+              void streamer
+                .finish()
+                .then((ok) => {
+                  localTtsStreamer = null
+                  if (!ok && import.meta.env.DEV) {
+                    console.warn('[localTts] streaming synthesis produced no audio')
+                  }
+                  ttsPlayer.flushSegment()
+                  handleTtsTurnComplete()
+                })
+                .catch((err) => {
+                  console.warn('[localTts] stream finish failed', err)
+                  localTtsStreamer = null
+                  handleTtsTurnComplete()
+                })
+            } else {
+              void enqueueLocalTts(ev.text)
+            }
           }
         }
         if (!presenceChatListenAfterTts) {
@@ -2779,7 +3123,10 @@ export const useRealtimeStore = defineStore('realtime', () => {
             statusText.value = 'Mochi 正在回复...'
           }
         } else if (textSending) {
-          finishTextTurn()
+          // 本地 TTS 异步合成中，等 handleTtsTurnComplete → finishTextTurn 再收尾
+          if (effectiveTtsMode !== 'local' || !ev.text.trim()) {
+            finishTextTurn()
+          }
         } else {
           statusText.value = 'Mochi 已回复'
         }
@@ -2793,6 +3140,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
           muteXAsrDuringPlayback()
         }
         setPhase('agent_speaking')
+        serverSessionState.value = 'speaking'
         if (!ttsStartedAt) ttsStartedAt = Date.now()
         statusText.value = 'Mochi 正在说话...（大声说话可打断）'
         ttsPlayer.enqueue(audio, ev.format, markPlaybackStart, ev.seq)
@@ -2803,10 +3151,33 @@ export const useRealtimeStore = defineStore('realtime', () => {
         ttsPlayer.flushSegment()
         break
       case 'tts_done':
-        // 本地 TTS 时服务端会立即 tts_done，实际播放在 enqueueLocalTts 完成后收尾。
-        if (effectiveTtsMode === 'local') break
+        serverSessionState.value = 'listening'
+        if (effectiveTtsMode === 'local') {
+          if (shouldHandleLocalTtsServerDismiss()) {
+            resetLocalTtsStreamer()
+            clearPendingTurnState()
+            handleTtsTurnComplete()
+            break
+          }
+          if (localTtsViaServerSegments) {
+            void maybeFinishLocalTtsTurn()
+          }
+          break
+        }
         handleTtsTurnComplete()
         break
+      case 'turn_dismiss': {
+        serverSessionState.value = 'listening'
+        const heard = (lastLocalSubmittedText ?? partialText.value).trim()
+        if (heard) {
+          commitHeardText(heard, {
+            dismissed: true,
+            dismissReason: mapDismissReason(ev.reason),
+          })
+        }
+        statusText.value = mapDismissReason(ev.reason)
+        break
+      }
       case 'turn_metrics':
         lastTurnMetrics.value = ev.metrics
         recordTurnMetricsBaseline(ev.metrics)
@@ -2837,6 +3208,8 @@ export const useRealtimeStore = defineStore('realtime', () => {
         }
         break
       case 'turn_ack':
+        serverSessionState.value = 'thinking'
+        beginLocalTtsTurn()
         resetLocalTtsStreamer()
         signalTurnAck()
         if (turnStartAt <= 0) turnStartAt = Date.now()
@@ -2851,19 +3224,29 @@ export const useRealtimeStore = defineStore('realtime', () => {
         ttsPlayer.stop()
         clearTtsWatchdog()
         textSending = false
+        clearPendingTurnState()
+        voiceViaRest = false
         pet.releaseVoiceBubble(0)
         enterResting()
         pet.setAnimation('happy')
         break
       case 'animation':
-        // 会话阶段动画不覆盖 emotion_state 驱动的表情（state_update）
-        if (ev.state === 'listening') pet.setAnimation('happy')
-        else if (ev.state === 'idle') pet.syncAnimationFromState()
+        serverSessionState.value = ev.state
+        // 会话阶段动画不覆盖 emotion FSM hold（worried/sad 等）
+        if (ev.state === 'listening') {
+          if (!pet.isEmotionHoldActive()) {
+            pet.setAnimation('happy')
+          }
+        } else if (ev.state === 'idle') {
+          pet.syncAnimationFromState()
+        }
         break
       case 'error':
         ttsPlayer.stop()
         clearTtsWatchdog()
         textSending = false
+        clearPendingTurnState()
+        voiceViaRest = false
         replyText.value = ''
         if (ev.code === 'TTS_FAILED') {
           const hasAssistant = messages.value.some((m) => m.role === 'assistant')
@@ -2879,11 +3262,30 @@ export const useRealtimeStore = defineStore('realtime', () => {
           break
         }
         if (ev.code === 'LLM_EMPTY') {
+          statusText.value = 'Mochi 暂时想不出回复，请换个说法试试'
+          if (!replyText.value.trim()) {
+            commitAssistantMessage('嗯…我一时想不出怎么回，你换个说法再试试？')
+          }
           if (recording) {
             enterResting()
           } else {
-            setPhase('idle')
+            finishTextTurn()
           }
+          break
+        }
+        if (ev.code === 'ASR_NOT_CONFIGURED' || ev.code === 'ASR_FAILED') {
+          const msg =
+            isTauri() && getRealtimeConfig().xasr.enabled
+              ? '本地 X-ASR 未就绪，请到 设置→声音 重启本地语音服务，或查看日志 x-asr.log'
+              : ev.message
+          if (recording) {
+            enterResting()
+            statusText.value = msg + '（可以继续说）'
+          } else {
+            setPhase('idle')
+            statusText.value = msg
+          }
+          usePetStore().showSpeechBubble(msg, 8000)
           break
         }
         if (ev.code !== 'ASR_FAILED') {
@@ -2925,9 +3327,18 @@ export const useRealtimeStore = defineStore('realtime', () => {
           break
         }
 
+        if (pendingVoiceTurn && recording && phase === 'processing') {
+          clearTtsWatchdog()
+          detachHandler()
+          void sendVoiceViaRest(pendingVoiceTurn)
+          void connectIfOwner().catch(() => {})
+          break
+        }
+
         clearTtsWatchdog()
         textSending = false
-        pendingTextTurn = null
+        clearPendingTurnState()
+        voiceViaRest = false
         detachHandler()
 
         if (intentionalDisconnect) {
@@ -2966,6 +3377,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     refreshXasrSidecarProbe,
     refreshXttsSidecarProbe,
     refreshVoiceBackendPrefs,
+    testLocalTts,
     replyText,
     messages,
     sessionId,
@@ -2993,6 +3405,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     lastTurnMetrics,
     turnPhase,
     perceptionPhase,
+    serverSessionState,
     lastSpeechAtMs,
     eventLoopLagMs,
   }

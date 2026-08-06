@@ -214,13 +214,18 @@ func (r *Runtime) DecideStyle(
 	}
 
 	if isFocusWorkMode {
-		cfg.SentenceLength = "short"
-		cfg.EmojiRate = 0.1
-		cfg.ToneModifiers = []string{"专注辅助/不打扰", "极简回答"}
 		nicknames := bond.ParseNicknames(bondProfile.Nicknames)
 		if nicknames.PetCallsUser != "" {
 			cfg.Nickname = nicknames.PetCallsUser
 		}
+		if !perception.NeedsEmpathy && perception.Intent != "vent" {
+			cfg.SentenceLength = "short"
+			cfg.EmojiRate = 0.1
+			cfg.ToneModifiers = []string{"专注辅助/不打扰", "极简回答"}
+			return cfg
+		}
+		cfg.SentenceLength = "medium"
+		cfg.ToneModifiers = []string{"主人状态不佳，先简短共情再答"}
 		return cfg
 	}
 

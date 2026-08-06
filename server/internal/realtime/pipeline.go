@@ -192,7 +192,7 @@ func (p *Pipeline) OnSpeechEnd(ctx context.Context, sess *Session, audio []byte,
 	sess.SetTurnAudioBytes(len(audio))
 
 	if p.asr == nil {
-		p.failTurn(ctx, sess, send, "ASR_NOT_CONFIGURED", "ASR 未配置，请在 config.yaml 设置 ai.api_key")
+		p.failTurn(ctx, sess, send, "ASR_NOT_CONFIGURED", "服务端未配置云端 ASR，请使用本地 X-ASR 或 text_input")
 		return
 	}
 
@@ -322,11 +322,17 @@ func (p *Pipeline) SpeakOnly(ctx context.Context, sess *Session, text string, se
 	_ = send.Send(MsgTTSDone, map[string]any{})
 }
 
-func (p *Pipeline) OnTextInput(ctx context.Context, sess *Session, text string, send Sender, withVoice bool) {
+func (p *Pipeline) OnTextInput(ctx context.Context, sess *Session, text string, send Sender, withVoice bool, turnPCM []byte) {
 	pipeCtx := sess.BeginPipeline(ctx)
 	defer sess.EndPipeline()
 	if lat := sess.TurnLatency(); lat != nil {
 		lat.MarkASRFinal()
+	}
+	// 本地 X-ASR：客户端附 turn PCM 供 emotion2vec 声学识别
+	if len(turnPCM) > 0 {
+		sess.SetTurnPCM(turnPCM)
+		sess.SetTurnAudioBytes(len(turnPCM))
+		log.Printf("[realtime] text_input turn_pcm session=%s bytes=%d", sess.ID, len(turnPCM))
 	}
 	p.onTranscriptWithMode(pipeCtx, sess, text, send, withVoice, nil)
 }
@@ -689,7 +695,7 @@ func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text
 	// before they reach the LLM.
 	if withVoice && p.isNoiseTranscript(text) {
 		log.Printf("[realtime] asr noise dismiss session=%s text=%q audio_bytes=%d", sess.ID, text, sess.TurnAudioBytes())
-		p.abortTurnSilent(sess, send)
+		p.abortTurnSilent(sess, send, "noise_filler")
 		return
 	}
 
@@ -704,7 +710,7 @@ func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text
 		}
 		if ok, reason := p.gate.Decide(ctx, text, callNames...); !ok {
 			log.Printf("[realtime] gate dismiss session=%s text=%q reason=%s", sess.ID, text, reason)
-			p.abortTurnSilent(sess, send)
+			p.abortTurnSilent(sess, send, "gate:"+reason)
 			return
 		}
 	}
@@ -716,7 +722,7 @@ func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text
 			return
 		}
 		log.Printf("[realtime] asr empty silent dismiss session=%s audio_bytes=%d", sess.ID, sess.TurnAudioBytes())
-		p.abortTurnSilent(sess, send)
+		p.abortTurnSilent(sess, send, "empty_asr")
 		return
 	}
 
@@ -946,7 +952,7 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 
 	enqueueSeg := func(raw string, markSentence bool) {
 		raw = strings.TrimSpace(raw)
-		if raw == "" || segCh == nil {
+		if raw == "" {
 			return
 		}
 		tone := moodTracker.Process(raw)
@@ -960,11 +966,24 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 				log.Printf("[realtime][mood_anim] session=%s mood=%s anim=%s", sess.ID, tone.Mood, anim)
 			}
 		}
-		opts := ProsodyForMood(tone.Mood, ttsBundle.baseline).ToSynthOptions()
+		prosody := ProsodyForMood(tone.Mood, ttsBundle.baseline)
 		if markSentence && lat != nil && !sentenceFlushed {
 			sentenceFlushed = true
 			lat.MarkLLMFirstSentence()
 		}
+		// 本地 TTS：按句下发 mood prosody，客户端 X-TTS 合成
+		if sess.LocalTTS() {
+			_ = send.Send(MsgTTSSynthSegment, TTSSynthSegment{
+				Text: tone.Text,
+				Mood: string(tone.Mood),
+				Rate: prosody.Rate,
+			})
+			return
+		}
+		if segCh == nil {
+			return
+		}
+		opts := prosody.ToSynthOptions()
 		select {
 		case segCh <- ttsSegment{text: tone.Text, opts: opts}:
 		case <-ctx.Done():
@@ -1072,7 +1091,7 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 			<-ttsDone
 		}
 		log.Printf("[realtime] llm empty silent dismiss session=%s", sess.ID)
-		p.abortTurnSilent(sess, send)
+		p.abortTurnSilent(sess, send, "empty_llm")
 		return false
 	}
 	// 流式 stripper 尾部缓冲刷出，避免未闭合标记残留到 UI。
@@ -1085,6 +1104,13 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 	if compliance := text.MoodTagComplianceRate(reply); reply != "" {
 		log.Printf("[realtime][mood] compliance=%.0f%% tags=%d sentences=%d session=%s",
 			compliance*100, text.CountMoodTags(reply), text.CountSpeakSentences(reply), sess.ID)
+	}
+
+	// 本地 TTS：刷出 tokenBuf 尾部未切分的句子
+	if withVoice && sess.LocalTTS() {
+		if remainder := strings.TrimSpace(tokenBuf.String()); remainder != "" {
+			enqueueSeg(remainder, true)
+		}
 	}
 
 	if withVoice && p.tts != nil && !sess.LocalTTS() && segCh != nil {
@@ -1266,10 +1292,13 @@ func (p *Pipeline) setListening(sess *Session, send Sender) {
 	send.SendAnimation(StateListening)
 }
 
-func (p *Pipeline) abortTurnSilent(sess *Session, send Sender) {
+func (p *Pipeline) abortTurnSilent(sess *Session, send Sender, reason string) {
 	if lat := sess.TurnLatency(); lat != nil {
 		lat.LogSummary(sess.ID)
 		sess.ClearTurnLatency()
+	}
+	if strings.TrimSpace(reason) != "" {
+		_ = send.Send(MsgTurnDismiss, TurnDismiss{Reason: reason})
 	}
 	_ = send.Send(MsgTTSDone, map[string]any{})
 	p.setListening(sess, send)

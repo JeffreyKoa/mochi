@@ -37,6 +37,12 @@ func TestStripMoodTags(t *testing.T) {
 	if got := StripMoodTags(orphan); got != "今晚。你穿" {
 		t.Errorf("orphan cleanup = %q, want 今晚。你穿", got)
 	}
+	// LLM 误写 [gentle] 而非 [mood:gentle]
+	bare := "]这天气舒服。[gentle]你记得穿。playful]咱娃要是跑"
+	wantBare := "这天气舒服。你记得穿。咱娃要是跑"
+	if got := StripMoodTags(bare); got != wantBare {
+		t.Errorf("bare mood tag = %q, want %q", got, wantBare)
+	}
 }
 
 func TestMoodTracker_Inherit(t *testing.T) {

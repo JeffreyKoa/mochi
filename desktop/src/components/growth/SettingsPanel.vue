@@ -62,11 +62,17 @@ import { refreshPresenceChatPrefs } from '@/services/presenceChat'
 import { listenTasksRefresh } from '@/services/proactiveSync'
 import { useRealtimeStore } from '@/stores/realtimeStore'
 import {
+  getVoiceLogDir,
   getVoiceSidecarStatus,
-  restartVoiceSidecars,
+  openVoiceLogs,
+  restartXAsrSidecar,
+  restartXTtsSidecar,
+  type SidecarState,
+  type SidecarServiceStatus,
   type VoiceSidecarStatus,
 } from '@/services/voiceSidecar'
 import {
+  ensureTauriMicrophoneAccess,
   micPermissionDeniedMessage,
   resetTauriMicrophonePermission,
 } from '@/utils/micPermission'
@@ -87,6 +93,7 @@ const morningGreeting = ref(true)
 const followUpEnabled = ref(true)
 const reminderVoice = ref(true)
 const voiceReplyDefault = ref(true)
+const focusWorkDnd = ref(false)
 const sttMode = ref<'auto' | 'local' | 'cloud'>('auto')
 const ttsMode = ref<'auto' | 'local' | 'cloud'>('auto')
 const rt = useRealtimeStore()
@@ -118,7 +125,9 @@ const learningError = ref('')
 const showTaskHistory = ref(false)
 const voiceAdvancedOpen = ref(false)
 const voiceSidecarStatus = ref<VoiceSidecarStatus | null>(null)
-const voiceSidecarRestartBusy = ref(false)
+const xasrRestartBusy = ref(false)
+const xttsRestartBusy = ref(false)
+const voiceLogDir = ref('')
 
 const voiceprintStatus = ref<VoiceprintStatus | null>(null)
 const voiceprintLoading = ref(false)
@@ -257,6 +266,7 @@ function applyPreferences(prefs: Awaited<ReturnType<typeof getUserPreferences>>)
   syncReminderVoiceLocal()
   localStorage.setItem('mochi_voice_reply_default', voiceReplyDefault.value ? '1' : '0')
   localStorage.setItem('mochi_stt_mode', sttMode.value)
+  focusWorkDnd.value = localStorage.getItem('mochi_focus_work_dnd') === '1'
   localStorage.setItem('mochi_tts_mode', ttsMode.value)
 }
 
@@ -266,6 +276,7 @@ async function loadPreferences() {
     applyPreferences(prefs)
   } catch {
     proactiveEnabled.value = true
+    focusWorkDnd.value = localStorage.getItem('mochi_focus_work_dnd') === '1'
   }
 }
 
@@ -319,6 +330,11 @@ async function onVoiceReplyToggle() {
   await savePref({ voice_reply_default: !voiceReplyDefault.value })
 }
 
+function onFocusWorkDndToggle() {
+  focusWorkDnd.value = !focusWorkDnd.value
+  localStorage.setItem('mochi_focus_work_dnd', focusWorkDnd.value ? '1' : '0')
+}
+
 async function onQuietChange() {
   await savePref({ quiet_hours_start: quietStart.value, quiet_hours_end: quietEnd.value })
 }
@@ -360,23 +376,81 @@ async function onTtsModeChange() {
 async function refreshVoiceSidecarStatus() {
   if (!isTauri()) return
   voiceSidecarStatus.value = await getVoiceSidecarStatus()
+  voiceLogDir.value = (await getVoiceLogDir()) ?? ''
+}
+
+/** Sidecar 状态灯颜色（running=绿 / external=黄 / error=红 …） */
+function sidecarDotClass(state: SidecarState): string {
+  switch (state) {
+    case 'running':
+      return 'sidecar-dot--ok'
+    case 'external':
+      return 'sidecar-dot--warn'
+    case 'starting':
+      return 'sidecar-dot--pending'
+    case 'error':
+    case 'skipped':
+      return 'sidecar-dot--err'
+    default:
+      return 'sidecar-dot--off'
+  }
+}
+
+/** Sidecar 状态中文说明 */
+function sidecarStateLabel(state: SidecarState): string {
+  switch (state) {
+    case 'running':
+      return '运行中'
+    case 'external':
+      return '外部进程（端口占用）'
+    case 'starting':
+      return '启动中'
+    case 'error':
+      return '失败'
+    case 'skipped':
+      return '未启动'
+    default:
+      return '已停止'
+  }
+}
+
+function sidecarRowHint(svc: SidecarServiceStatus, logName: 'x-asr' | 'x-tts', port: number): string {
+  if (svc.message) return svc.message
+  if (svc.state === 'running') return svc.managed ? '由 Mochi 托管' : '服务可用'
+  if (svc.state === 'external') {
+    return `端口 ${port} 已被其他进程占用，Mochi 复用该服务且不写入 ${logName}.log`
+  }
+  return ''
+}
+
+async function onRestartXAsrSidecar() {
+  xasrRestartBusy.value = true
+  try {
+    voiceSidecarStatus.value = await restartXAsrSidecar()
+    await rt.refreshXasrSidecarProbe()
+  } finally {
+    xasrRestartBusy.value = false
+  }
+}
+
+async function onRestartXTtsSidecar() {
+  xttsRestartBusy.value = true
+  try {
+    voiceSidecarStatus.value = await restartXTtsSidecar()
+    await rt.refreshXttsSidecarProbe()
+  } finally {
+    xttsRestartBusy.value = false
+  }
+}
+
+async function onOpenVoiceLogs() {
+  await openVoiceLogs()
 }
 
 async function onVoiceAdvancedToggle() {
   voiceAdvancedOpen.value = !voiceAdvancedOpen.value
   if (voiceAdvancedOpen.value) {
     await refreshVoiceSidecarStatus()
-  }
-}
-
-async function onRestartVoiceSidecars() {
-  voiceSidecarRestartBusy.value = true
-  try {
-    voiceSidecarStatus.value = await restartVoiceSidecars()
-    await rt.refreshXasrSidecarProbe()
-    await rt.refreshXttsSidecarProbe()
-  } finally {
-    voiceSidecarRestartBusy.value = false
   }
 }
 
@@ -460,6 +534,7 @@ function openVoiceTab() {
   void loadPreferences()
   void loadVoiceprintStatus()
   void loadFaceprintStatus()
+  void refreshVoiceSidecarStatus()
 }
 
 function openMeTab() {
@@ -665,9 +740,14 @@ async function onFixMicrophonePermission() {
   micFixBusy.value = true
   micFixMsg.value = ''
   try {
-    const ok = await resetTauriMicrophonePermission()
-    micFixMsg.value = ok
-      ? '已重置应用内麦克风权限，请再试语音对话。'
+    const resetOk = await resetTauriMicrophonePermission()
+    if (!resetOk) {
+      micFixMsg.value = micPermissionDeniedMessage()
+      return
+    }
+    const micOk = await ensureTauriMicrophoneAccess()
+    micFixMsg.value = micOk
+      ? '麦克风权限已就绪，请再试语音对话。'
       : micPermissionDeniedMessage()
   } finally {
     micFixBusy.value = false
@@ -1023,6 +1103,18 @@ onUnmounted(() => {
                 {{ voiceReplyDefault ? '开' : '关' }}
               </button>
             </label>
+            <label class="toggle-row">
+              <span>办公专注模式</span>
+              <button
+                type="button"
+                class="toggle"
+                :class="{ on: focusWorkDnd }"
+                @click="onFocusWorkDndToggle"
+              >
+                {{ focusWorkDnd ? '开' : '关' }}
+              </button>
+            </label>
+            <p class="hint">开启后 Mochi 说完会回到休息态，减少连续对话打扰；需要时请再叫我</p>
             <template v-if="serverVisionEnabled">
               <label class="toggle-row">
                 <span>语音时看我</span>
@@ -1069,6 +1161,25 @@ onUnmounted(() => {
                 <p v-else class="hint">
                   本地 STT：<code>tools/x-asr/setup-and-start.bat</code>（<code>ws://127.0.0.1:8766</code>）
                 </p>
+                <div v-if="isTauri() && voiceSidecarStatus" class="sidecar-service-card">
+                  <div class="sidecar-status-row">
+                    <span class="sidecar-dot" :class="sidecarDotClass(voiceSidecarStatus.xasr.state)" />
+                    <span class="sidecar-status-name">X-ASR</span>
+                    <span class="sidecar-status-label">{{ sidecarStateLabel(voiceSidecarStatus.xasr.state) }}</span>
+                    <code class="sidecar-port">:8766</code>
+                  </div>
+                  <p v-if="sidecarRowHint(voiceSidecarStatus.xasr, 'x-asr', 8766)" class="sidecar-status-hint">
+                    {{ sidecarRowHint(voiceSidecarStatus.xasr, 'x-asr', 8766) }}
+                  </p>
+                  <button
+                    type="button"
+                    class="btn-sm sidecar-restart-btn"
+                    :disabled="xasrRestartBusy"
+                    @click="onRestartXAsrSidecar"
+                  >
+                    {{ xasrRestartBusy ? '重启中…' : '重启 X-ASR' }}
+                  </button>
+                </div>
               </template>
               <p class="hint advanced-gap">语音合成（TTS）· 默认优先本地 Matcha，不可达回退云端</p>
               <select v-model="ttsMode" class="select-sm" @change="onTtsModeChange">
@@ -1084,20 +1195,38 @@ onUnmounted(() => {
                 <p v-else class="hint">
                   本地 TTS：<code>tools/x-tts/setup-and-start.bat</code>（<code>http://127.0.0.1:8767</code>）
                 </p>
+                <div v-if="isTauri() && voiceSidecarStatus" class="sidecar-service-card">
+                  <div class="sidecar-status-row">
+                    <span class="sidecar-dot" :class="sidecarDotClass(voiceSidecarStatus.xtts.state)" />
+                    <span class="sidecar-status-name">X-TTS</span>
+                    <span class="sidecar-status-label">{{ sidecarStateLabel(voiceSidecarStatus.xtts.state) }}</span>
+                    <code class="sidecar-port">:8767</code>
+                  </div>
+                  <p v-if="sidecarRowHint(voiceSidecarStatus.xtts, 'x-tts', 8767)" class="sidecar-status-hint">
+                    {{ sidecarRowHint(voiceSidecarStatus.xtts, 'x-tts', 8767) }}
+                  </p>
+                  <button
+                    type="button"
+                    class="btn-sm sidecar-restart-btn"
+                    :disabled="xttsRestartBusy"
+                    @click="onRestartXTtsSidecar"
+                  >
+                    {{ xttsRestartBusy ? '重启中…' : '重启 X-TTS' }}
+                  </button>
+                </div>
               </template>
               <p v-else class="hint">始终使用云端 TTS（DashScope）</p>
-              <div v-if="isTauri() && voiceSidecarStatus" class="hint advanced-gap">
-                Sidecar：X-ASR {{ voiceSidecarStatus.xasr.state }} · X-TTS {{ voiceSidecarStatus.xtts.state }}
-                <span v-if="voiceSidecarStatus.xasr.message"> — {{ voiceSidecarStatus.xasr.message }}</span>
-              </div>
+              <p v-if="isTauri() && voiceLogDir" class="hint advanced-gap">
+                日志目录：<code>{{ voiceLogDir }}</code>
+                （<code>x-asr.log</code> · <code>x-tts.log</code>）
+              </p>
               <button
                 v-if="isTauri()"
                 type="button"
-                class="btn-sm"
-                :disabled="voiceSidecarRestartBusy"
-                @click="onRestartVoiceSidecars"
+                class="btn-sm advanced-gap"
+                @click="onOpenVoiceLogs"
               >
-                {{ voiceSidecarRestartBusy ? '重启中…' : '重启本地语音服务' }}
+                打开日志文件夹
               </button>
               <p class="hint advanced-gap">在场声音感知 · 当前：{{ pet.ownerPresence }}</p>
               <p class="hint">
@@ -1862,6 +1991,91 @@ onUnmounted(() => {
 .advanced-gap {
   margin-top: 10px;
 }
+
+.sidecar-service-card {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fafafa;
+  border: 1px solid #eee;
+}
+
+.sidecar-restart-btn {
+  margin-top: 8px;
+}
+
+.sidecar-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+.sidecar-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: #ccc;
+}
+
+.sidecar-dot--ok {
+  background: #22c55e;
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.25);
+}
+
+.sidecar-dot--warn {
+  background: #f59e0b;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.25);
+}
+
+.sidecar-dot--pending {
+  background: #3b82f6;
+  animation: sidecar-pulse 1.2s ease-in-out infinite;
+}
+
+.sidecar-dot--err {
+  background: #ef4444;
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.2);
+}
+
+.sidecar-dot--off {
+  background: #bbb;
+}
+
+@keyframes sidecar-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.sidecar-status-name {
+  font-weight: 600;
+  color: #333;
+}
+
+.sidecar-status-label {
+  color: #666;
+}
+
+.sidecar-port {
+  font-size: 11px;
+  color: #888;
+}
+
+.sidecar-status-hint {
+  margin: 2px 0 0 18px;
+  font-size: 11px;
+  color: #888;
+  line-height: 1.4;
+}
+
 
 .toggle-row + .toggle-row {
   margin-top: 8px;

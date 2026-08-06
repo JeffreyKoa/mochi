@@ -1,6 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import sys
+from pathlib import Path
+
+# Tauri 嵌入式 Python 不保证把 infer/ 加入 sys.path（见 bundle/voice runtime）
+_infer_dir = Path(__file__).resolve().parent
+if str(_infer_dir) not in sys.path:
+    sys.path.insert(0, str(_infer_dir))
+
+from sidecar_log import configure_sidecar_logging, install_timestamp_streams
+
+# 尽早安装：Traceback / logging 写入 x-asr.log 时每行都有时间戳
+install_timestamp_streams()
+
 import argparse
 import asyncio
 import json
@@ -13,11 +26,9 @@ import websockets
 
 from sherpa_streaming_infer import SherpaStreamingASR
 
+SIDECAR_VERSION = "1"
 
-logging.basicConfig(
-    format="%(asctime)s %(levelname)s [%(filename)s:%(lineno)d] %(message)s",
-    level=logging.INFO,
-)
+configure_sidecar_logging(logging.INFO)
 
 
 def get_parser():
@@ -220,7 +231,7 @@ async def handle_connection(websocket, args):
 
             elif msg_type == "ping":
                 await websocket.send(
-                    json.dumps({"type": "pong"}, ensure_ascii=False)
+                    json.dumps({"type": "pong", "version": SIDECAR_VERSION}, ensure_ascii=False)
                 )
 
             else:

@@ -5,8 +5,8 @@ export type XAsrServerMessage =
   | { type: 'partial'; text: string }
   | { type: 'final'; text: string; first_partial_latency?: number }
   | { type: 'error'; text: string }
-  | { type: 'reset_ok' }
-  | { type: 'pong' }
+  | { type: 'reset_ok'; version?: string }
+  | { type: 'pong'; version?: string }
 
 export interface XAsrClientHandlers {
   onPartial?: (text: string) => void
@@ -26,6 +26,8 @@ export class XAsrClient {
   private finalTimer: ReturnType<typeof setTimeout> | null = null
   /** ping 等待 pong（走 handleMessage，避免 WebView2 下 addEventListener 不可靠）。 */
   private pingWaiter: (() => void) | null = null
+  /** 最近一次 pong 携带的 sidecar 版本（health 校验用）。 */
+  lastPongVersion: string | null = null
 
   setHandlers(handlers: XAsrClientHandlers) {
     this.handlers = handlers
@@ -47,6 +49,13 @@ export class XAsrClient {
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         cleanup()
+        // 超时须关闭 socket，否则 sidecar 连接泄漏会导致握手超时、探测 offline
+        try {
+          ws.onclose = null
+          ws.close()
+        } catch {
+          // ignore
+        }
         resolve(false)
       }, timeoutMs)
 
@@ -246,6 +255,7 @@ export class XAsrClient {
       case 'reset_ok':
         break
       case 'pong':
+        this.lastPongVersion = typeof msg.version === 'string' ? msg.version : null
         this.pingWaiter?.()
         break
       default:
@@ -254,19 +264,32 @@ export class XAsrClient {
   }
 }
 
-/** 探测 X-ASR sidecar 是否在线（connect + ping）。 */
+/** 与 sidecar 内置版本对齐。 */
+export const EXPECTED_XASR_VERSION = '1'
+
+/** 探测 X-ASR sidecar 是否在线（connect + ping）；始终关闭探测用连接。 */
 export async function probeXAsrServer(
   url: string,
   timeoutMs = 2500,
 ): Promise<boolean> {
   const client = new XAsrClient()
-  const connected = await client.connect(url, timeoutMs)
-  if (!connected) {
+  let versionMismatch = false
+  try {
+    const connected = await client.connect(url, timeoutMs)
+    if (!connected) {
+      return false
+    }
+    const pong = await client.ping(Math.min(timeoutMs, 2000))
+    versionMismatch = client.lastPongVersion != null && client.lastPongVersion !== EXPECTED_XASR_VERSION
+    if (versionMismatch && import.meta.env.DEV) {
+      console.warn(
+        '[x-asr] sidecar version mismatch: got %s expected %s',
+        client.lastPongVersion,
+        EXPECTED_XASR_VERSION,
+      )
+    }
+    return pong || connected
+  } finally {
     client.close()
-    return false
   }
-  const pong = await client.ping(timeoutMs)
-  client.close()
-  // connect 成功即 sidecar 在听；ping 失败时仍视为 reachable（兼容旧 sidecar）
-  return pong || connected
 }
