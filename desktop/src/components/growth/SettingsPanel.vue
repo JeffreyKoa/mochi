@@ -60,17 +60,6 @@ import {
 import { hideSidePanelPopup, isTauri } from '@/services/chatWindow'
 import { refreshPresenceChatPrefs } from '@/services/presenceChat'
 import { listenTasksRefresh } from '@/services/proactiveSync'
-import { useRealtimeStore } from '@/stores/realtimeStore'
-import {
-  getVoiceLogDir,
-  getVoiceSidecarStatus,
-  openVoiceLogs,
-  restartXAsrSidecar,
-  restartXTtsSidecar,
-  type SidecarState,
-  type SidecarServiceStatus,
-  type VoiceSidecarStatus,
-} from '@/services/voiceSidecar'
 import {
   ensureTauriMicrophoneAccess,
   micPermissionDeniedMessage,
@@ -94,9 +83,6 @@ const followUpEnabled = ref(true)
 const reminderVoice = ref(true)
 const voiceReplyDefault = ref(true)
 const focusWorkDnd = ref(false)
-const sttMode = ref<'auto' | 'local' | 'cloud'>('auto')
-const ttsMode = ref<'auto' | 'local' | 'cloud'>('auto')
-const rt = useRealtimeStore()
 const visionEnabled = ref(isVisionCaptureEnabled())
 const serverVisionEnabled = ref(false)
 const quietStart = ref(23)
@@ -124,10 +110,6 @@ const savingLearning = ref(false)
 const learningError = ref('')
 const showTaskHistory = ref(false)
 const voiceAdvancedOpen = ref(false)
-const voiceSidecarStatus = ref<VoiceSidecarStatus | null>(null)
-const xasrRestartBusy = ref(false)
-const xttsRestartBusy = ref(false)
-const voiceLogDir = ref('')
 
 const voiceprintStatus = ref<VoiceprintStatus | null>(null)
 const voiceprintLoading = ref(false)
@@ -254,8 +236,6 @@ function applyPreferences(prefs: Awaited<ReturnType<typeof getUserPreferences>>)
   followUpEnabled.value = prefs.follow_up_enabled !== false
   reminderVoice.value = prefs.reminder_voice !== false
   voiceReplyDefault.value = prefs.voice_reply_default !== false
-  sttMode.value = prefs.stt_mode ?? 'auto'
-  ttsMode.value = prefs.tts_mode ?? 'auto'
   wellnessEnabled.value = prefs.wellness_nudges_enabled !== false
   wellnessDrink.value = prefs.wellness_drink !== false
   wellnessMeal.value = prefs.wellness_meal !== false
@@ -265,9 +245,7 @@ function applyPreferences(prefs: Awaited<ReturnType<typeof getUserPreferences>>)
   wellnessDailyMax.value = prefs.wellness_daily_max ?? 2
   syncReminderVoiceLocal()
   localStorage.setItem('mochi_voice_reply_default', voiceReplyDefault.value ? '1' : '0')
-  localStorage.setItem('mochi_stt_mode', sttMode.value)
   focusWorkDnd.value = localStorage.getItem('mochi_focus_work_dnd') === '1'
-  localStorage.setItem('mochi_tts_mode', ttsMode.value)
 }
 
 async function loadPreferences() {
@@ -363,95 +341,8 @@ async function onWellnessMaxChange() {
   await savePref({ wellness_daily_max: wellnessDailyMax.value })
 }
 
-async function onSttModeChange() {
-  await savePref({ stt_mode: sttMode.value })
-  void rt.refreshVoiceBackendPrefs()
-}
-
-async function onTtsModeChange() {
-  await savePref({ tts_mode: ttsMode.value })
-  void rt.refreshVoiceBackendPrefs()
-}
-
-async function refreshVoiceSidecarStatus() {
-  if (!isTauri()) return
-  voiceSidecarStatus.value = await getVoiceSidecarStatus()
-  voiceLogDir.value = (await getVoiceLogDir()) ?? ''
-}
-
-/** Sidecar 状态灯颜色（running=绿 / external=黄 / error=红 …） */
-function sidecarDotClass(state: SidecarState): string {
-  switch (state) {
-    case 'running':
-      return 'sidecar-dot--ok'
-    case 'external':
-      return 'sidecar-dot--warn'
-    case 'starting':
-      return 'sidecar-dot--pending'
-    case 'error':
-    case 'skipped':
-      return 'sidecar-dot--err'
-    default:
-      return 'sidecar-dot--off'
-  }
-}
-
-/** Sidecar 状态中文说明 */
-function sidecarStateLabel(state: SidecarState): string {
-  switch (state) {
-    case 'running':
-      return '运行中'
-    case 'external':
-      return '外部进程（端口占用）'
-    case 'starting':
-      return '启动中'
-    case 'error':
-      return '失败'
-    case 'skipped':
-      return '未启动'
-    default:
-      return '已停止'
-  }
-}
-
-function sidecarRowHint(svc: SidecarServiceStatus, logName: 'x-asr' | 'x-tts', port: number): string {
-  if (svc.message) return svc.message
-  if (svc.state === 'running') return svc.managed ? '由 Mochi 托管' : '服务可用'
-  if (svc.state === 'external') {
-    return `端口 ${port} 已被其他进程占用，Mochi 复用该服务且不写入 ${logName}.log`
-  }
-  return ''
-}
-
-async function onRestartXAsrSidecar() {
-  xasrRestartBusy.value = true
-  try {
-    voiceSidecarStatus.value = await restartXAsrSidecar()
-    await rt.refreshXasrSidecarProbe()
-  } finally {
-    xasrRestartBusy.value = false
-  }
-}
-
-async function onRestartXTtsSidecar() {
-  xttsRestartBusy.value = true
-  try {
-    voiceSidecarStatus.value = await restartXTtsSidecar()
-    await rt.refreshXttsSidecarProbe()
-  } finally {
-    xttsRestartBusy.value = false
-  }
-}
-
-async function onOpenVoiceLogs() {
-  await openVoiceLogs()
-}
-
 async function onVoiceAdvancedToggle() {
   voiceAdvancedOpen.value = !voiceAdvancedOpen.value
-  if (voiceAdvancedOpen.value) {
-    await refreshVoiceSidecarStatus()
-  }
 }
 
 function toggleLearningTopic(id: string) {
@@ -534,7 +425,6 @@ function openVoiceTab() {
   void loadPreferences()
   void loadVoiceprintStatus()
   void loadFaceprintStatus()
-  void refreshVoiceSidecarStatus()
 }
 
 function openMeTab() {
@@ -1129,6 +1019,14 @@ onUnmounted(() => {
             </p>
           </SettingsCard>
 
+          <SettingsCard title="语音与隐私" hint="云端语音处理说明">
+            <p class="hint">
+              语音对话时，麦克风 PCM 会上传至 Mochi 自建服务器，用于语音识别（x-asr）、声学情绪分析（emotion2vec）与
+              CosyVoice 语音合成。客户端不长期保存原始语音；对话文字按记忆设置留存。
+            </p>
+            <p class="hint">纯文字聊天不会上传麦克风音频。</p>
+          </SettingsCard>
+
           <SettingsCard v-if="isTauri()" title="麦克风" hint="若权限被拒绝，请检查 Windows 隐私 → 麦克风">
             <button
               type="button"
@@ -1147,87 +1045,8 @@ onUnmounted(() => {
               <span>{{ voiceAdvancedOpen ? '▲' : '▼' }}</span>
             </button>
             <div v-if="voiceAdvancedOpen" class="settings-advanced-body">
-              <p class="hint">语音识别（STT）· 默认优先本地 X-ASR，不可达回退云端</p>
-              <select v-model="sttMode" class="select-sm" @change="onSttModeChange">
-                <option value="auto">自动（优先本地）</option>
-                <option value="local">本地</option>
-                <option value="cloud">云端</option>
-              </select>
-              <template v-if="sttMode === 'local' || sttMode === 'auto'">
-                <p v-if="isTauri()" class="hint">
-                  本地 STT 由客户端自动启动（{{ voiceSidecarStatus?.bundleMode === 'release' ? '安装包内置' : '开发 tools/' }} ·
-                  <code>ws://127.0.0.1:8766</code>）
-                </p>
-                <p v-else class="hint">
-                  本地 STT：<code>tools/x-asr/setup-and-start.bat</code>（<code>ws://127.0.0.1:8766</code>）
-                </p>
-                <div v-if="isTauri() && voiceSidecarStatus" class="sidecar-service-card">
-                  <div class="sidecar-status-row">
-                    <span class="sidecar-dot" :class="sidecarDotClass(voiceSidecarStatus.xasr.state)" />
-                    <span class="sidecar-status-name">X-ASR</span>
-                    <span class="sidecar-status-label">{{ sidecarStateLabel(voiceSidecarStatus.xasr.state) }}</span>
-                    <code class="sidecar-port">:8766</code>
-                  </div>
-                  <p v-if="sidecarRowHint(voiceSidecarStatus.xasr, 'x-asr', 8766)" class="sidecar-status-hint">
-                    {{ sidecarRowHint(voiceSidecarStatus.xasr, 'x-asr', 8766) }}
-                  </p>
-                  <button
-                    type="button"
-                    class="btn-sm sidecar-restart-btn"
-                    :disabled="xasrRestartBusy"
-                    @click="onRestartXAsrSidecar"
-                  >
-                    {{ xasrRestartBusy ? '重启中…' : '重启 X-ASR' }}
-                  </button>
-                </div>
-              </template>
-              <p class="hint advanced-gap">语音合成（TTS）· 默认优先本地 Matcha，不可达回退云端</p>
-              <select v-model="ttsMode" class="select-sm" @change="onTtsModeChange">
-                <option value="auto">自动（优先本地）</option>
-                <option value="local">本地</option>
-                <option value="cloud">云端</option>
-              </select>
-              <template v-if="ttsMode === 'local' || ttsMode === 'auto'">
-                <p v-if="isTauri()" class="hint">
-                  本地 TTS 由客户端自动启动（{{ voiceSidecarStatus?.bundleMode === 'release' ? '安装包内置' : '开发 tools/' }} ·
-                  <code>http://127.0.0.1:8767</code>）
-                </p>
-                <p v-else class="hint">
-                  本地 TTS：<code>tools/x-tts/setup-and-start.bat</code>（<code>http://127.0.0.1:8767</code>）
-                </p>
-                <div v-if="isTauri() && voiceSidecarStatus" class="sidecar-service-card">
-                  <div class="sidecar-status-row">
-                    <span class="sidecar-dot" :class="sidecarDotClass(voiceSidecarStatus.xtts.state)" />
-                    <span class="sidecar-status-name">X-TTS</span>
-                    <span class="sidecar-status-label">{{ sidecarStateLabel(voiceSidecarStatus.xtts.state) }}</span>
-                    <code class="sidecar-port">:8767</code>
-                  </div>
-                  <p v-if="sidecarRowHint(voiceSidecarStatus.xtts, 'x-tts', 8767)" class="sidecar-status-hint">
-                    {{ sidecarRowHint(voiceSidecarStatus.xtts, 'x-tts', 8767) }}
-                  </p>
-                  <button
-                    type="button"
-                    class="btn-sm sidecar-restart-btn"
-                    :disabled="xttsRestartBusy"
-                    @click="onRestartXTtsSidecar"
-                  >
-                    {{ xttsRestartBusy ? '重启中…' : '重启 X-TTS' }}
-                  </button>
-                </div>
-              </template>
-              <p v-else class="hint">始终使用云端 TTS（DashScope）</p>
-              <p v-if="isTauri() && voiceLogDir" class="hint advanced-gap">
-                日志目录：<code>{{ voiceLogDir }}</code>
-                （<code>x-asr.log</code> · <code>x-tts.log</code>）
-              </p>
-              <button
-                v-if="isTauri()"
-                type="button"
-                class="btn-sm advanced-gap"
-                @click="onOpenVoiceLogs"
-              >
-                打开日志文件夹
-              </button>
+              <p class="hint">语音识别：服务端 x-asr（Sherpa）</p>
+              <p class="hint">语音合成：DashScope CosyVoice</p>
               <p class="hint advanced-gap">在场声音感知 · 当前：{{ pet.ownerPresence }}</p>
               <p class="hint">
                 模型路径：<code>public/models/speaker/campp.onnx</code>、

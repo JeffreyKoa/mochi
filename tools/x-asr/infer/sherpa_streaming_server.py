@@ -147,9 +147,15 @@ def build_energy_state(args, sample_rate: int) -> Optional[EnergyTailProbeState]
 
 async def handle_connection(websocket, args):
     logging.info("client connected")
-    # 连接级复用 recognizer，避免每轮 start 重建 ONNX（省 100–400ms）
-    shared_asr = build_asr(args)
+    # 在线程池加载 ONNX，避免阻塞 event loop；首条 start 时再 await，保证客户端已发送的控制帧可被处理
+    asr_holder: dict[str, Optional[SherpaStreamingASR]] = {"asr": None}
+    asr_task = asyncio.create_task(asyncio.to_thread(build_asr, args))
     session: Optional[SessionState] = None
+
+    async def ensure_asr() -> SherpaStreamingASR:
+        if asr_holder["asr"] is None:
+            asr_holder["asr"] = await asr_task
+        return asr_holder["asr"]
 
     try:
         async for message in websocket:
@@ -185,6 +191,7 @@ async def handle_connection(websocket, args):
             if msg_type == "start":
                 # 可选覆盖采样率
                 client_sr = int(payload.get("sample_rate", args.sample_rate))
+                shared_asr = await ensure_asr()
                 shared_asr.reset()
                 session = SessionState(
                     asr=shared_asr,
@@ -216,9 +223,11 @@ async def handle_connection(websocket, args):
                         ensure_ascii=False,
                     )
                 )
+                shared_asr = await ensure_asr()
                 shared_asr.reset()
 
             elif msg_type == "reset":
+                shared_asr = await ensure_asr()
                 shared_asr.reset()
                 session = SessionState(
                     asr=shared_asr,
@@ -249,6 +258,11 @@ async def handle_connection(websocket, args):
 async def main():
     args = get_parser().parse_args()
     logging.info(vars(args))
+
+    # 启动前预加载 ONNX，缩短首连 ASR 初始化（Go sidecar 适配器 start 超时 45s）
+    logging.info("preloading ASR models (one-time)...")
+    await asyncio.to_thread(build_asr, args)
+    logging.info("ASR preload done")
 
     async with websockets.serve(
         lambda ws: handle_connection(ws, args),

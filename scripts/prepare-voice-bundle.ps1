@@ -1,10 +1,11 @@
-# 将 X-ASR / X-TTS 运行时 + 模型打包进 Tauri resources（Windows）
-# 用法（仓库根目录）:
-#   .\scripts\prepare-voice-bundle.ps1
-#   .\scripts\prepare-voice-bundle.ps1 -SkipPip   # 仅复制已有 site-packages
+# [DEPRECATED for release] Stage X-ASR / X-TTS into desktop/src-tauri/bundle/voice for legacy client sidecar.
+# Phase3+: default npm run tauri:build does NOT call this. Voice runs on server (see server/scripts/prepare-server-voice.ps1).
 #
-# 前置：tools/x-asr 与 tools/x-tts 已 setup（venv + 模型 onnx）
-# 输出：desktop/src-tauri/bundle/voice/  → tauri build 时打入安装包
+# Client dev / legacy local sidecar only:
+#   .\scripts\prepare-voice-bundle.ps1
+#   cd desktop && npm run tauri:build:with-voice
+#
+# Output (optional): desktop/src-tauri/bundle/voice/  (requires tauri.conf.json resources + tauri:build:with-voice)
 
 param(
     [switch]$SkipPip,
@@ -258,4 +259,4 @@ try {
     Write-Host "Skip portable copy: $($_.Exception.Message)" -ForegroundColor Yellow
 }
 
-Write-Host "Next: cd desktop && npm run tauri:build" -ForegroundColor DarkGray
+Write-Host "Next: cd desktop && npm run tauri:build:with-voice" -ForegroundColor DarkGray

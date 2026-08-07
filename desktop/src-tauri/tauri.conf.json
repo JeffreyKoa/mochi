@@ -55,9 +55,6 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": [
-      "bundle/**/*"
-    ],
     "windows": {
       "nsis": {
         "installerHooks": "./windows/installer-hooks.nsh"

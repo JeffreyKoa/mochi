@@ -35,6 +35,7 @@ type Pipeline struct {
 	acoustic     emotion.AcousticClient
 	vision       *vision.Service
 	asrSampleRate int
+	minAcousticConf float64
 }
 
 func NewPipeline(chatSvc *chat.Service, cfg config.RealtimeConfig, appCfg *config.Config) *Pipeline {
@@ -52,6 +53,10 @@ func NewPipeline(chatSvc *chat.Service, cfg config.RealtimeConfig, appCfg *confi
 		ep:            ep,
 		asrSampleRate: cfg.ASR.SampleRate,
 		acoustic:      emotion.NoopAcousticClient{},
+		minAcousticConf: appCfg.Emotion.Acoustic.MinConfidence,
+	}
+	if p.minAcousticConf <= 0 {
+		p.minAcousticConf = 0.65
 	}
 	if appCfg.Emotion.Acoustic.Enabled && appCfg.Emotion.Acoustic.URL != "" {
 		p.acoustic = emotion.NewHTTPAcousticClient(
@@ -69,9 +74,16 @@ func NewPipeline(chatSvc *chat.Service, cfg config.RealtimeConfig, appCfg *confi
 		log.Printf("[vision] pipeline disabled (config vision.enabled=false)")
 	}
 	asrEp := dashscope.EndpointConfig{WSURL: cfg.Dashscope.ASRWSURL}
-	if strings.ToLower(cfg.ASR.Provider) == "dashscope" && apiKey != "" {
-		p.asr = newDashscopeASR(dashscope.NewASRClient(apiKey, cfg.ASR.Model, cfg.ASR.SampleRate, asrEp))
-	} else if strings.ToLower(cfg.ASR.Provider) == "none" {
+	switch strings.ToLower(cfg.ASR.Provider) {
+	case "dashscope":
+		if apiKey != "" {
+			p.asr = newDashscopeASR(dashscope.NewASRClient(apiKey, cfg.ASR.Model, cfg.ASR.SampleRate, asrEp))
+		}
+	case "xasr", "sherpa":
+		wsURL := cfg.XASR.WSURL
+		p.asr = newXasrASR(wsURL, cfg.ASR.SampleRate)
+		log.Printf("[realtime] asr.provider=xasr ws=%s sample_rate=%d", wsURL, cfg.ASR.SampleRate)
+	case "none":
 		log.Printf("[realtime] asr.provider=none (client-side STT / text_input only)")
 	}
 
@@ -227,13 +239,13 @@ func (p *Pipeline) OnSpeechEnd(ctx context.Context, sess *Session, audio []byte,
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			hint, err := p.acoustic.Recognize(pipeCtx, audio, p.asrSampleRate)
+			hint, err := p.acoustic.Recognize(pipeCtx, trimPCMForEmotion(audio), p.asrSampleRate)
 			if err != nil {
-				log.Printf("[realtime] acoustic error session=%s: %v", sess.ID, err)
+				logAcousticOutcome(sess.ID, "batch", emotion.EmptyAcousticHint(), err, p.minAcousticConf)
 				return
 			}
 			acousticHint = hint
-			log.Printf("[realtime] acoustic session=%s mood=%s conf=%.2f", sess.ID, hint.Mood, hint.Confidence)
+			logAcousticOutcome(sess.ID, "batch", hint, nil, p.minAcousticConf)
 		}()
 	}
 
@@ -328,7 +340,7 @@ func (p *Pipeline) OnTextInput(ctx context.Context, sess *Session, text string, 
 	if lat := sess.TurnLatency(); lat != nil {
 		lat.MarkASRFinal()
 	}
-	// 本地 X-ASR：客户端附 turn PCM 供 emotion2vec 声学识别
+	// Legacy：客户端本地 X-ASR 曾附 turn_pcm 供 emotion2vec；Phase4 默认云端 PCM 路径，此处仅兼容旧客户端。
 	if len(turnPCM) > 0 {
 		sess.SetTurnPCM(turnPCM)
 		sess.SetTurnAudioBytes(len(turnPCM))
@@ -342,17 +354,17 @@ func (p *Pipeline) ensureAcousticHint(ctx context.Context, sess *Session) emotio
 	if sess.acousticDone() {
 		return sess.AcousticHint()
 	}
-	pcm := sess.TurnPCM()
+	pcm := trimPCMForEmotion(sess.TurnPCM())
 	if p.acoustic == nil || !p.acoustic.Enabled() || len(pcm) == 0 {
 		return emotion.EmptyAcousticHint()
 	}
 	hint, err := p.acoustic.Recognize(ctx, pcm, p.asrSampleRate)
 	if err != nil {
-		log.Printf("[realtime] acoustic fallback error session=%s: %v", sess.ID, err)
+		logAcousticOutcome(sess.ID, "stream", emotion.EmptyAcousticHint(), err, p.minAcousticConf)
 		return emotion.EmptyAcousticHint()
 	}
 	sess.SetAcousticHint(hint)
-	log.Printf("[realtime] acoustic(stream) session=%s mood=%s conf=%.2f", sess.ID, hint.Mood, hint.Confidence)
+	logAcousticOutcome(sess.ID, "stream", hint, nil, p.minAcousticConf)
 	return hint
 }
 
@@ -385,7 +397,7 @@ func (p *Pipeline) finalizeParallelPerception(ctx context.Context, sess *Session
 	jpeg := sess.TurnVisionJPEG()
 	if p.vision == nil || !p.vision.Enabled() || len(jpeg) == 0 {
 		state := emotion.BuildFinalPerception(userText, acoustic, vision.EmptyHint(),
-			p.classifyUtterance(ctx, userText, acoustic, faceHint), 0.65, 0.6)
+			p.classifyUtterance(ctx, userText, acoustic, faceHint), p.minAcousticConf, 0.6)
 		return &state
 	}
 
@@ -407,7 +419,7 @@ func (p *Pipeline) finalizeParallelPerception(ctx context.Context, sess *Session
 
 	if strings.TrimSpace(userText) == "" {
 		state := emotion.BuildFinalPerception("", acoustic, faceHint,
-			emotion.FallbackInsight(acoustic, faceHint), 0.65, p.vision.MinVisualConf())
+			emotion.FallbackInsight(acoustic, faceHint), p.minAcousticConf, p.vision.MinVisualConf())
 		return &state
 	}
 	return p.buildPerceptionState(ctx, sess, userText, acoustic, faceHint, jpeg)
@@ -416,7 +428,7 @@ func (p *Pipeline) finalizeParallelPerception(ctx context.Context, sess *Session
 // buildPerceptionState V3c：ClassifyUtterance ∥ Barrier → 仅硬依赖二次 VL。
 func (p *Pipeline) buildPerceptionState(ctx context.Context, sess *Session, userText string, acoustic emotion.AcousticHint, faceHint vision.Hint, jpeg []byte) *emotion.PerceptionState {
 	sessionID := sess.ID
-	minAcoustic := 0.65
+	minAcoustic := p.minAcousticConf
 	minVisual := 0.6
 	if p.vision != nil {
 		minVisual = p.vision.MinVisualConf()
@@ -537,7 +549,7 @@ func (p *Pipeline) maybeEarlyPerceptionAnim(ctx context.Context, sess *Session, 
 	if p.vision == nil || !p.vision.EarlyAnimationEnabled() || p.chat == nil {
 		return
 	}
-	minAcoustic := 0.65
+	minAcoustic := p.minAcousticConf
 	minVisual := p.vision.EarlyAnimationMinConf()
 	if p.vision.MinVisualConf() > minVisual {
 		minVisual = p.vision.MinVisualConf()
@@ -581,14 +593,15 @@ func (p *Pipeline) PrefetchAcoustic(ctx context.Context, sess *Session, pcm []by
 	if sess.acousticDone() || p.acoustic == nil || !p.acoustic.Enabled() || len(pcm) == 0 {
 		return
 	}
+	trimmed := trimPCMForEmotion(pcm)
 	go func() {
-		hint, err := p.acoustic.Recognize(ctx, pcm, p.asrSampleRate)
+		hint, err := p.acoustic.Recognize(ctx, trimmed, p.asrSampleRate)
 		if err != nil {
-			log.Printf("[realtime] acoustic prefetch error session=%s: %v", sess.ID, err)
+			logAcousticOutcome(sess.ID, "prefetch", emotion.EmptyAcousticHint(), err, p.minAcousticConf)
 			return
 		}
 		sess.SetAcousticHint(hint)
-		log.Printf("[realtime] acoustic prefetch session=%s mood=%s conf=%.2f", sess.ID, hint.Mood, hint.Confidence)
+		logAcousticOutcome(sess.ID, "prefetch", hint, nil, p.minAcousticConf)
 	}()
 }
 
@@ -619,7 +632,7 @@ func (p *Pipeline) perceiveVoiceTurn(ctx context.Context, sess *Session, userTex
 		sess.CancelVisionWork()
 		acousticHint := p.ensureAcousticHint(ctx, sess)
 		state := emotion.BuildFinalPerception(userText, acousticHint, vision.EmptyHint(),
-			p.classifyUtterance(ctx, userText, acousticHint, vision.EmptyHint()), 0.65, p.vision.MinVisualConf())
+			p.classifyUtterance(ctx, userText, acousticHint, vision.EmptyHint()), p.minAcousticConf, p.vision.MinVisualConf())
 		log.Printf("[vision][skip] tier1_skipped session=%s text=%q", sess.ID, truncateVisionText(userText, 40))
 		return &state
 	}
@@ -1395,7 +1408,7 @@ func perceptionVisual(state *emotion.PerceptionState) vision.Hint {
 
 func buildTurnMoodContext(userText string, acoustic emotion.AcousticHint, visual vision.Hint) (text.MoodTag, emotion.Hint) {
 	quick := emotion.QuickDetect(userText)
-	merged := emotion.MergeAcousticHint(emotion.Hint{}, quick, acoustic, 0.65)
+	merged := emotion.MergeAcousticHint(emotion.Hint{}, quick, acoustic, 0.55)
 	merged = emotion.MergeVisualHint(merged, visual, 0.6)
 	return text.InferDefaultMood(merged.UserMood, merged.Intent, merged.NeedsEmpathy), merged
 }

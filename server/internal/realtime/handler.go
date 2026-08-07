@@ -32,17 +32,6 @@ const maxUtteranceBytes = 16000 * 2 * 30
 // minBatchASRFallbackBytes：流式 ASR 空结果时，缓冲达到此长度则回退批量识别（~0.5s @16kHz mono）。
 const minBatchASRFallbackBytes = 16000
 
-// maxBatchASRBytes：批量 ASR 最多识别最近 8 秒，避免 20s+ 缓冲识别耗时 10s+。
-const maxBatchASRBytes = 16000 * 2 * 8
-
-// trimPCMForASR 截取 PCM 尾部用于批量 ASR，降低长缓冲识别延迟。
-func trimPCMForASR(pcm []byte) []byte {
-	if len(pcm) <= maxBatchASRBytes {
-		return pcm
-	}
-	return pcm[len(pcm)-maxBatchASRBytes:]
-}
-
 type Handler struct {
 	authSvc  *auth.Service
 	pipeline *Pipeline
@@ -478,8 +467,9 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 				}
 			}
 
-		case MsgAudioStart:
+        case MsgAudioStart:
 			// Client detected owner speech — begin a fresh utterance buffer.
+			log.Printf("[realtime] audio_start session=%s", sessionID)
 			audioMu.Lock()
 			audioBuf = audioBuf[:0]
 			audioMu.Unlock()

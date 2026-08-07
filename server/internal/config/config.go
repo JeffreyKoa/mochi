@@ -790,8 +790,8 @@ func (r *RealtimeConfig) applyDefaults() {
 	}
 	if r.Voiceprint.Threshold == 0 {
 		r.Voiceprint.Threshold = 0.38
-		r.Voiceprint.Required = true
 	}
+	// Required 默认 false（Phase2）；config.yaml 显式 true 时仍生效
 	if r.Voiceprint.VerifyWindowSec == 0 {
 		r.Voiceprint.VerifyWindowSec = 4.0
 	}

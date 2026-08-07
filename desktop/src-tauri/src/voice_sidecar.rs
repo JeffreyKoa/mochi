@@ -1,5 +1,5 @@
-//! 本地 X-ASR / X-TTS sidecar 生命周期：Tauri 启动时拉起，退出时终止。
-//! Release：使用 bundle/voice 内置 Python + 模型；Debug：使用仓库 tools/ 下 venv。
+//! 本地 X-ASR / X-TTS sidecar 生命周期（Phase3 默认不打包；MOCHI_VOICE_SIDECAR=1 时 dev/tools 路径）。
+//! Release 安装包不再内置 bundle/voice；Debug 使用仓库 tools/ 下 venv。
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;

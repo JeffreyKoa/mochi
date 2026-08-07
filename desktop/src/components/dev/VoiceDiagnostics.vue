@@ -6,19 +6,13 @@ import {
   getEventLoopLagMs,
   EVENT_LOOP_LAG_WARN_MS,
 } from '@/services/eventLoopProbe'
-import {
-  getVoiceSidecarStatus,
-  type VoiceSidecarStatus,
-} from '@/services/voiceSidecar'
 import { getBaselineSampleCount } from '@/services/turnMetricsBaseline'
-import { isTauri } from '@/services/chatWindow'
 
 const rt = useRealtimeStore()
 const collapsed = ref(false)
 const eventLoopLagMs = ref(0)
 const eventLoopMaxLagMs = ref(0)
 let raf = 0
-let probeTimer: ReturnType<typeof setInterval> | null = null
 
 function refreshLag() {
   eventLoopLagMs.value = getEventLoopLagMs()
@@ -30,38 +24,8 @@ const lagClass = computed(() =>
   eventLoopLagMs.value >= EVENT_LOOP_LAG_WARN_MS ? 'warn' : '',
 )
 
-const sidecarStatus = ref<VoiceSidecarStatus | null>(null)
-const ttsTestBusy = ref(false)
-
-async function runTtsTest() {
-  if (ttsTestBusy.value) return
-  ttsTestBusy.value = true
-  try {
-    await rt.testLocalTts()
-  } finally {
-    ttsTestBusy.value = false
-  }
-}
-
-const sidecarManagedLabel = computed(() => {
-  if (!isTauri()) return 'browser'
-  const s = sidecarStatus.value
-  if (!s) return '…'
-  return s.bundleMode === 'release' ? `managed (${s.xasr.state}/${s.xtts.state})` : `dev (${s.xasr.state}/${s.xtts.state})`
-})
-
-const xasrSidecarLabel = computed(() => {
-  const v = rt.xasrSidecarReachable
-  if (v === null) return '…'
-  if (v && rt.sttBackendLabel === 'xasr') return 'online (session)'
-  return v ? 'online' : 'offline'
-})
-
-const xasrSidecarClass = computed(() => {
-  if (rt.xasrSidecarReachable === false) return 'warn'
-  if (rt.xasrSidecarReachable === true) return 'ok'
-  return ''
-})
+const sttLabel = computed(() => rt.sttBackendLabel || (rt.talking ? '…' : 'cloud'))
+const ttsLabel = computed(() => rt.ttsBackendLabel || (rt.talking ? '…' : 'cloud'))
 
 const metricsLines = computed(() => {
   const m = rt.lastTurnMetrics
@@ -80,23 +44,10 @@ const metricsLines = computed(() => {
 
 onMounted(() => {
   raf = requestAnimationFrame(refreshLag)
-  void rt.refreshXasrSidecarProbe()
-  void rt.refreshXttsSidecarProbe()
-  if (isTauri()) {
-    void getVoiceSidecarStatus().then((s) => { sidecarStatus.value = s })
-  }
-  probeTimer = setInterval(() => {
-    void rt.refreshXasrSidecarProbe()
-    void rt.refreshXttsSidecarProbe()
-    if (isTauri()) {
-      void getVoiceSidecarStatus().then((s) => { sidecarStatus.value = s })
-    }
-  }, 15000)
 })
 
 onUnmounted(() => {
   cancelAnimationFrame(raf)
-  if (probeTimer) clearInterval(probeTimer)
 })
 </script>
 
@@ -123,28 +74,13 @@ onUnmounted(() => {
         <span class="v">{{ rt.talking }} / rest {{ rt.resting }}</span>
       </div>
       <div class="row">
-        <span class="k">sidecar</span>
-        <span class="v">{{ sidecarManagedLabel }}</span>
-      </div>
-      <div class="row" :class="xasrSidecarClass">
-        <span class="k">xasrSidecar</span>
-        <span class="v">{{ xasrSidecarLabel }}</span>
-      </div>
-      <div class="row">
         <span class="k">stt</span>
-        <span class="v">{{ rt.sttBackendLabel || (rt.talking ? '…' : '—') }}</span>
+        <span class="v">{{ sttLabel }}</span>
       </div>
       <div class="row">
         <span class="k">tts</span>
-        <span class="v">{{ rt.ttsBackendLabel || (rt.talking ? '…' : '—') }}</span>
+        <span class="v">{{ ttsLabel }}</span>
       </div>
-      <div class="row">
-        <span class="k">xttsSidecar</span>
-        <span class="v">{{ rt.xttsSidecarReachable === null ? '…' : rt.xttsSidecarReachable ? 'online' : 'offline' }}</span>
-      </div>
-      <button type="button" class="voice-diag__test" :disabled="ttsTestBusy" @click="runTtsTest">
-        {{ ttsTestBusy ? 'TTS…' : 'Test TTS' }}
-      </button>
       <div class="row">
         <span class="k">chunks</span>
         <span class="v">{{ rt.chunksSent }}</span>
@@ -217,10 +153,6 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
-.row.ok .v {
-  color: #6bff8c;
-}
-
 .k {
   color: #888;
 }
@@ -230,22 +162,5 @@ onUnmounted(() => {
   padding-top: 4px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
   color: #aaa;
-}
-
-.voice-diag__test {
-  margin-top: 4px;
-  width: 100%;
-  padding: 3px 6px;
-  font: inherit;
-  cursor: pointer;
-  color: #8cf;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 4px;
-}
-
-.voice-diag__test:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 </style>

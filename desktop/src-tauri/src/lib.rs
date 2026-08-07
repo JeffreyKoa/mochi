@@ -337,7 +337,15 @@ pub fn run() {
                 "dev"
             };
             let sidecar_mgr = Arc::new(voice_sidecar::VoiceSidecarManager::new(bundle_mode));
-            sidecar_mgr.start_all_async(app.handle().clone());
+            // Phase1 默认云端语音：仅 MOCHI_VOICE_SIDECAR=1 时拉起本地 sidecar
+            let sidecar_enabled = std::env::var("MOCHI_VOICE_SIDECAR")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            if sidecar_enabled {
+                sidecar_mgr.start_all_async(app.handle().clone());
+            } else {
+                eprintln!("[voice-sidecar] skipped (set MOCHI_VOICE_SIDECAR=1 to enable local ASR/TTS)");
+            }
             app.manage(sidecar_mgr);
 
             let pet = app

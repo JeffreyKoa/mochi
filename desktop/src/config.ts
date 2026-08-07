@@ -155,7 +155,7 @@ export const DEFAULT_SILERO: RealtimeSileroVadConfig = {
 }
 
 export const DEFAULT_XASR: RealtimeXasrConfig = {
-  enabled: true,
+  enabled: false,
   wsUrl: 'ws://127.0.0.1:8766',
   chunkMs: 40,
   silenceMs: 600,
@@ -166,14 +166,14 @@ export const DEFAULT_XASR: RealtimeXasrConfig = {
 }
 
 export const DEFAULT_XTTS: RealtimeXttsConfig = {
-  enabled: true,
+  enabled: false,
   baseUrl: 'http://127.0.0.1:8767',
   speed: 1.0,
 }
 
 export const DEFAULT_REALTIME: RealtimeClientConfig = {
-  sttMode: 'auto',
-  ttsMode: 'auto',
+  sttMode: 'cloud',
+  ttsMode: 'cloud',
   speechLocale: 'zh-CN',
   xasr: { ...DEFAULT_XASR },
   xtts: { ...DEFAULT_XTTS },
@@ -193,7 +193,7 @@ export const DEFAULT_REALTIME: RealtimeClientConfig = {
     bargeInMs: 800,
   },
   voiceprint: {
-    required: true,
+    required: false,
     threshold: 0.38,
     verifyWindowSec: 4.0,
     wakeProbeSec: 1.0,
@@ -534,24 +534,18 @@ export async function initClientConfig(): Promise<ClientConfig> {
 }
 
 export function resolveSttMode(
-  cfg: RealtimeClientConfig,
-  localSupported: boolean,
+  _cfg: RealtimeClientConfig,
+  _localSupported: boolean,
 ): 'cloud' | 'local' {
-  if (cfg.sttMode === 'local') return localSupported ? 'local' : 'cloud'
-  if (cfg.sttMode === 'auto' && localSupported) {
-    return 'local'
-  }
+  // Phase4：客户端固定云端 STT（服务端 x-asr）
   return 'cloud'
 }
 
 export function resolveTtsMode(
-  cfg: RealtimeClientConfig,
-  localSupported: boolean,
+  _cfg: RealtimeClientConfig,
+  _localSupported: boolean,
 ): 'cloud' | 'local' {
-  if (cfg.ttsMode === 'local') return localSupported ? 'local' : 'cloud'
-  if (cfg.ttsMode === 'auto' && localSupported) {
-    return 'local'
-  }
+  // Phase4：客户端固定云端 TTS（CosyVoice）
   return 'cloud'
 }
 

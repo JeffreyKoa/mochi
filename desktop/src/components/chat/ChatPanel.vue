@@ -149,7 +149,7 @@ async function acquireChatVoice(options?: { autoStartTalk?: boolean }) {
   if (autoStartTalk && realtimeEnabled.value && !rt.talking) {
     const ok = await rt.startTalk()
     if (!ok && !rt.statusText) {
-      rt.statusText = '无法启动语音，请检查麦克风与 X-ASR'
+      rt.statusText = '无法启动语音，请检查麦克风权限与后端服务'
     }
   }
 }
@@ -158,7 +158,7 @@ async function onStartTalk() {
   await acquireChatVoice({ autoStartTalk: false })
   const ok = await rt.startTalk()
   if (!ok) {
-    rt.statusText = rt.statusText || '无法启动语音，请检查 X-ASR 服务'
+    rt.statusText = rt.statusText || '无法启动语音，请检查麦克风权限与后端服务'
     return
   }
   // 与桌宠单击一致：点话筒即进入「正在听」

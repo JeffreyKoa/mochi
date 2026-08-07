@@ -15,7 +15,6 @@ import {
 } from '@/services/presenceChat'
 import { stopAmbientMic } from '@/services/ambientMic'
 import { wsManager } from '@/services/ws'
-import { bootstrapVoiceSidecars } from '@/services/voiceSidecar'
 import { handleProactiveMessage } from '@/services/proactiveHandler'
 import { listenProactive } from '@/services/proactiveSync'
 import {
@@ -397,9 +396,6 @@ onMounted(async () => {
   }
 
   await initClientConfig().catch((e) => console.warn('[init] config', e))
-  if (isTauri()) {
-    void bootstrapVoiceSidecars()
-  }
 
   if (isTauri() && isPetWindowLabel(winLabel.value)) {
     try {

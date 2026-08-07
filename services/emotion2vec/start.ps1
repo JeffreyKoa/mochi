@@ -1,6 +1,14 @@
 # Mochi emotion2vec Sidecar launcher (Windows PowerShell 5.1+)
 # Usage: .\start.ps1   or double-click start.bat
+#   .\start.ps1 -SetupOnly          # 仅安装 venv/依赖
+#   .\start.ps1 -Background         # 后台启动（供 restart-backend.ps1）
 # NOTE: keep this file ASCII-only for PS 5.1 on zh-CN Windows
+
+param(
+    [switch]$SetupOnly,
+    [switch]$Background,
+    [string]$LogDir = ""
+)
 
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -142,6 +150,11 @@ Write-Host "  Model : $env:EMOTION2VEC_MODEL"
 Write-Host "  Device: $env:EMOTION2VEC_DEVICE"
 Write-Host "  Port  : $env:EMOTION2VEC_PORT"
 
+if ($SetupOnly) {
+    Write-Host "[4/4] SetupOnly: skip server start." -ForegroundColor Yellow
+    exit 0
+}
+
 # Step 4: start server (skip if already running)
 if (Test-SidecarHealthy $env:EMOTION2VEC_PORT) {
     Write-Host "[4/4] Sidecar already running on http://127.0.0.1:$env:EMOTION2VEC_PORT" -ForegroundColor Green
@@ -158,6 +171,27 @@ if ($portPid) {
 }
 
 Write-Host "[4/4] Starting uvicorn on http://127.0.0.1:$env:EMOTION2VEC_PORT ..." -ForegroundColor Green
+
+if ($Background) {
+    if ($LogDir -ne "") {
+        New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+        $outLog = Join-Path $LogDir "emotion2vec-out.log"
+        $errLog = Join-Path $LogDir "emotion2vec-err.log"
+    } else {
+        $outLog = Join-Path $Root "emotion2vec-out.log"
+        $errLog = Join-Path $Root "emotion2vec-err.log"
+    }
+    $proc = Start-Process -FilePath $Python `
+        -ArgumentList @("-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", $env:EMOTION2VEC_PORT) `
+        -WorkingDirectory $Root `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $outLog `
+        -RedirectStandardError $errLog `
+        -PassThru
+    Write-Host "  PID $($proc.Id) | logs: $outLog" -ForegroundColor Green
+    exit 0
+}
+
 Write-Host "First start downloads model weights. Press Ctrl+C to stop." -ForegroundColor DarkGray
 
 & $Python -m uvicorn app:app --host 127.0.0.1 --port $env:EMOTION2VEC_PORT

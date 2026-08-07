@@ -2,7 +2,7 @@
  * Phase E — 耳（EarChannel）：stream_check / 周期验脸策略与 turn 结束信号辅助。
  */
 
-import { getFaceprintConfig, getVoiceprintConfig } from '@/config'
+import { getFaceprintConfig, getRealtimeConfig, getVoiceprintConfig } from '@/config'
 import { shouldRunPeriodicFaceCheck } from '@/services/lowPowerMode'
 import type { TurnEndSignals } from '@/services/turnEndArbiter'
 import type { PerceptionPhase, TurnPhase } from './types'
@@ -18,6 +18,10 @@ export interface EarChannelTurnState {
   silenceMsConfig: number
   resumedAfterPauseProbe: boolean
   pauseHintComposing: boolean
+  /** 服务端 ASR 模式（stt_mode: cloud）时使用更激进的 turn-end 参数 */
+  sttMode?: 'cloud' | 'local'
+  /** VAD speech_end 时刻，配合 speechEndSubmitMs 加速提交 */
+  speechEndedAt?: number
 }
 
 /** 是否应启动对话中 stream_check 定时器。 */
@@ -58,7 +62,7 @@ export function getPeriodicFaceCheckIntervalMs(): number {
 
 /** 从 store 快照构建 turnEndArbiter 输入。 */
 export function buildTurnEndSignals(state: EarChannelTurnState): TurnEndSignals {
-  return {
+  const base: TurnEndSignals = {
     heardSpeech: state.heardSpeech,
     lastSpeechAt: state.lastSpeechAt,
     vadSpeaking: state.vadSpeaking,
@@ -70,6 +74,22 @@ export function buildTurnEndSignals(state: EarChannelTurnState): TurnEndSignals 
     resumedAfterPauseProbe: state.resumedAfterPauseProbe,
     pauseHintComposing: state.pauseHintComposing,
   }
+
+  // 服务端 ASR（cloud）：跳过 3s pause_probe，复用 xasr 块的快速 turn-end 参数
+  if (state.sttMode === 'cloud') {
+    const xasr = getRealtimeConfig().xasr
+    return {
+      ...base,
+      disablePauseProbe: true,
+      minCompleteSilenceMs: xasr.minCompleteSilenceMs,
+      unfinishedSilenceMs: xasr.unfinishedSilenceMs,
+      partialStableMs: xasr.partialStableMs,
+      speechEndSubmitMs: xasr.speechEndSubmitMs,
+      speechEndedAt: state.speechEndedAt,
+    }
+  }
+
+  return base
 }
 
 /** stream_check / 周期验脸允许的感知相位。 */

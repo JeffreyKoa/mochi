@@ -1,6 +1,9 @@
-# X-TTS Sidecar（Mochi 本地 TTS POC）
+# X-TTS Sidecar（已归档 — 见 [ARCHIVED.md](./ARCHIVED.md)）
 
-客户端优先：本机运行 **Matcha zh-en**（sherpa-onnx），Mochi `tts_mode: local` 连接 **`http://127.0.0.1:8767`**。
+> **2026-08 Phase 4**：正式发布客户端 TTS 已改为服务端 **DashScope CosyVoice**。  
+> 本目录仅用于 `MOCHI_VOICE_SIDECAR=1` 实验或历史对照。
+
+客户端优先（legacy）：本机运行 **Matcha zh-en**（sherpa-onnx），Mochi `tts_mode: local` 连接 **`http://127.0.0.1:8767`**。
 
 模型来源：[ModelScope dengcunqin/matcha_tts_zh_en_20251010](https://modelscope.cn/models/dengcunqin/matcha_tts_zh_en_20251010)（HF 镜像 `csukuangfj/matcha-icefall-zh-en`）。
 
@@ -84,5 +87,5 @@ Invoke-WebRequest -Uri http://127.0.0.1:8767/synthesize -Method POST -Body $body
 
 ## 后续
 
-- Desktop `xTtsClient.ts` + `localTts.ts` 对接本 sidecar
-- 服务端改 text-only，不再下发 `tts_audio`
+- 正式发布路径见 `docs/20260806/云端语音链路迁移.md`（服务端 CosyVoice）
+- Legacy 客户端对接：`xTtsClient.ts`（`localTts.ts` 已于 Phase4 删除）

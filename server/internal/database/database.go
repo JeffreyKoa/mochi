@@ -15,9 +15,20 @@ import (
 )
 
 func NewMySQL(dsn string, cfg config.DatabaseConfig) (*gorm.DB, error) {
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Warn),
-	})
+	var db *gorm.DB
+	var err error
+	// RDS 偶发 "commands out of sync" 时重试，避免 go run server 启动即退出
+	for attempt := 1; attempt <= 3; attempt++ {
+		db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{
+			Logger: logger.Default.LogMode(logger.Warn),
+		})
+		if err == nil {
+			break
+		}
+		if attempt < 3 {
+			time.Sleep(time.Duration(attempt) * time.Second)
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("connect mysql: %w", err)
 	}
