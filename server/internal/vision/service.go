@@ -10,7 +10,7 @@ import (
 	"github.com/mochi-ai/server/internal/config"
 )
 
-// Service 调用 DashScope Qwen-VL，按焦点生成 VisualHint。
+// Service 调用 Qwen-VL（OpenAI 兼容接口），按焦点生成 VisualHint。
 type Service struct {
 	cfg    config.VisionConfig
 	vl     *vlClient

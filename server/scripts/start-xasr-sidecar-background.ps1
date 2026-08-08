@@ -1,13 +1,17 @@
-# 后台启动 X-ASR sidecar（setup 完成后调用）
+# Background start X-ASR sidecar (after setup)
 param(
     [int]$Port = 8766,
     [string]$BindHost = "127.0.0.1",
-    [string]$LogDir = ""
+    [string]$RepoRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RepoRoot = Resolve-Path (Join-Path $ScriptDir "..\..")
+if ($RepoRoot -eq "") {
+    $RepoRoot = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
+}
+. (Join-Path $RepoRoot "scripts\lib\daily-log.ps1")
+
 $XAsrRoot = Join-Path $RepoRoot "tools\x-asr"
 $VenvPy = Join-Path $XAsrRoot ".venv\Scripts\python.exe"
 $ModelDir = Join-Path $XAsrRoot "models\chunk-160ms-model"
@@ -16,20 +20,6 @@ $ServerScript = Join-Path $XAsrRoot "infer\sherpa_streaming_server.py"
 
 if (-not (Test-Path $VenvPy)) { throw "X-ASR venv missing. Run start-xasr-sidecar.ps1 -SetupOnly first." }
 if (-not (Test-Path $ServerScript)) { throw "X-ASR server script missing: $ServerScript" }
-
-if (-not $env:MOCHI_XASR_LOG_DIR) {
-    $env:MOCHI_XASR_LOG_DIR = Join-Path $RepoRoot "server\logs\x-asr"
-    New-Item -ItemType Directory -Force -Path $env:MOCHI_XASR_LOG_DIR | Out-Null
-}
-
-if ($LogDir -ne "") {
-    New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
-    $outLog = Join-Path $LogDir "xasr-launcher-out.log"
-    $errLog = Join-Path $LogDir "xasr-launcher-err.log"
-} else {
-    $outLog = Join-Path $RepoRoot "server\logs\x-asr\launcher-out.log"
-    $errLog = Join-Path $RepoRoot "server\logs\x-asr\launcher-err.log"
-}
 
 $pyArgs = @(
     $ServerScript,
@@ -49,12 +39,9 @@ $pyArgs = @(
     "--text-format", "none"
 )
 
-$proc = Start-Process -FilePath $VenvPy `
+$proc = Start-MochiSidecarProcess `
+    -FilePath $VenvPy `
     -ArgumentList $pyArgs `
-    -WorkingDirectory $XAsrRoot `
-    -WindowStyle Hidden `
-    -RedirectStandardOutput $outLog `
-    -RedirectStandardError $errLog `
-    -PassThru
+    -WorkingDirectory $XAsrRoot
 
 Write-Output $proc.Id

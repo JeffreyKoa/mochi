@@ -3,37 +3,40 @@ package voice
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/mochi-ai/server/internal/config"
-	"github.com/mochi-ai/server/pkg/dashscope"
+	"github.com/mochi-ai/server/internal/realtime"
 )
 
 type Service struct {
-	asr *dashscope.ASRClient
-	tts *dashscope.TTSClient
+	asr realtime.ASRRecognizer
+	tts realtime.TTSSynthesizer
 }
 
 func NewService(cfg *config.Config) *Service {
-	key := cfg.AI.APIKey
 	rt := cfg.Realtime
-	if key == "" {
-		return &Service{}
+	wsURL := rt.XASR.WSURL
+	if wsURL == "" {
+		wsURL = "ws://127.0.0.1:8766"
+	}
+	baseURL := rt.XTTS.BaseURL
+	if baseURL == "" {
+		baseURL = "http://127.0.0.1:8767"
+	}
+	timeout := time.Duration(rt.XTTS.TimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 30 * time.Second
 	}
 	return &Service{
-		asr: dashscope.NewASRClient(key, rt.ASR.Model, rt.ASR.SampleRate, dashscope.EndpointConfig{
-			WSURL: rt.Dashscope.ASRWSURL,
-		}),
-		tts: dashscope.NewTTSClient(key, rt.TTS.Model, rt.TTS.Voice, rt.TTS.SampleRate, dashscope.EndpointConfig{
-			WSURL:       rt.Dashscope.WSURL,
-			WorkspaceID: rt.Dashscope.WorkspaceID,
-			Region:      rt.Dashscope.Region,
-		}),
+		asr: realtime.NewXasrASR(wsURL, rt.ASR.SampleRate),
+		tts: realtime.NewXttsSynth(baseURL, rt.XTTS.Speed, timeout),
 	}
 }
 
 func (s *Service) Recognize(ctx context.Context, audio []byte, format string) (string, error) {
 	if s.asr == nil {
-		return "", fmt.Errorf("ASR not configured: set ai.api_key in config.yaml")
+		return "", fmt.Errorf("ASR not configured")
 	}
 	pcm, err := audioToPCM(audio, format)
 	if err != nil {
@@ -44,10 +47,10 @@ func (s *Service) Recognize(ctx context.Context, audio []byte, format string) (s
 
 func (s *Service) Synthesize(ctx context.Context, text string) ([]byte, string, error) {
 	if s.tts == nil {
-		return nil, "", fmt.Errorf("TTS not configured: set ai.api_key in config.yaml")
+		return nil, "", fmt.Errorf("TTS not configured")
 	}
 	var out []byte
-	err := s.tts.Synthesize(ctx, text, dashscope.DefaultSynthOptions(), func(chunk []byte) {
+	err := s.tts.Synthesize(ctx, text, realtime.DefaultSynthOptions(), func(chunk []byte) {
 		if len(chunk) > 0 {
 			out = append(out, chunk...)
 		}
@@ -58,5 +61,5 @@ func (s *Service) Synthesize(ctx context.Context, text string) ([]byte, string, 
 	if len(out) == 0 {
 		return nil, "", fmt.Errorf("TTS returned no audio")
 	}
-	return out, s.tts.AudioFormat(), nil
+	return out, "wav", nil
 }

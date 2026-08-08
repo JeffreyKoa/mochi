@@ -44,7 +44,9 @@ import {
 } from '@/services/voiceprintCache'
 import {
   type VoiceOwner,
+  claimVoiceOwner,
   getStoredVoiceOwner,
+  isChatWindowVisible,
 } from '@/services/voiceSessionOwner'
 import { identityGate } from '@/services/identityGate'
 import {
@@ -312,6 +314,15 @@ export const useRealtimeStore = defineStore('realtime', () => {
     if (voiceWindow === 'chat') return owner === 'chat'
     // 设置与聊天共用 chat 弹窗；仅以 voice-owner 为准，避免设置页误拦宠物语音
     if (voiceWindow === 'pet') {
+      if (owner === 'chat') {
+        // 聊天窗已关但 localStorage 仍占锁 → 自动还给桌宠，避免「说话完全无反应」
+        const chatVisible = await isChatWindowVisible()
+        if (!chatVisible) {
+          await claimVoiceOwner('pet')
+          return true
+        }
+        return false
+      }
       return owner === null || owner === 'pet'
     }
     return false
@@ -1868,10 +1879,13 @@ export const useRealtimeStore = defineStore('realtime', () => {
     if (!(await shouldOwnVoice())) {
       const owner = getStoredVoiceOwner()
       if (voiceWindow === 'pet' && owner === 'chat') {
+        console.warn('[realtime] connect blocked: chat window owns voice WS')
         statusText.value = '聊天窗口占用语音连接，请先关闭聊天'
       } else if (voiceWindow === 'chat' && owner !== 'chat') {
+        console.warn('[realtime] connect blocked: voice owner=%s expected chat', owner)
         statusText.value = '语音通道未就绪，请关闭聊天后重新打开'
       } else {
+        console.warn('[realtime] connect blocked: voiceWindow=%s owner=%s', voiceWindow, owner)
         statusText.value = '连接失败，请稍后再试'
       }
       return
@@ -1893,9 +1907,10 @@ export const useRealtimeStore = defineStore('realtime', () => {
     try {
       await realtimeSession.connect()
       await realtimeSession.sendClientCaps({ localTts: false })
-    } catch {
+    } catch (e) {
       connected.value = false
       detachHandler()
+      console.warn('[realtime] /ws/voice connect failed', e)
       statusText.value = '连接失败，请关闭面板重新打开'
       return
     }
@@ -1943,11 +1958,19 @@ export const useRealtimeStore = defineStore('realtime', () => {
   async function ensurePushConnected() {
     if (!(await shouldOwnVoice())) return
     if (connected.value && realtimeSession.isOpen()) return
-    try {
-      await connect()
-    } catch (e) {
-      console.warn('[realtime] push connect skipped', e)
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await connect()
+        if (realtimeSession.isOpen()) {
+          console.info('[realtime] push voice WS ready')
+          return
+        }
+      } catch (e) {
+        console.warn('[realtime] push connect attempt failed', attempt + 1, e)
+      }
+      await new Promise((r) => setTimeout(r, 800 * (attempt + 1)))
     }
+    console.warn('[realtime] push voice WS not ready after retries')
   }
 
   function disconnect() {

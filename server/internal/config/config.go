@@ -39,7 +39,7 @@ type ServerConfig struct {
 	WriteTimeout string `yaml:"write_timeout"`
 }
 
-// LogConfig controls daily log file output (logs/mochi-YYYYMMDD.log).
+// LogConfig controls daily log file output (logs/mochi/mochi-YYYYMMDD.log).
 type LogConfig struct {
 	Dir string `yaml:"dir"`
 }
@@ -106,7 +106,6 @@ type RealtimeConfig struct {
 	STTMode        string                 `yaml:"stt_mode"` // cloud | local | auto
 	TTSMode        string                 `yaml:"tts_mode"` // cloud | local | auto
 	PrewarmEnabled bool                   `yaml:"prewarm_enabled"`
-	Dashscope      RealtimeDashscope      `yaml:"dashscope"`
 	VAD            RealtimeVAD            `yaml:"vad"`
 	BargeIn        RealtimeBargeIn        `yaml:"barge_in"`
 	ASR            RealtimeASR            `yaml:"asr"`
@@ -122,9 +121,8 @@ type RealtimeConfig struct {
 	XTTS           RealtimeXTTS           `yaml:"xtts"`
 }
 
-// RealtimeXASR 本地 X-ASR sidecar（公开给 Desktop，无密钥）。
+// RealtimeXASR X-ASR sidecar 连接与 turn-end 调参（公开给 Desktop，无密钥）。
 type RealtimeXASR struct {
-	Enabled               bool   `yaml:"enabled"`
 	WSURL                 string `yaml:"ws_url"`
 	ChunkMs               int    `yaml:"chunk_ms"`
 	SilenceMs             int    `yaml:"silence_ms"`
@@ -134,18 +132,11 @@ type RealtimeXASR struct {
 	SpeechEndSubmitMs     int    `yaml:"speech_end_submit_ms"`
 }
 
-// RealtimeXTTS 本地 X-TTS sidecar（公开给 Desktop，无密钥）。
+// RealtimeXTTS X-TTS sidecar 连接参数（Matcha/sherpa-onnx，公开给 Desktop 与服务端，无密钥）。
 type RealtimeXTTS struct {
-	Enabled bool    `yaml:"enabled"`
-	BaseURL string  `yaml:"base_url"`
-	Speed   float64 `yaml:"speed"`
-}
-
-type RealtimeDashscope struct {
-	WorkspaceID string `yaml:"workspace_id"`
-	Region      string `yaml:"region"`
-	WSURL       string `yaml:"ws_url"`       // TTS 等业务空间端点
-	ASRWSURL    string `yaml:"asr_ws_url"`   // 留空则用默认 dashscope 全球端点
+	BaseURL   string  `yaml:"base_url"`
+	Speed     float64 `yaml:"speed"`
+	TimeoutMS int     `yaml:"timeout_ms"`
 }
 
 type RealtimeVAD struct {
@@ -269,7 +260,6 @@ type RealtimePublicConfig struct {
 		OwnerPresenceTTLSec int    `json:"owner_presence_ttl_sec"`
 	} `json:"presence"`
 	XASR struct {
-		Enabled              bool   `json:"enabled"`
 		WSURL                string `json:"ws_url"`
 		ChunkMs              int    `json:"chunk_ms"`
 		SilenceMs            int    `json:"silence_ms"`
@@ -279,7 +269,6 @@ type RealtimePublicConfig struct {
 		SpeechEndSubmitMs    int    `json:"speech_end_submit_ms"`
 	} `json:"xasr"`
 	XTTS struct {
-		Enabled bool    `json:"enabled"`
 		BaseURL string  `json:"base_url"`
 		Speed   float64 `json:"speed"`
 	} `json:"xtts"`
@@ -647,7 +636,7 @@ func (c *Config) applyDefaults() {
 		c.Client.EventLoopProbeMS = 1000
 	}
 	if c.Log.Dir == "" {
-		c.Log.Dir = "logs"
+		c.Log.Dir = "logs/mochi"
 	}
 	c.Realtime.applyDefaults()
 	c.Companion.applyDefaults()
@@ -852,29 +841,26 @@ func (r *RealtimeConfig) applyDefaults() {
 			r.ThinkingFiller.ThresholdMS = 500
 		}
 	}
-	if r.Dashscope.Region == "" {
-		r.Dashscope.Region = "cn-beijing"
-	}
 	if r.ASR.Provider == "" {
-		r.ASR.Provider = "dashscope"
+		r.ASR.Provider = "xasr"
 	}
 	if r.ASR.Model == "" {
-		r.ASR.Model = "paraformer-realtime-v2"
+		r.ASR.Model = "sherpa-streaming-zh"
 	}
 	if r.ASR.SampleRate == 0 {
 		r.ASR.SampleRate = 16000
 	}
 	if r.TTS.Provider == "" {
-		r.TTS.Provider = "dashscope"
+		r.TTS.Provider = "xtts"
 	}
 	if r.TTS.Model == "" {
-		r.TTS.Model = "qwen-audio-3.0-tts-plus"
+		r.TTS.Model = "matcha-zh-en"
 	}
 	if r.TTS.Voice == "" {
-		r.TTS.Voice = "longanhuan_v3.6"
+		r.TTS.Voice = "default"
 	}
 	if r.TTS.SampleRate == 0 {
-		r.TTS.SampleRate = 22050
+		r.TTS.SampleRate = 16000
 	}
 	if r.TTS.Transport == "" {
 		r.TTS.Transport = "opus"
@@ -892,9 +878,6 @@ func (r *RealtimeConfig) applyDefaults() {
 		r.TTS.Opus.Application = "voip"
 	}
 	r.Pipeline.applyDefaults()
-	if r.Gate.Model == "" {
-		r.Gate.Model = "qwen-turbo"
-	}
 	if r.Gate.TimeoutMS == 0 {
 		r.Gate.TimeoutMS = 800
 	}
@@ -930,6 +913,9 @@ func (r *RealtimeConfig) applyDefaults() {
 	}
 	if r.XTTS.Speed == 0 {
 		r.XTTS.Speed = 1.0
+	}
+	if r.XTTS.TimeoutMS == 0 {
+		r.XTTS.TimeoutMS = 30000
 	}
 }
 
@@ -1006,7 +992,6 @@ func (r RealtimeConfig) PublicClient() RealtimePublicConfig {
 	out.Presence.SpeechThreshold = r.Presence.SpeechThreshold
 	out.Presence.AmbientEnergyFloor = r.Presence.AmbientEnergyFloor
 	out.Presence.OwnerPresenceTTLSec = r.Presence.OwnerPresenceTTLSec
-	out.XASR.Enabled = r.XASR.Enabled
 	out.XASR.WSURL = r.XASR.WSURL
 	out.XASR.ChunkMs = r.XASR.ChunkMs
 	out.XASR.SilenceMs = r.XASR.SilenceMs
@@ -1014,7 +999,6 @@ func (r RealtimeConfig) PublicClient() RealtimePublicConfig {
 	out.XASR.MinCompleteSilenceMs = r.XASR.MinCompleteSilenceMs
 	out.XASR.UnfinishedSilenceMs = r.XASR.UnfinishedSilenceMs
 	out.XASR.SpeechEndSubmitMs = r.XASR.SpeechEndSubmitMs
-	out.XTTS.Enabled = r.XTTS.Enabled
 	out.XTTS.BaseURL = r.XTTS.BaseURL
 	out.XTTS.Speed = r.XTTS.Speed
 	return out

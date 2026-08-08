@@ -12,6 +12,12 @@ emotion2vec 声学情绪识别 Sidecar — 供 Mochi Go Server 通过 HTTP 调�
 
 from __future__ import annotations
 
+from sidecar_log import configure_sidecar_logging, install_timestamp_streams
+
+# 须在 uvicorn / 重型 import 之前：Traceback 与 logging 每行带时间戳
+install_timestamp_streams()
+configure_sidecar_logging()
+
 import base64
 import os
 import tempfile
@@ -67,15 +73,15 @@ def _load_model():
     from funasr import AutoModel
 
     model_id = os.getenv("EMOTION2VEC_MODEL", "iic/emotion2vec_plus_base")
-    device = os.getenv("EMOTION2VEC_DEVICE", "cuda")
+    device = os.getenv("EMOTION2VEC_DEVICE", "cpu")
     hub = os.getenv("EMOTION2VEC_HUB", "ms")
     revision = os.getenv("EMOTION2VEC_MODEL_REVISION", "master")
 
     model_ref = _resolve_model_ref(model_id, revision)
     if os.path.isdir(model_ref):
-        logging.info("loading emotion2vec from local cache: %s", model_ref)
+        logging.info("loading emotion2vec from local cache: %s device=%s", model_ref, device)
     else:
-        logging.info("downloading emotion2vec from hub: %s", model_id)
+        logging.info("downloading emotion2vec from hub: %s device=%s", model_id, device)
 
     _model = AutoModel(
         model=model_ref,
@@ -85,6 +91,30 @@ def _load_model():
         check_latest=False,
     )
     return _model
+
+
+_cpu_fallback_done = False
+
+
+def _recognize_wav(wav_path: str) -> tuple[str, float, dict[str, float]]:
+    """Run inference; on CUDA OOM reload once on CPU (4GB 显卡与 x-tts 等同机常见)。"""
+    global _model, _cpu_fallback_done
+    import logging
+
+    try:
+        res = _model.generate(wav_path, granularity="utterance", extract_embedding=False)
+        return _parse_funasr_result(res)
+    except Exception as exc:
+        msg = str(exc).lower()
+        if _cpu_fallback_done or "out of memory" not in msg:
+            raise
+        logging.warning("emotion2vec CUDA OOM, reloading on CPU: %s", exc)
+        _cpu_fallback_done = True
+        _model = None
+        os.environ["EMOTION2VEC_DEVICE"] = "cpu"
+        _load_model()
+        res = _model.generate(wav_path, granularity="utterance", extract_embedding=False)
+        return _parse_funasr_result(res)
 
 
 def _pcm_to_wav_path(pcm: bytes, sample_rate: int = 16000) -> str:
@@ -152,7 +182,8 @@ class EmotionResponse(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model_loaded": _model is not None}
+    device = os.getenv("EMOTION2VEC_DEVICE", "cpu")
+    return {"status": "ok", "model_loaded": _model is not None, "device": device}
 
 
 @app.post("/v1/emotion", response_model=EmotionResponse)
@@ -170,8 +201,13 @@ def recognize(req: EmotionRequest):
 
     wav_path = _pcm_to_wav_path(pcm, req.sample_rate)
     try:
-        res = _model.generate(wav_path, granularity="utterance", extract_embedding=False)
-        label, confidence, scores = _parse_funasr_result(res)
+        label, confidence, scores = _recognize_wav(wav_path)
+    except Exception as exc:
+        import logging
+
+        logging.exception("emotion inference failed: %s", exc)
+        # fail-open：返回 neutral，避免 Go 侧整轮 perception 报 500
+        return EmotionResponse(mood="neutral", confidence=0.0, label="neutral", scores={})
     finally:
         try:
             os.remove(wav_path)
@@ -192,8 +228,12 @@ async def recognize_raw(body: bytes):
 
     wav_path = _pcm_to_wav_path(body, 16000)
     try:
-        res = _model.generate(wav_path, granularity="utterance", extract_embedding=False)
-        label, confidence, scores = _parse_funasr_result(res)
+        label, confidence, scores = _recognize_wav(wav_path)
+    except Exception as exc:
+        import logging
+
+        logging.exception("emotion inference failed: %s", exc)
+        return EmotionResponse(mood="neutral", confidence=0.0, label="neutral", scores={})
     finally:
         try:
             os.remove(wav_path)

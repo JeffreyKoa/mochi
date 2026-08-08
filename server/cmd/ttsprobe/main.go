@@ -1,46 +1,56 @@
+// 探测本地 X-TTS sidecar（Matcha HTTP :8767）。
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"time"
-
-	"github.com/mochi-ai/server/pkg/dashscope"
 )
 
-func try(key, model, voice string, ep dashscope.EndpointConfig, label string) {
-	c := dashscope.NewTTSClient(key, model, voice, 22050, ep)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	var n int
-	err := c.Synthesize(ctx, "你好，我是 Mochi。", dashscope.DefaultSynthOptions(), func(b []byte) { n += len(b) })
-	fmt.Printf("[%s] %s / %s => err=%v bytes=%d\n", label, model, voice, err, n)
-}
-
 func main() {
-	key := os.Getenv("DASHSCOPE_API_KEY")
-	if key == "" {
-		key = "sk-1a229ea079384e0e80caca71aa21a054"
+	base := os.Getenv("XTTS_BASE_URL")
+	if base == "" {
+		base = "http://127.0.0.1:8767"
 	}
-	wsID := os.Getenv("DASHSCOPE_WORKSPACE_ID")
-	ep := dashscope.EndpointConfig{
-		WorkspaceID: wsID,
-		Region:      "cn-beijing",
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/health", nil)
+	if err != nil {
+		fmt.Println("health req:", err)
+		os.Exit(1)
 	}
-	if wsID != "" {
-		ep.WSURL = dashscope.ResolveWSURL("", wsID, "cn-beijing")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Println("health:", err)
+		os.Exit(1)
 	}
-	cases := [][2]string{
-		{"qwen-audio-3.0-tts-plus", "longanhuan_v3.6"},
-		{"qwen-audio-3.0-tts-plus", "longanlingxi"},
-		{"qwen-audio-3.0-tts-flash", "longanlingxi"},
+	resp.Body.Close()
+	fmt.Printf("health OK %s\n", base)
+
+	body, _ := json.Marshal(map[string]any{"text": "你好，我是 Mochi。", "speed": 1.0})
+	sreq, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/synthesize", bytes.NewReader(body))
+	if err != nil {
+		fmt.Println("synth req:", err)
+		os.Exit(1)
 	}
-	label := "default"
-	if wsID != "" {
-		label = "cn-beijing:" + wsID
+	sreq.Header.Set("Content-Type", "application/json")
+	sresp, err := http.DefaultClient.Do(sreq)
+	if err != nil {
+		fmt.Println("synth:", err)
+		os.Exit(1)
 	}
-	for _, x := range cases {
-		try(key, x[0], x[1], ep, label)
+	defer sresp.Body.Close()
+	raw, _ := io.ReadAll(sresp.Body)
+	if sresp.StatusCode != http.StatusOK {
+		fmt.Printf("synth http %d: %s\n", sresp.StatusCode, string(raw))
+		os.Exit(1)
 	}
+	fmt.Printf("synth OK bytes=%d content-type=%s\n", len(raw), sresp.Header.Get("Content-Type"))
 }

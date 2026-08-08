@@ -94,7 +94,7 @@ export async function openVoiceLogs(): Promise<boolean> {
 /** 等待 sidecar 端口就绪（Release 冷启动模型加载较慢）。 */
 export async function waitForVoiceSidecarsReady(opts?: {
   timeoutMs?: number
-  /** 是否同时等待 X-TTS（默认：config 中 xtts.enabled 为 true 时等待）。 */
+  /** 是否同时等待 X-TTS（默认 false：cloud TTS 由服务端 sidecar 负责）。 */
   requireXtts?: boolean
 }): Promise<boolean> {
   if (!isTauri()) return true
@@ -103,7 +103,7 @@ export async function waitForVoiceSidecarsReady(opts?: {
   const cfg = getRealtimeConfig()
   const { probeXAsrServer } = await import('@/services/xAsrClient')
   const { probeXTtsReachable } = await import('@/services/xTtsClient')
-  const requireXtts = opts?.requireXtts ?? cfg.xtts.enabled
+  const requireXtts = opts?.requireXtts ?? false
 
   while (Date.now() < deadline) {
     const st = await getVoiceSidecarStatus()
@@ -131,7 +131,6 @@ export async function waitForXTtsSidecarReady(opts?: {
   timeoutMs?: number
 }): Promise<boolean> {
   const cfg = getRealtimeConfig()
-  if (!cfg.xtts.enabled) return false
   const timeoutMs = opts?.timeoutMs ?? 60_000
   const deadline = Date.now() + timeoutMs
   const { probeXTtsReachable } = await import('@/services/xTtsClient')

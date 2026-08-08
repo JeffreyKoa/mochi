@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Sidecar 日志工具：x-asr.log 每行带本地时间戳（含 Traceback）。"""
+"""Sidecar 日志工具：stdout/stderr 每行带本地时间戳（含 Traceback）。"""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import logging
 import sys
 from datetime import datetime
 
+# 与 Go log.LstdFlags 一致：yyyy/MM/dd HH:mm:ss
 _TS_FMT = "%Y/%m/%d %H:%M:%S"
 
 

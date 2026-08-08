@@ -63,10 +63,8 @@ export interface RealtimePresenceConfig {
 export type SttMode = 'cloud' | 'local' | 'auto'
 export type TtsMode = 'cloud' | 'local' | 'auto'
 
-/** X-ASR 本地 sidecar（客户端优先 POC）。 */
+/** X-ASR sidecar 连接与 turn-end 调参（cloud STT 仍用 timing 字段）。 */
 export interface RealtimeXasrConfig {
-  /** 是否尝试连接本地 X-ASR WebSocket。 */
-  enabled: boolean
   wsUrl: string
   /** 客户端发送 PCM 的聚合块时长（毫秒）。 */
   chunkMs: number
@@ -82,10 +80,8 @@ export interface RealtimeXasrConfig {
   speechEndSubmitMs: number
 }
 
-/** X-TTS Matcha sidecar（本地 TTS POC）。 */
+/** X-TTS Matcha sidecar 连接参数（服务端 TTS 用；Tauri Release 诊断可探测）。 */
 export interface RealtimeXttsConfig {
-  /** 是否尝试连接本地 X-TTS HTTP sidecar。 */
-  enabled: boolean
   baseUrl: string
   /** 合成语速。 */
   speed: number
@@ -155,7 +151,6 @@ export const DEFAULT_SILERO: RealtimeSileroVadConfig = {
 }
 
 export const DEFAULT_XASR: RealtimeXasrConfig = {
-  enabled: false,
   wsUrl: 'ws://127.0.0.1:8766',
   chunkMs: 40,
   silenceMs: 600,
@@ -166,7 +161,6 @@ export const DEFAULT_XASR: RealtimeXasrConfig = {
 }
 
 export const DEFAULT_XTTS: RealtimeXttsConfig = {
-  enabled: false,
   baseUrl: 'http://127.0.0.1:8767',
   speed: 1.0,
 }
@@ -337,7 +331,6 @@ function parseRealtimeBlock(raw: unknown): RealtimeClientConfig {
   if (xasr && typeof xasr === 'object') {
     const x = xasr as Record<string, unknown>
     base.xasr = {
-      enabled: x.enabled !== false,
       wsUrl: String(x.ws_url ?? x.wsUrl ?? base.xasr.wsUrl),
       chunkMs: num(x.chunk_ms ?? x.chunkMs, base.xasr.chunkMs),
       silenceMs: num(x.silence_ms ?? x.silenceMs, base.xasr.silenceMs),
@@ -361,7 +354,6 @@ function parseRealtimeBlock(raw: unknown): RealtimeClientConfig {
   if (xtts && typeof xtts === 'object') {
     const t = xtts as Record<string, unknown>
     base.xtts = {
-      enabled: t.enabled !== false,
       baseUrl: String(t.base_url ?? t.baseUrl ?? base.xtts.baseUrl),
       speed: num(t.speed, base.xtts.speed),
     }
@@ -545,7 +537,7 @@ export function resolveTtsMode(
   _cfg: RealtimeClientConfig,
   _localSupported: boolean,
 ): 'cloud' | 'local' {
-  // Phase4：客户端固定云端 TTS（CosyVoice）
+  // 服务端 x-tts Matcha 合成
   return 'cloud'
 }
 

@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/mochi-ai/server/pkg/modelmeta"
 )
 
 type Message struct {
@@ -56,6 +58,7 @@ type Provider struct {
 	baseURL string
 	apiKey  string
 	model   string
+	vendor  string
 	client  *http.Client
 }
 
@@ -71,8 +74,25 @@ func NewProvider(baseURL, apiKey, model string) *Provider {
 		baseURL: strings.TrimRight(baseURL, "/"),
 		apiKey:  apiKey,
 		model:   model,
+		vendor:  modelmeta.InferVendorFromAPIBase(baseURL),
 		client:  &http.Client{Timeout: 120 * time.Second},
 	}
+}
+
+// Vendor 返回该 Provider 对应的模型厂商标识。
+func (p *Provider) Vendor() string {
+	if p == nil || p.vendor == "" {
+		return modelmeta.VendorCompatibleAPI
+	}
+	return p.vendor
+}
+
+// DefaultModel 返回 Provider 配置的默认模型 ID。
+func (p *Provider) DefaultModel() string {
+	if p == nil {
+		return ""
+	}
+	return p.model
 }
 
 func (p *Provider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {

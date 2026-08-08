@@ -15,6 +15,7 @@ func TestConnSender_SendTTSAudioBinary(t *testing.T) {
 		{name: "mp3", format: "mp3", formatByte: 0x01, seq: 42},
 		{name: "pcm", format: "pcm", formatByte: 0x02, seq: 99},
 		{name: "opus", format: "opus", formatByte: 0x03, seq: 7},
+		{name: "wav", format: "wav", formatByte: 0x04, seq: 12},
 	}
 
 	rawAudio := []byte{0xDE, 0xAD, 0xBE, 0xEF}

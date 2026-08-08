@@ -30,6 +30,7 @@ import (
 	"github.com/mochi-ai/server/internal/wellness"
 	"github.com/mochi-ai/server/internal/ws"
 	"github.com/mochi-ai/server/pkg/ai"
+	"github.com/mochi-ai/server/pkg/modelmeta"
 )
 
 func main() {
@@ -58,6 +59,7 @@ func main() {
 	if cfg.AI.APIKey == "" {
 		log.Println("[WARN] ai.api_key not set in config.yaml")
 	}
+	modelmeta.LogCall("llm_startup", primaryProvider.Vendor(), cfg.AI.ModelCode, "route=primary")
 
 	aiRouter := ai.NewRouter()
 	aiRouter.Register("primary", primaryProvider, false)

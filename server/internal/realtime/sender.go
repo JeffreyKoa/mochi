@@ -37,10 +37,13 @@ func (s *connSender) SendTTSAudioBinary(audio []byte, format string, seq int64) 
 	buf := make([]byte, 10+len(audio))
 	buf[0] = 0x01 // MsgType: TTS Audio Binary
 	formatByte := byte(0x01) // mp3
-	if format == "pcm" {
+	switch format {
+	case "pcm":
 		formatByte = 0x02
-	} else if format == "opus" {
+	case "opus":
 		formatByte = 0x03
+	case "wav":
+		formatByte = 0x04
 	}
 	buf[1] = formatByte
 	binary.BigEndian.PutUint64(buf[2:10], uint64(seq))

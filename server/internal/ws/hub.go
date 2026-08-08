@@ -146,7 +146,7 @@ func (h *Hub) enqueuePending(userID uint64, item pendingItem) bool {
 	}
 	ctx := context.Background()
 	if item.ReminderID > 0 {
-		dedupKey := fmt.Sprintf("mochi:reminder:queued:%d", item.ReminderID)
+		dedupKey := reminderQueuedKey(item.ReminderID)
 		set, err := h.rdb.SetNX(ctx, dedupKey, "1", 7*24*time.Hour).Result()
 		if err != nil {
 			log.Printf("[WS] reminder dedup failed id=%d: %v", item.ReminderID, err)
@@ -160,7 +160,7 @@ func (h *Hub) enqueuePending(userID uint64, item pendingItem) bool {
 	if err := h.rdb.RPush(ctx, key, payload).Err(); err != nil {
 		log.Printf("[WS] enqueue pending failed user=%d: %v", userID, err)
 		if item.ReminderID > 0 {
-			_ = h.rdb.Del(ctx, fmt.Sprintf("mochi:reminder:queued:%d", item.ReminderID)).Err()
+			_ = h.rdb.Del(ctx, reminderQueuedKey(item.ReminderID)).Err()
 		}
 		return false
 	}
@@ -170,10 +170,7 @@ func (h *Hub) enqueuePending(userID uint64, item pendingItem) bool {
 }
 
 func (h *Hub) clearReminderQueued(reminderID uint64) {
-	if h.rdb == nil || reminderID == 0 {
-		return
-	}
-	_ = h.rdb.Del(context.Background(), fmt.Sprintf("mochi:reminder:queued:%d", reminderID)).Err()
+	ClearReminderDeliveryCache(h.rdb, reminderID)
 }
 
 func (h *Hub) SendLifeStageChanged(userID uint64, data map[string]interface{}) {

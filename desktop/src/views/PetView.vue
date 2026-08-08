@@ -309,7 +309,7 @@ onMounted(async () => {
         onYield: () => rt.yieldVoiceConnection(),
       })
       const chatVisible = await isChatWindowVisible()
-      if (!chatVisible && !pet.isChatOpen && getStoredVoiceOwner() !== 'chat') {
+      if (!chatVisible && !pet.isChatOpen) {
         await claimVoiceOwner('pet')
       }
     } else {

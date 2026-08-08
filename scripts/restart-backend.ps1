@@ -3,6 +3,7 @@
 # Services:
 #   emotion2vec  :8091  acoustic SER
 #   x-asr sidecar :8766  server ASR
+#   x-tts sidecar :8767  server TTS (Matcha)
 #   Go API server :8081  main backend
 #
 # Usage:
@@ -11,16 +12,23 @@
 #   .\scripts\restart-backend.ps1 -BuildOpus
 #   .\scripts\restart-backend.ps1 -SkipEmotion2vec
 #   .\scripts\restart-backend.ps1 -SkipXasr
+#   .\scripts\restart-backend.ps1 -SkipXtts
+#   .\scripts\restart-backend.ps1 -FollowLogs    # Go foreground: console + logs/mochi/mochi-YYYYMMDD.log
+#   .\scripts\restart-backend.ps1 -NoFollowLogs # Start all and exit (CI/scripts)
 #
-# Logs: logs/backend/
+# Logs: logs/mochi/mochi-YYYYMMDD.log (Go + sidecar API calls)
 
 param(
     [switch]$KillOnly,
     [switch]$BuildOpus,
     [switch]$SkipEmotion2vec,
     [switch]$SkipXasr,
+    [switch]$SkipXtts,
+    [switch]$FollowLogs,
+    [switch]$NoFollowLogs,
     [int]$ServerPort = 8081,
     [int]$XasrPort = 8766,
+    [int]$XttsPort = 8767,
     [int]$EmotionPort = 8091,
     [int]$HealthTimeoutSec = 180
 )
@@ -28,10 +36,10 @@ param(
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Resolve-Path (Join-Path $ScriptDir "..")
-$LogDir = Join-Path $RepoRoot "logs\backend"
-$BackendPidFile = Join-Path $LogDir "pids.json"
+$LogsRoot = Join-Path $RepoRoot "logs"
 
-New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+New-Item -ItemType Directory -Force -Path $LogsRoot | Out-Null
+. (Join-Path $RepoRoot "scripts\lib\daily-log.ps1")
 
 function Write-Step([string]$Msg) {
     Write-Host ""
@@ -131,6 +139,7 @@ function Stop-AllBackend {
 
     Stop-PortListener -Port $ServerPort -Label "Go API"
     Stop-PortListener -Port $XasrPort -Label "x-asr"
+    Stop-PortListener -Port $XttsPort -Label "x-tts"
     Stop-PortListener -Port $EmotionPort -Label "emotion2vec"
 
     cmd /c "taskkill /IM server.exe /F >nul 2>&1"
@@ -142,6 +151,7 @@ function Stop-AllBackend {
 
     Stop-ProcessByCommandLine -ProcessName "python.exe" -Patterns @(
         "sherpa_streaming_server.py",
+        "tts_server.py",
         "uvicorn app:app",
         "services\emotion2vec",
         "services/emotion2vec"
@@ -149,7 +159,7 @@ function Stop-AllBackend {
 
     Start-Sleep -Seconds 2
 
-    foreach ($p in @($ServerPort, $XasrPort, $EmotionPort)) {
+    foreach ($p in @($ServerPort, $XasrPort, $XttsPort, $EmotionPort)) {
         if (Test-PortListening $p) {
             Write-Host "  WARN port $p still in use, force kill again" -ForegroundColor Yellow
             Stop-PortListener -Port $p -Label "port-$p"
@@ -157,10 +167,6 @@ function Stop-AllBackend {
     }
 
     Start-Sleep -Milliseconds 800
-
-    if (Test-Path $BackendPidFile) {
-        Remove-Item $BackendPidFile -Force -ErrorAction SilentlyContinue
-    }
 
     Write-Host "All backend processes stopped." -ForegroundColor Green
 }
@@ -175,11 +181,12 @@ function Start-Emotion2vecService {
     & $startScript -SetupOnly
     if ($LASTEXITCODE -ne 0) { throw "emotion2vec setup failed" }
 
-    & $startScript -Background -LogDir $LogDir
+    & $startScript -Background -RepoRoot $RepoRoot
     if ($LASTEXITCODE -ne 0) { throw "emotion2vec background start failed" }
 
+    $mochiLog = Get-MochiDailyLogPath -RepoRoot $RepoRoot -ServiceName "mochi"
     if (-not (Wait-HttpOk "http://127.0.0.1:$EmotionPort/health" "emotion2vec" $HealthTimeoutSec)) {
-        throw "emotion2vec health check failed. See $LogDir\emotion2vec-err.log"
+        throw "emotion2vec health check failed. Sidecar API calls are logged in $mochiLog"
     }
 }
 
@@ -191,12 +198,13 @@ function Start-XAsrService {
     & $setupScript -SetupOnly -Port $XasrPort
     if ($LASTEXITCODE -ne 0) { throw "x-asr setup failed" }
 
-    $xasrProcId = & $bgScript -Port $XasrPort -LogDir $LogDir
+    $xasrProcId = & $bgScript -Port $XasrPort -RepoRoot $RepoRoot
     if (-not $xasrProcId) { throw "x-asr background start failed" }
     Write-Host "  x-asr PID $xasrProcId" -ForegroundColor Green
 
+    $mochiLog = Get-MochiDailyLogPath -RepoRoot $RepoRoot -ServiceName "mochi"
     if (-not (Wait-PortListening $XasrPort "x-asr" 60)) {
-        throw "x-asr port not open. See $LogDir\xasr-launcher-err.log"
+        throw "x-asr port not open. Sidecar API calls are logged in $mochiLog"
     }
 
     $probeScript = Join-Path $RepoRoot "server\scripts\probe-xasr.ps1"
@@ -208,12 +216,78 @@ function Start-XAsrService {
     }
 }
 
+function Start-XTtsService {
+    Write-Step "Start x-tts sidecar (:$XttsPort)"
+    $setupScript = Join-Path $RepoRoot "server\scripts\start-xtts-sidecar.ps1"
+    $bgScript = Join-Path $RepoRoot "server\scripts\start-xtts-sidecar-background.ps1"
+
+    & $setupScript -SetupOnly -Port $XttsPort
+    if ($LASTEXITCODE -ne 0) { throw "x-tts setup failed (models may need download - run tools\x-tts\setup-and-start.ps1 once)" }
+
+    $xttsProcId = & $bgScript -Port $XttsPort -RepoRoot $RepoRoot
+    if (-not $xttsProcId) { throw "x-tts background start failed" }
+    Write-Host "  x-tts PID $xttsProcId" -ForegroundColor Green
+
+    $mochiLog = Get-MochiDailyLogPath -RepoRoot $RepoRoot -ServiceName "mochi"
+    if (-not (Wait-HttpOk "http://127.0.0.1:$XttsPort/health" "x-tts" 120)) {
+        throw "x-tts health check failed. Sidecar API calls are logged in $mochiLog"
+    }
+}
+
 function Start-GoServer {
+    param(
+        [switch]$Foreground
+    )
+
     Write-Step "Start Go API server (:$ServerPort)"
     $serverDir = Join-Path $RepoRoot "server"
-    $outLog = Join-Path $LogDir "go-server-out.log"
-    $errLog = Join-Path $LogDir "go-server-err.log"
+    $mochiLog = Get-MochiDailyLogPath -RepoRoot $RepoRoot -ServiceName "mochi"
 
+    New-Item -ItemType Directory -Force -Path (Split-Path $mochiLog -Parent) | Out-Null
+
+    # FollowLogs: foreground Go; logging.Setup writes logs/mochi/mochi-YYYYMMDD.log too
+    if ($Foreground) {
+        Write-Host "  Mode     : foreground (console + persistent file)" -ForegroundColor Green
+        Write-Host "  Log file : $mochiLog" -ForegroundColor Green
+        Write-Host "  Ctrl+C stops Go only; emotion2vec / x-asr keep running" -ForegroundColor DarkGray
+        Write-Host ""
+
+        Push-Location $serverDir
+        try {
+            if ($BuildOpus) {
+                $buildBat = Join-Path $serverDir "build-opus.bat"
+                if (-not (Test-Path $buildBat)) { throw "Missing $buildBat" }
+                Write-Host "  building Opus server.exe ..."
+                cmd /c "`"$buildBat`""
+                if ($LASTEXITCODE -ne 0) { throw "build-opus.bat failed" }
+                $exe = Join-Path $serverDir "bin\server.exe"
+                if (-not (Test-Path $exe)) { throw "Missing $exe after build" }
+                $proc = Start-Process -FilePath $exe `
+                    -WorkingDirectory $serverDir `
+                    -NoNewWindow `
+                    -Wait `
+                    -PassThru
+            } else {
+                $go = Get-Command go -ErrorAction SilentlyContinue
+                if (-not $go) { throw "go not found in PATH" }
+                $proc = Start-Process -FilePath $go.Source `
+                    -ArgumentList @("run", "./cmd/server") `
+                    -WorkingDirectory $serverDir `
+                    -NoNewWindow `
+                    -Wait `
+                    -PassThru
+            }
+        } finally {
+            Pop-Location
+        }
+
+        Write-Host ""
+        Write-Host "Go server exited (code $($proc.ExitCode))" -ForegroundColor Yellow
+        Write-Host "Log saved : $mochiLog" -ForegroundColor DarkGray
+        return $proc.Id
+    }
+
+    # Background: Go logs only via logging.Setup (no separate out/err files)
     if ($BuildOpus) {
         $buildBat = Join-Path $serverDir "build-opus.bat"
         if (-not (Test-Path $buildBat)) { throw "Missing $buildBat" }
@@ -225,8 +299,6 @@ function Start-GoServer {
         $proc = Start-Process -FilePath $exe `
             -WorkingDirectory $serverDir `
             -WindowStyle Hidden `
-            -RedirectStandardOutput $outLog `
-            -RedirectStandardError $errLog `
             -PassThru
     } else {
         $go = Get-Command go -ErrorAction SilentlyContinue
@@ -235,19 +307,18 @@ function Start-GoServer {
             -ArgumentList @("run", "./cmd/server") `
             -WorkingDirectory $serverDir `
             -WindowStyle Hidden `
-            -RedirectStandardOutput $outLog `
-            -RedirectStandardError $errLog `
             -PassThru
     }
 
     Write-Host "  Go server PID $($proc.Id)" -ForegroundColor Green
+    Write-Host "  Log file    : $mochiLog" -ForegroundColor DarkGray
 
     if (-not (Wait-PortListening $ServerPort "Go API" 90)) {
-        throw "Go server not listening. See $errLog"
+        throw "Go server not listening. See $mochiLog"
     }
 
     if (-not (Wait-HttpOk "http://127.0.0.1:$ServerPort/api/v1/public/config" "Go API" 30)) {
-        throw "Go API health check failed. See $errLog"
+        throw "Go API health check failed. See $mochiLog"
     }
 
     return $proc.Id
@@ -255,8 +326,10 @@ function Start-GoServer {
 
 Write-Host "Mochi backend restart" -ForegroundColor White
 Write-Host "  repo:    $RepoRoot"
-Write-Host "  logs:    $LogDir"
-Write-Host "  ports:   emotion2vec=$EmotionPort x-asr=$XasrPort go=$ServerPort"
+Write-Host "  logs:    $LogsRoot"
+$mochiLogHint = Get-MochiDailyLogPath -RepoRoot $RepoRoot -ServiceName "mochi"
+Write-Host "  mochi:   $mochiLogHint (Go + sidecar API calls)" -ForegroundColor DarkGray
+Write-Host "  ports:   emotion2vec=$EmotionPort x-asr=$XasrPort x-tts=$XttsPort go=$ServerPort"
 
 Stop-AllBackend
 
@@ -266,41 +339,53 @@ if ($KillOnly) {
     exit 0
 }
 
-$pids = @{}
-
 try {
     if (-not $SkipEmotion2vec) {
         Start-Emotion2vecService
-        $pids.emotion2vec_port = $EmotionPort
     } else {
         Write-Step "Skip emotion2vec"
     }
 
     if (-not $SkipXasr) {
         Start-XAsrService
-        $pids.xasr_port = $XasrPort
     } else {
         Write-Step "Skip x-asr"
     }
 
-    $goProcId = Start-GoServer
-    $pids.go_server = $goProcId
-    $pids.server_port = $ServerPort
-    $pids.restarted_at = (Get-Date).ToString("o")
+    if (-not $SkipXtts) {
+        Start-XTtsService
+    } else {
+        Write-Step "Skip x-tts"
+    }
 
-    $pids | ConvertTo-Json | Set-Content -Path $BackendPidFile -Encoding UTF8
+    $useForegroundGo = ($FollowLogs -and -not $NoFollowLogs)
+
+    if ($useForegroundGo) {
+        Write-Step "All sidecars started; starting Go in foreground"
+        Write-Host "  emotion2vec : http://127.0.0.1:$EmotionPort/health" -ForegroundColor Green
+        Write-Host "  x-asr       : ws://127.0.0.1:$XasrPort" -ForegroundColor Green
+        Write-Host "  x-tts       : http://127.0.0.1:$XttsPort/health" -ForegroundColor Green
+        Write-Host "  Mochi log   : $mochiLogHint" -ForegroundColor DarkGray
+
+        $null = Start-GoServer -Foreground
+        Read-Host "Press Enter to close this window"
+        exit 0
+    }
+
+    $null = Start-GoServer
 
     Write-Step "All backend services started"
     Write-Host "  emotion2vec : http://127.0.0.1:$EmotionPort/health" -ForegroundColor Green
     Write-Host "  x-asr       : ws://127.0.0.1:$XasrPort" -ForegroundColor Green
+    Write-Host "  x-tts       : http://127.0.0.1:$XttsPort/health" -ForegroundColor Green
     Write-Host "  Go API      : http://127.0.0.1:$ServerPort" -ForegroundColor Green
-    Write-Host "  Logs        : $LogDir" -ForegroundColor Green
-    Write-Host "  PIDs        : $BackendPidFile" -ForegroundColor Green
+    Write-Host "  Mochi log   : $mochiLogHint" -ForegroundColor Green
 
     exit 0
 } catch {
     Write-Host ""
     Write-Host "FAILED: $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host "Check logs under $LogDir" -ForegroundColor Yellow
+    Write-Host "Check $mochiLogHint" -ForegroundColor Yellow
+    Read-Host "Press Enter to exit"
     exit 1
 }

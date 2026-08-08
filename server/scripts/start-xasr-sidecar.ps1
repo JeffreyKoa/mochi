@@ -23,7 +23,7 @@ if (-not (Test-Path $SetupScript)) {
 }
 
 if (-not $env:MOCHI_XASR_LOG_DIR) {
-    $defaultLogDir = Join-Path $RepoRoot "server\logs\x-asr"
+    $defaultLogDir = Join-Path $RepoRoot "logs\xasr"
     New-Item -ItemType Directory -Force -Path $defaultLogDir | Out-Null
     $env:MOCHI_XASR_LOG_DIR = $defaultLogDir
 }

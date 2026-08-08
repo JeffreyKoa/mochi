@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -11,16 +12,28 @@ import (
 	"gorm.io/gorm/logger"
 
 	"github.com/mochi-ai/server/internal/config"
+	"github.com/mochi-ai/server/internal/logging"
 	"github.com/mochi-ai/server/internal/models"
 )
 
 func NewMySQL(dsn string, cfg config.DatabaseConfig) (*gorm.DB, error) {
+	// gorm logger.Default 在 init 时绑定了旧 os.Stdout，须用 logging.Output() 与文件/console 同步。
+	gormLog := logger.New(
+		log.New(logging.Output(), "\r\n", log.LstdFlags),
+		logger.Config{
+			SlowThreshold:             200 * time.Millisecond,
+			LogLevel:                  logger.Warn,
+			IgnoreRecordNotFoundError: false,
+			Colorful:                  false,
+		},
+	)
+
 	var db *gorm.DB
 	var err error
 	// RDS 偶发 "commands out of sync" 时重试，避免 go run server 启动即退出
 	for attempt := 1; attempt <= 3; attempt++ {
 		db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{
-			Logger: logger.Default.LogMode(logger.Warn),
+			Logger: gormLog,
 		})
 		if err == nil {
 			break

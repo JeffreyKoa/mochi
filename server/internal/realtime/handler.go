@@ -98,19 +98,24 @@ func (h *Handler) HandleWS(c *gin.Context) {
 		return
 	}
 
+	log.Printf("[realtime] ws/voice connect attempt ip=%s", c.ClientIP())
+
 	token := c.Query("token")
 	if token == "" {
+		log.Printf("[realtime] ws rejected: missing token")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing token"})
 		return
 	}
 	claims, err := h.authSvc.ParseToken(token)
 	if err != nil {
+		log.Printf("[realtime] ws rejected: invalid token user=%v err=%v", c.ClientIP(), err)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 		return
 	}
 
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
+		log.Printf("[realtime] ws upgrade failed user=%d err=%v", claims.UserID, err)
 		return
 	}
 

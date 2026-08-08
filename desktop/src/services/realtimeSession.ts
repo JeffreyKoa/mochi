@@ -97,17 +97,23 @@ export class RealtimeSession {
         }
       }
 
-      this.ws.onclose = () => {
+      this.ws.onclose = (ev) => {
         this.stopHeartbeat()
         if (this.replacing) {
           this.replacing = false
           return
         }
+        console.warn(
+          '[realtime] /ws/voice closed code=%s reason=%s',
+          ev.code,
+          ev.reason || '',
+        )
         this.emit({ type: 'disconnected' })
       }
 
       this.ws.onerror = () => {
         if (!this.replacing) {
+          console.warn('[realtime] /ws/voice error target=', url.replace(/token=[^&]+/, 'token=***'))
           reject(new Error('websocket error'))
         }
       }
@@ -341,7 +347,11 @@ export class RealtimeSession {
     const msgType = view.getUint8(0)
     if (msgType === 0x01) {
       const formatByte = view.getUint8(1)
-      const format = formatByte === 0x03 ? 'opus' : formatByte === 0x02 ? 'pcm' : 'mp3'
+      const format =
+        formatByte === 0x03 ? 'opus'
+        : formatByte === 0x02 ? 'pcm'
+        : formatByte === 0x04 ? 'wav'
+        : 'mp3'
       const high = view.getUint32(2)
       const low = view.getUint32(6)
       const seq = high * 4294967296 + low

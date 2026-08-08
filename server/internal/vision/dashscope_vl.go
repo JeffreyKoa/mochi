@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/mochi-ai/server/pkg/modelmeta"
 )
 
 type vlClient struct {
@@ -66,6 +68,7 @@ func (c *vlClient) chat(ctx context.Context, jpeg []byte, userPrompt string) (st
 	if len(jpeg) == 0 {
 		return "", fmt.Errorf("empty jpeg")
 	}
+	modelmeta.LogCall("vision_vl", modelmeta.InferVendorFromAPIBase(c.apiBase), c.model)
 	b64 := base64.StdEncoding.EncodeToString(jpeg)
 	dataURL := "data:image/jpeg;base64," + b64
 

@@ -39,7 +39,7 @@ type Session struct {
 	turnLat        *TurnLatency
 	turnAudioBytes int
 	preferMP3      bool
-	localTTS       bool // client_caps：客户端本地 TTS，服务端跳过 DashScope TTS
+	localTTS       bool // client_caps：客户端本地 TTS，服务端跳过云端 TTS
 	echoGuardMS    int // 0 = 使用服务端默认
 
 	topicAnchor TopicAnchor

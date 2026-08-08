@@ -1,6 +1,7 @@
 package router
 
 import (
+	"log"
 	"net/http"
 	"strings"
 
@@ -130,6 +131,7 @@ func Setup(mode string, h Handlers) *gin.Engine {
 	}
 
 	r.GET("/ws", func(c *gin.Context) {
+		log.Printf("[WS] connect attempt ip=%s path=/ws", c.ClientIP())
 		token := c.Query("token")
 		if token == "" {
 			authHeader := c.GetHeader("Authorization")

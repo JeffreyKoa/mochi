@@ -1022,7 +1022,7 @@ onUnmounted(() => {
           <SettingsCard title="语音与隐私" hint="云端语音处理说明">
             <p class="hint">
               语音对话时，麦克风 PCM 会上传至 Mochi 自建服务器，用于语音识别（x-asr）、声学情绪分析（emotion2vec）与
-              CosyVoice 语音合成。客户端不长期保存原始语音；对话文字按记忆设置留存。
+              本地 Matcha 语音合成（x-tts sidecar）。客户端不长期保存原始语音；对话文字按记忆设置留存。
             </p>
             <p class="hint">纯文字聊天不会上传麦克风音频。</p>
           </SettingsCard>
@@ -1046,7 +1046,7 @@ onUnmounted(() => {
             </button>
             <div v-if="voiceAdvancedOpen" class="settings-advanced-body">
               <p class="hint">语音识别：服务端 x-asr（Sherpa）</p>
-              <p class="hint">语音合成：DashScope CosyVoice</p>
+              <p class="hint">语音合成：本地 X-TTS Matcha（8767）</p>
               <p class="hint advanced-gap">在场声音感知 · 当前：{{ pet.ownerPresence }}</p>
               <p class="hint">
                 模型路径：<code>public/models/speaker/campp.onnx</code>、

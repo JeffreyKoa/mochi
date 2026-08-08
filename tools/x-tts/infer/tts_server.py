@@ -4,13 +4,22 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+_infer_dir = Path(__file__).resolve().parent
+if str(_infer_dir) not in sys.path:
+    sys.path.insert(0, str(_infer_dir))
+
+from sidecar_log import configure_sidecar_logging, install_timestamp_streams
+
+install_timestamp_streams()
+
 import argparse
 import json
 import logging
-import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -18,11 +27,7 @@ import numpy as np
 import sherpa_onnx
 import soundfile as sf
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
+configure_sidecar_logging()
 log = logging.getLogger("x-tts")
 
 SIDECAR_VERSION = "1"

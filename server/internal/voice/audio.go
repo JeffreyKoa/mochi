@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// audioToPCM converts uploaded audio to mono PCM int16 LE for Dashscope ASR.
+// audioToPCM converts uploaded audio to mono PCM int16 LE for x-asr.
 func audioToPCM(data []byte, format string) ([]byte, error) {
 	format = strings.ToLower(strings.TrimSpace(format))
 	switch format {

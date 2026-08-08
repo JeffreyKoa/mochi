@@ -12,6 +12,7 @@ import (
 
 	"github.com/mochi-ai/server/internal/agent"
 	"github.com/mochi-ai/server/internal/config"
+	"github.com/mochi-ai/server/pkg/modelmeta"
 )
 
 // ResponseGate decides whether an ASR transcript deserves an LLM response.
@@ -44,9 +45,9 @@ func NewResponseGate(
 	timeoutMS := cfg.TimeoutMS
 	maxChars := cfg.MaxChars
 	maxTokens := cfg.MaxTokens
-	base := strings.TrimRight(apiBase, "/")
+	base := strings.TrimRight(strings.TrimSpace(apiBase), "/")
 	if base == "" {
-		base = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+		return nil
 	}
 	return &ResponseGate{
 		apiKey:        apiKey,
@@ -139,6 +140,7 @@ type gateChatResponse struct {
 }
 
 func (g *ResponseGate) askModel(ctx context.Context, text, petName string) (bool, error) {
+	modelmeta.LogCall("gate", modelmeta.InferVendorFromAPIBase(g.apiBase), g.model)
 	userMsg := text
 	if petName != "" {
 		userMsg = fmt.Sprintf("（桌面宠物名字叫%s）%s", petName, text)

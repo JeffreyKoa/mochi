@@ -18,6 +18,7 @@ import (
 	"github.com/mochi-ai/server/internal/models"
 	"github.com/mochi-ai/server/internal/tools"
 	"github.com/mochi-ai/server/internal/wellness"
+	"github.com/mochi-ai/server/internal/ws"
 	"github.com/mochi-ai/server/pkg/ai"
 )
 
@@ -352,7 +353,18 @@ func (s *Scheduler) scanDueReminders() {
 			continue
 		}
 
-		msg := s.reminderMessage(ctx, pet, r)
+		// 已在 Redis 待发队列：勿重复调 LLM（Companion tick 默认 5s）
+		if ws.IsReminderQueued(s.rdb, r.ID) {
+			continue
+		}
+
+		msg := ws.GetCachedReminderMessage(s.rdb, r.ID)
+		if msg == "" {
+			msg = s.reminderMessage(ctx, pet, r)
+			if msg != "" {
+				ws.CacheReminderMessage(s.rdb, r.ID, msg)
+			}
+		}
 		if msg == "" || s.broadcaster == nil {
 			continue
 		}

@@ -11,7 +11,10 @@ export class WSManager {
 
   connect(force = false) {
     const url = getWSUrl()
-    if (!url.includes('token=') || url.endsWith('token=')) return
+    if (!url.includes('token=') || url.endsWith('token=')) {
+      console.warn('[WS] /ws skipped: missing auth token')
+      return
+    }
     if (!force && (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING)) {
       return
     }
@@ -25,6 +28,7 @@ export class WSManager {
 
     this.ws.onopen = () => {
       this.reconnectAttempts = 0
+      console.info('[WS] /ws connected')
       this.startHeartbeat()
     }
 
@@ -37,7 +41,8 @@ export class WSManager {
       }
     }
 
-    this.ws.onclose = () => {
+    this.ws.onclose = (ev) => {
+      console.warn('[WS] /ws closed code=%s', ev.code)
       this.stopHeartbeat()
       this.attemptReconnect()
     }

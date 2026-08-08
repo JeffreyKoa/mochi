@@ -17,7 +17,7 @@ import (
 	"github.com/mochi-ai/server/internal/emotion"
 	"github.com/mochi-ai/server/internal/text"
 	"github.com/mochi-ai/server/internal/vision"
-	"github.com/mochi-ai/server/pkg/dashscope"
+	"github.com/mochi-ai/server/pkg/modelmeta"
 	"github.com/mochi-ai/server/pkg/opus"
 )
 
@@ -29,7 +29,6 @@ type Pipeline struct {
 	tts       TTSSynthesizer
 	ttsFormat string
 	apiKey    string
-	ep        dashscope.EndpointConfig
 	gate      *ResponseGate
 	noiseFillers map[rune]bool
 	acoustic     emotion.AcousticClient
@@ -40,17 +39,11 @@ type Pipeline struct {
 
 func NewPipeline(chatSvc *chat.Service, cfg config.RealtimeConfig, appCfg *config.Config) *Pipeline {
 	apiKey := appCfg.AI.APIKey
-	ep := dashscope.EndpointConfig{
-		WSURL:       cfg.Dashscope.WSURL,
-		WorkspaceID: cfg.Dashscope.WorkspaceID,
-		Region:      cfg.Dashscope.Region,
-	}
 	p := &Pipeline{
 		chat:          chatSvc,
 		cfg:           cfg,
 		ttsFormat:     "mp3",
 		apiKey:        apiKey,
-		ep:            ep,
 		asrSampleRate: cfg.ASR.SampleRate,
 		acoustic:      emotion.NoopAcousticClient{},
 		minAcousticConf: appCfg.Emotion.Acoustic.MinConfidence,
@@ -73,22 +66,24 @@ func NewPipeline(chatSvc *chat.Service, cfg config.RealtimeConfig, appCfg *confi
 	} else {
 		log.Printf("[vision] pipeline disabled (config vision.enabled=false)")
 	}
-	asrEp := dashscope.EndpointConfig{WSURL: cfg.Dashscope.ASRWSURL}
 	switch strings.ToLower(cfg.ASR.Provider) {
 	case "dashscope":
-		if apiKey != "" {
-			p.asr = newDashscopeASR(dashscope.NewASRClient(apiKey, cfg.ASR.Model, cfg.ASR.SampleRate, asrEp))
-		}
+		log.Printf("[realtime] asr.provider=dashscope removed; use xasr")
 	case "xasr", "sherpa":
 		wsURL := cfg.XASR.WSURL
-		p.asr = newXasrASR(wsURL, cfg.ASR.SampleRate)
+		p.asr = newXasrASR(wsURL, cfg.ASR.SampleRate, "sherpa-streaming-zh")
+		modelmeta.LogCall("asr_startup", modelmeta.VendorLocalXASR, "sherpa-streaming-zh", "endpoint="+wsURL)
 		log.Printf("[realtime] asr.provider=xasr ws=%s sample_rate=%d", wsURL, cfg.ASR.SampleRate)
 	case "none":
 		log.Printf("[realtime] asr.provider=none (client-side STT / text_input only)")
 	}
 
-	p.tts, p.ttsFormat = buildTTSSynth(cfg, apiKey, ep, ttsPreferMP3(cfg, false))
-	p.gate = NewResponseGate(cfg.Gate, appCfg.GateFastpath, appCfg.GateSystemPrompt, apiKey, appCfg.AI.APIBase)
+	p.tts, p.ttsFormat = buildTTSSynth(cfg, ttsPreferMP3(cfg, false))
+	gateCfg := cfg.Gate
+	if strings.TrimSpace(gateCfg.Model) == "" {
+		gateCfg.Model = appCfg.AI.ModelCode
+	}
+	p.gate = NewResponseGate(gateCfg, appCfg.GateFastpath, appCfg.GateSystemPrompt, apiKey, appCfg.AI.APIBase)
 	p.noiseFillers = appCfg.NoiseFillers
 	return p
 }
@@ -113,7 +108,7 @@ type sessionTTSBundle struct {
 // ttsSegment 为带 prosody 的分句 TTS 任务。
 type ttsSegment struct {
 	text string
-	opts dashscope.SynthOptions
+	opts SynthOptions
 }
 
 func (p *Pipeline) getTTSForSession(ctx context.Context, sess *Session) sessionTTSBundle {
@@ -131,40 +126,41 @@ func (p *Pipeline) getTTSForSession(ctx context.Context, sess *Session) sessionT
 	}
 
 	profile := ResolveVoice(pet.Gender, pet.LifeStage, string(pet.PersonalityJSON))
-	cfg := p.cfg
-	if profile.DashscopeVoice != "" {
-		cfg.TTS.Voice = profile.DashscopeVoice
-	}
-
-	synth, fmtStr := buildTTSSynth(cfg, p.apiKey, p.ep, preferMP3)
+	synth, fmtStr := buildTTSSynth(p.cfg, preferMP3)
 	if synth != nil {
 		return sessionTTSBundle{synth: synth, format: fmtStr, baseline: profile}
 	}
 	return sessionTTSBundle{synth: p.tts, format: p.ttsFormat, baseline: profile}
 }
 
-func buildTTSSynth(cfg config.RealtimeConfig, apiKey string, ep dashscope.EndpointConfig, preferMP3 bool) (TTSSynthesizer, string) {
+func buildTTSSynth(cfg config.RealtimeConfig, preferMP3 bool) (TTSSynthesizer, string) {
 	format := "mp3"
-	if strings.ToLower(cfg.TTS.Provider) == "none" {
+	provider := strings.ToLower(strings.TrimSpace(cfg.TTS.Provider))
+	if provider == "none" {
 		log.Printf("[realtime] tts.provider=none (client-side TTS)")
 		return nil, format
 	}
-	if apiKey == "" {
+
+	switch provider {
+	case "dashscope":
+		log.Printf("[realtime] tts.provider=dashscope removed; use xtts")
+		return nil, format
+	case "xtts", "x-tts", "matcha":
+		baseURL := cfg.XTTS.BaseURL
+		if baseURL == "" {
+			baseURL = "http://127.0.0.1:8767"
+		}
+		timeout := time.Duration(cfg.XTTS.TimeoutMS) * time.Millisecond
+		if timeout <= 0 {
+			timeout = 30 * time.Second
+		}
+		log.Printf("[realtime] tts.provider=xtts base_url=%s speed=%.2f timeout_ms=%d", baseURL, cfg.XTTS.Speed, cfg.XTTS.TimeoutMS)
+		modelmeta.LogCall("tts_startup", modelmeta.VendorLocalXTTS, "matcha-zh-en", "endpoint="+baseURL)
+		return newXttsSynth(baseURL, cfg.XTTS.Speed, timeout), "wav"
+	default:
+		log.Printf("[realtime] tts.provider=%s unknown; no synthesizer", provider)
 		return nil, format
 	}
-
-	client := dashscope.NewTTSClient(apiKey, cfg.TTS.Model, cfg.TTS.Voice, cfg.TTS.SampleRate, ep)
-	useOpusPath := strings.ToLower(cfg.TTS.Transport) == "opus" && !preferMP3 && opus.Available()
-	if useOpusPath {
-		client.SetAudioFormat("pcm")
-		format = "pcm"
-	} else {
-		if strings.ToLower(cfg.TTS.Transport) == "opus" && !opus.Available() {
-			log.Printf("[realtime] opus encoder unavailable, tts will use mp3")
-		}
-		format = client.AudioFormat()
-	}
-	return newDashscopeTTSSynth(client), format
 }
 
 // ASRConfigured 服务端是否配置了云端流式 ASR（provider=none 时为 false）。
@@ -187,7 +183,7 @@ func (p *Pipeline) PrewarmTTS(ctx context.Context) {
 	go func() {
 		warmCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		if err := p.tts.Synthesize(warmCtx, "嗯", dashscope.DefaultSynthOptions(), func([]byte) {}); err != nil {
+		if err := p.tts.Synthesize(warmCtx, "嗯", DefaultSynthOptions(), func([]byte) {}); err != nil {
 			log.Printf("[realtime] tts prewarm: %v", err)
 			return
 		}
@@ -564,7 +560,7 @@ func (p *Pipeline) maybeEarlyPerceptionAnim(ctx context.Context, sess *Session, 
 		hint.UserMood, hint.NeedsEmpathy, hint.Intent, sess.ID)
 }
 
-// awaitOwnerFaceHint 等待 prefetch 或单次 VL（避免重复调用 DashScope）。
+// awaitOwnerFaceHint 等待 prefetch 或单次 VL。
 func (p *Pipeline) awaitOwnerFaceHint(ctx context.Context, sess *Session) vision.Hint {
 	if p.vision == nil || !p.autoVisionOnVoiceTurn() || !sess.HasVisionFrame() {
 		return vision.EmptyHint()
@@ -764,7 +760,7 @@ func (p *Pipeline) synthSegmentBufferedWithSynth(ctx context.Context, synth TTSS
 	}
 	opts := seg.opts
 	if opts.Rate == 0 && opts.Pitch == 0 && opts.Volume == 0 {
-		opts = dashscope.DefaultSynthOptions()
+		opts = DefaultSynthOptions()
 	}
 	var chunks [][]byte
 	err := synth.Synthesize(ctx, seg.text, opts, func(audio []byte) {

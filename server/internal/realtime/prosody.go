@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/mochi-ai/server/internal/text"
-	"github.com/mochi-ai/server/pkg/dashscope"
 )
 
 // ProsodyParams 为 TTS 合成用的语速/音高/音量。
@@ -15,9 +14,9 @@ type ProsodyParams struct {
 	Volume int
 }
 
-// ToSynthOptions 转为 DashScope TTS 参数。
-func (p ProsodyParams) ToSynthOptions() dashscope.SynthOptions {
-	return dashscope.SynthOptions{
+// ToSynthOptions 转为 TTS 合成参数。
+func (p ProsodyParams) ToSynthOptions() SynthOptions {
+	return SynthOptions{
 		Rate:   p.Rate,
 		Pitch:  p.Pitch,
 		Volume: p.Volume,
@@ -29,7 +28,6 @@ func ProsodyForMood(mood text.MoodTag, baseline VoiceProfile) ProsodyParams {
 	rate, pitch := parseVoiceBaseline(baseline)
 	vol := 50
 
-	// Phase 4：加大 mood 间 prosody 差异，使安慰 vs 报喜可听区分更明显。
 	switch mood {
 	case text.MoodGentle:
 		rate *= 0.85
@@ -55,8 +53,6 @@ func ProsodyForMood(mood text.MoodTag, baseline VoiceProfile) ProsodyParams {
 		rate *= 0.94
 		pitch *= 0.96
 		vol = 48
-	default: // calm
-		// 使用基线
 	}
 
 	return ProsodyParams{
@@ -66,7 +62,6 @@ func ProsodyForMood(mood text.MoodTag, baseline VoiceProfile) ProsodyParams {
 	}
 }
 
-// parseVoiceBaseline 将 VoiceProfile 的 Rate/Pitch 字符串解析为乘数。
 func parseVoiceBaseline(v VoiceProfile) (rate, pitch float64) {
 	rate = parsePercentMultiplier(v.Rate, 1.0)
 	pitch = parsePercentMultiplier(v.Pitch, 1.0)

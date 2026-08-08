@@ -4,11 +4,10 @@ import (
 	"strings"
 )
 
-// VoiceProfile holds the resolved TTS voice parameters based on gender, life stage, and personality.
+// VoiceProfile 按性别/生命阶段/性格解析 TTS 语速与音高基线（本地 Matcha 通过 prosody 调节）。
 type VoiceProfile struct {
-	DashscopeVoice string
-	Rate           string
-	Pitch          string
+	Rate  string
+	Pitch string
 }
 
 // ResolveVoice returns the voice profile determined by gender, lifeStage, and personality.
@@ -28,34 +27,18 @@ func ResolveVoice(gender, lifeStage, personality string) VoiceProfile {
 
 	if g == "male" {
 		switch stage {
-		case "newborn", "child", "juvenile":
-			profile.DashscopeVoice = "longyue_v2"
-		case "youth":
-			profile.DashscopeVoice = "longyue_v2"
-		case "prime":
-			profile.DashscopeVoice = "longshu_v2"
 		case "elder", "twilight":
-			profile.DashscopeVoice = "longshu_v2"
 			profile.Rate = "-10%"
 			profile.Pitch = "-5%"
-		default: // default male youth/prime
-			profile.DashscopeVoice = "longyue_v2"
 		}
-	} else { // female
+	} else {
 		switch stage {
-		case "newborn", "child", "juvenile":
-			profile.DashscopeVoice = "longxiaochun_v2"
-		case "youth", "prime":
-			profile.DashscopeVoice = "longwan_v2"
 		case "elder", "twilight":
-			profile.DashscopeVoice = "longwan_v2"
 			profile.Rate = "-8%"
-		default: // default female
-			profile.DashscopeVoice = "longxiaochun_v2"
 		}
 	}
 
-	// Personality fine-tuning (if not overridden by elder/twilight rates)
+	// 性格微调（老年阶段已设语速时不再覆盖）
 	if profile.Rate == "+0%" {
 		if strings.Contains(p, "阳光") || strings.Contains(p, "活泼") || strings.Contains(p, "energetic") {
 			profile.Rate = "+5%"

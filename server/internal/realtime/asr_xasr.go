@@ -9,27 +9,33 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/mochi-ai/server/pkg/modelmeta"
+	"github.com/mochi-ai/server/pkg/sidecarlog"
 )
 
 // xasrASR 对接本机 sherpa_streaming_server（与 Desktop XAsrClient 同协议）。
 type xasrASR struct {
 	wsURL      string
 	sampleRate int
+	model      string
 }
 
-func newXasrASR(wsURL string, sampleRate int) ASRRecognizer {
+func newXasrASR(wsURL string, sampleRate int, model string) ASRRecognizer {
 	if sampleRate == 0 {
 		sampleRate = 16000
 	}
 	if wsURL == "" {
 		wsURL = "ws://127.0.0.1:8766"
 	}
-	return &xasrASR{wsURL: wsURL, sampleRate: sampleRate}
+	if model == "" {
+		model = "sherpa-streaming-zh"
+	}
+	return &xasrASR{wsURL: wsURL, sampleRate: sampleRate, model: model}
 }
 
 // NewXasrASR 创建 x-asr sidecar 识别器（供 xasrprobe / 测试）。
 func NewXasrASR(wsURL string, sampleRate int) ASRRecognizer {
-	return newXasrASR(wsURL, sampleRate)
+	return newXasrASR(wsURL, sampleRate, "sherpa-streaming-zh")
 }
 
 func (x *xasrASR) Recognize(ctx context.Context, pcm []byte, onPartial ASRPartialHandler) (string, error) {
@@ -47,14 +53,17 @@ func (x *xasrASR) Recognize(ctx context.Context, pcm []byte, onPartial ASRPartia
 }
 
 func (x *xasrASR) StartSession(ctx context.Context, onPartial ASRPartialHandler) (ASRSession, error) {
+	modelmeta.LogCall("asr", modelmeta.VendorLocalXASR, x.model, "endpoint="+x.wsURL)
 	dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
 	conn, _, err := dialer.DialContext(ctx, x.wsURL, http.Header{})
+	sidecarlog.LogWSConnect("xasr", x.wsURL, err)
 	if err != nil {
 		return nil, fmt.Errorf("xasr dial: %w", err)
 	}
 
 	s := &xasrSession{
 		conn:       conn,
+		wsURL:      x.wsURL,
 		onPartial:  onPartial,
 		started:    make(chan struct{}),
 		done:       make(chan struct{}),
@@ -88,6 +97,7 @@ func (x *xasrASR) StartSession(ctx context.Context, onPartial ASRPartialHandler)
 
 type xasrSession struct {
 	conn      *websocket.Conn
+	wsURL     string
 	onPartial ASRPartialHandler
 	started   chan struct{}
 	done      chan struct{}
@@ -116,13 +126,14 @@ func (s *xasrSession) readLoop() {
 		}
 		var msg xasrMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
-			// sidecar 可能返回带额外字段的 JSON；解析失败时记录原始载荷便于排查
+			sidecarlog.LogWSInbound("xasr", s.wsURL, "raw", string(data))
 			select {
 			case s.errCh <- fmt.Errorf("xasr json: %w raw=%q", err, string(data)):
 			default:
 			}
 			continue
 		}
+		sidecarlog.LogWSInbound("xasr", s.wsURL, msg.Type, msg)
 		switch msg.Type {
 		case "started":
 			s.startOnce.Do(func() { close(s.started) })
@@ -150,6 +161,7 @@ func (s *xasrSession) sendJSON(v any) error {
 	if err != nil {
 		return err
 	}
+	sidecarlog.LogWSOutbound("xasr", s.wsURL, "json", v)
 	return s.conn.WriteMessage(websocket.TextMessage, data)
 }
 
@@ -157,6 +169,7 @@ func (s *xasrSession) SendAudio(pcm []byte) error {
 	if len(pcm) == 0 {
 		return nil
 	}
+	sidecarlog.LogWSOutbound("xasr", s.wsURL, "audio", fmt.Sprintf("<pcm bytes=%d>", len(pcm)))
 	return s.conn.WriteMessage(websocket.BinaryMessage, pcm)
 }
 

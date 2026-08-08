@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"sync"
+
+	"github.com/mochi-ai/server/pkg/modelmeta"
 )
 
 // Router 多模型路由器：支持故障自动转移 (Failover) 与优先级配置
@@ -53,6 +55,30 @@ func containsString(slice []string, val string) bool {
 	return false
 }
 
+// resolveModelVendor 从请求与 Provider 解析实际调用的模型与厂商。
+func resolveModelVendor(reqModel string, provider AIProvider) (model, vendor string) {
+	model = reqModel
+	vendor = "unknown"
+	if mi, ok := provider.(interface {
+		Vendor() string
+		DefaultModel() string
+	}); ok {
+		if model == "" {
+			model = mi.DefaultModel()
+		}
+		vendor = mi.Vendor()
+	}
+	if model == "" {
+		model = provider.Name()
+	}
+	return model, vendor
+}
+
+func logProviderAttempt(subsystem, route, mode, reqModel string, provider AIProvider) {
+	model, vendor := resolveModelVendor(reqModel, provider)
+	modelmeta.LogCall(subsystem, vendor, model, "route="+route, "mode="+mode)
+}
+
 // Chat 依序尝试主模型与备用模型，遇错自动故障转移
 func (r *Router) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	r.mu.RLock()
@@ -73,13 +99,15 @@ func (r *Router) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 			continue
 		}
 
+		logProviderAttempt("llm", name, "chat", req.Model, provider)
 		resp, err := provider.Chat(ctx, req)
 		if err == nil {
 			return resp, nil
 		}
 
 		lastErr = err
-		log.Printf("[AIRouter] Provider '%s' chat failed: %v, falling back to next provider...", name, err)
+		model, vendor := resolveModelVendor(req.Model, provider)
+		log.Printf("[AIRouter] route=%s vendor=%s model=%s chat failed: %v, falling back...", name, vendor, model, err)
 	}
 
 	return nil, fmt.Errorf("all AI providers failed, last error: %w", lastErr)
@@ -105,13 +133,15 @@ func (r *Router) ChatStream(ctx context.Context, req ChatRequest) (<-chan ChatCh
 			continue
 		}
 
+		logProviderAttempt("llm", name, "stream", req.Model, provider)
 		ch, err := provider.ChatStream(ctx, req)
 		if err == nil {
 			return ch, nil
 		}
 
 		lastErr = err
-		log.Printf("[AIRouter] Provider '%s' stream failed: %v, falling back to next provider...", name, err)
+		model, vendor := resolveModelVendor(req.Model, provider)
+		log.Printf("[AIRouter] route=%s vendor=%s model=%s stream failed: %v, falling back...", name, vendor, model, err)
 	}
 
 	return nil, fmt.Errorf("all AI providers failed for stream, last error: %w", lastErr)
@@ -137,13 +167,15 @@ func (r *Router) ChatWithTools(ctx context.Context, req ChatWithToolsRequest) (*
 			continue
 		}
 
+		logProviderAttempt("llm", name, "tools", req.Model, provider)
 		resp, err := provider.ChatWithTools(ctx, req)
 		if err == nil {
 			return resp, nil
 		}
 
 		lastErr = err
-		log.Printf("[AIRouter] Provider '%s' ChatWithTools failed: %v, falling back to next provider...", name, err)
+		model, vendor := resolveModelVendor(req.Model, provider)
+		log.Printf("[AIRouter] route=%s vendor=%s model=%s tools failed: %v, falling back...", name, vendor, model, err)
 	}
 
 	return nil, fmt.Errorf("all AI providers failed for ChatWithTools, last error: %w", lastErr)

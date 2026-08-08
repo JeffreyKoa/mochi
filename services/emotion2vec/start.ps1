@@ -7,7 +7,7 @@
 param(
     [switch]$SetupOnly,
     [switch]$Background,
-    [string]$LogDir = ""
+    [string]$RepoRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -41,6 +41,19 @@ function Test-TorchCuda {
     return ($out -eq "1")
 }
 
+function Get-GpuTotalMemoryMiB {
+    if (-not (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) { return 0 }
+    try {
+        $out = & nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>$null
+        if ($out) {
+            return [int](($out.Trim().Split("`n")[0]).Trim())
+        }
+    } catch {
+        # ignore
+    }
+    return 0
+}
+
 function Resolve-EmotionDevice {
     if ($env:EMOTION2VEC_DEVICE) {
         if ($env:EMOTION2VEC_DEVICE -eq "cuda" -and -not (Test-TorchCuda)) {
@@ -48,6 +61,12 @@ function Resolve-EmotionDevice {
             return "cpu"
         }
         return $env:EMOTION2VEC_DEVICE
+    }
+    # 4~6GB 显卡与 x-tts 等同机时 CUDA 易 OOM；声学 SER 用 CPU 足够快
+    $gpuMiB = Get-GpuTotalMemoryMiB
+    if ($gpuMiB -gt 0 -and $gpuMiB -le 6144) {
+        Write-Host "  GPU ${gpuMiB}MiB (<=6GB): emotion2vec uses cpu to avoid VRAM contention." -ForegroundColor Yellow
+        return "cpu"
     }
     if (Test-TorchCuda) { return "cuda" }
     return "cpu"
@@ -173,22 +192,16 @@ if ($portPid) {
 Write-Host "[4/4] Starting uvicorn on http://127.0.0.1:$env:EMOTION2VEC_PORT ..." -ForegroundColor Green
 
 if ($Background) {
-    if ($LogDir -ne "") {
-        New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
-        $outLog = Join-Path $LogDir "emotion2vec-out.log"
-        $errLog = Join-Path $LogDir "emotion2vec-err.log"
-    } else {
-        $outLog = Join-Path $Root "emotion2vec-out.log"
-        $errLog = Join-Path $Root "emotion2vec-err.log"
+    if ($RepoRoot -eq "") {
+        $RepoRoot = (Resolve-Path (Join-Path $Root "..\..")).Path
     }
-    $proc = Start-Process -FilePath $Python `
-        -ArgumentList @("-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", $env:EMOTION2VEC_PORT) `
-        -WorkingDirectory $Root `
-        -WindowStyle Hidden `
-        -RedirectStandardOutput $outLog `
-        -RedirectStandardError $errLog `
-        -PassThru
-    Write-Host "  PID $($proc.Id) | logs: $outLog" -ForegroundColor Green
+    . (Join-Path $RepoRoot "scripts\lib\daily-log.ps1")
+    $pyArgs = @("-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", $env:EMOTION2VEC_PORT)
+    $proc = Start-MochiSidecarProcess `
+        -FilePath $Python `
+        -ArgumentList $pyArgs `
+        -WorkingDirectory $Root
+    Write-Host "  PID $($proc.Id) (API calls logged in logs/mochi)" -ForegroundColor Green
     exit 0
 }
 

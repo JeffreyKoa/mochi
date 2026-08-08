@@ -10,6 +10,9 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/mochi-ai/server/pkg/modelmeta"
+	"github.com/mochi-ai/server/pkg/sidecarlog"
 )
 
 // AcousticHint 声学情绪识别结果（emotion2vec 旁路）。
@@ -72,6 +75,7 @@ func (c *HTTPAcousticClient) Recognize(ctx context.Context, pcm []byte, sampleRa
 	if !c.Enabled() || len(pcm) == 0 {
 		return EmptyAcousticHint(), nil
 	}
+	modelmeta.LogCall("emotion_acoustic", modelmeta.VendorLocalEmotion2vec, "emotion2vec")
 	if sampleRate <= 0 {
 		sampleRate = c.sampleRate
 	}
@@ -90,24 +94,35 @@ func (c *HTTPAcousticClient) Recognize(ctx context.Context, pcm []byte, sampleRa
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	start := time.Now()
 	resp, err := c.httpClient.Do(req)
+	elapsed := time.Since(start)
 	if err != nil {
+		sidecarlog.LogHTTP("emotion2vec", http.MethodPost, c.baseURL+"/v1/emotion", body, 0, nil, err, elapsed)
 		return EmptyAcousticHint(), err
 	}
 	defer resp.Body.Close()
 
+	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 16<<10))
+	if readErr != nil {
+		sidecarlog.LogHTTP("emotion2vec", http.MethodPost, c.baseURL+"/v1/emotion", body, resp.StatusCode, raw, readErr, elapsed)
+		return EmptyAcousticHint(), readErr
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return EmptyAcousticHint(), fmt.Errorf("acoustic http %d: %s", resp.StatusCode, string(b))
+		sidecarlog.LogHTTP("emotion2vec", http.MethodPost, c.baseURL+"/v1/emotion", body, resp.StatusCode, raw, fmt.Errorf("acoustic http %d", resp.StatusCode), elapsed)
+		return EmptyAcousticHint(), fmt.Errorf("acoustic http %d: %s", resp.StatusCode, string(raw))
 	}
 
 	var out AcousticHint
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.Unmarshal(raw, &out); err != nil {
+		sidecarlog.LogHTTP("emotion2vec", http.MethodPost, c.baseURL+"/v1/emotion", body, resp.StatusCode, raw, err, elapsed)
 		return EmptyAcousticHint(), err
 	}
 	if out.Mood == "" {
 		out.Mood = "neutral"
 	}
+	sidecarlog.LogHTTP("emotion2vec", http.MethodPost, c.baseURL+"/v1/emotion", body, resp.StatusCode, raw, nil, elapsed)
 	return out, nil
 }
 

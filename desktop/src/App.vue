@@ -36,7 +36,6 @@ import PetView from '@/views/PetView.vue'
 import ChatPanel from '@/components/chat/ChatPanel.vue'
 import SettingsPanel from '@/components/growth/SettingsPanel.vue'
 import AdoptView from '@/views/AdoptView.vue'
-import VoiceDiagnostics from '@/components/dev/VoiceDiagnostics.vue'
 
 const auth = useAuthStore()
 const pet = usePetStore()
@@ -511,7 +510,6 @@ onUnmounted(() => {
           <ChatPanel v-else-if="useInlineSidePanel && pet.isChatOpen && pet.chatInline" docked @pointerdown.stop />
         </div>
         <p v-if="loadError && !showOnboarding && !showAdopt" class="load-error">{{ loadError }}</p>
-        <VoiceDiagnostics v-if="isDev && isPetShell" />
       </template>
     </template>
 
@@ -542,7 +540,6 @@ onUnmounted(() => {
         </div>
         <p v-if="loading && !showOnboarding && !growth.showSettings && !showAdopt" class="boot-hint">Mochi 醒来中...</p>
         <p v-if="loadError" class="load-error">{{ loadError }}</p>
-        <VoiceDiagnostics v-if="isDev && isPetShell" />
       </template>
     </template>
 

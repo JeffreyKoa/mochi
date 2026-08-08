@@ -99,10 +99,11 @@ func (s *Service) UpsertEntry(ctx context.Context, petID uint64, entry models.Us
 func (s *Service) queuePending(ctx context.Context, petID uint64, entry models.UserBriefEntry) error {
 	now := time.Now()
 	var existing models.UserBriefEntry
-	err := s.db.WithContext(ctx).
-		Where("pet_id = ? AND status = ? AND category = ? AND content LIKE ?", petID, "pending", entry.Category, prefixLike(entry.Content)).
-		First(&existing).Error
-	if err == nil {
+	found, err := s.findBriefEntryByPrefix(ctx, petID, "pending", entry.Category, prefixLike(entry.Content), &existing)
+	if err != nil {
+		return err
+	}
+	if found {
 		existing.Content = entry.Content
 		if entry.Importance > existing.Importance {
 			existing.Importance = entry.Importance
@@ -110,9 +111,6 @@ func (s *Service) queuePending(ctx context.Context, petID uint64, entry models.U
 		existing.Source = entry.Source
 		existing.UpdatedAt = now
 		return s.db.WithContext(ctx).Save(&existing).Error
-	}
-	if err != gorm.ErrRecordNotFound {
-		return err
 	}
 	entry.PetID = petID
 	entry.Status = "pending"
@@ -124,10 +122,11 @@ func (s *Service) queuePending(ctx context.Context, petID uint64, entry models.U
 func (s *Service) upsertApproved(ctx context.Context, petID uint64, entry models.UserBriefEntry) error {
 	now := time.Now()
 	var existing models.UserBriefEntry
-	err := s.db.WithContext(ctx).
-		Where("pet_id = ? AND status = ? AND category = ? AND content LIKE ?", petID, "approved", entry.Category, prefixLike(entry.Content)).
-		First(&existing).Error
-	if err == nil {
+	found, err := s.findBriefEntryByPrefix(ctx, petID, "approved", entry.Category, prefixLike(entry.Content), &existing)
+	if err != nil {
+		return err
+	}
+	if found {
 		existing.Content = entry.Content
 		if entry.Importance > existing.Importance {
 			existing.Importance = entry.Importance
@@ -136,14 +135,28 @@ func (s *Service) upsertApproved(ctx context.Context, petID uint64, entry models
 		existing.UpdatedAt = now
 		return s.db.WithContext(ctx).Save(&existing).Error
 	}
-	if err != gorm.ErrRecordNotFound {
-		return err
-	}
 	entry.PetID = petID
 	entry.Status = "approved"
 	entry.CreatedAt = now
 	entry.UpdatedAt = now
 	return s.db.WithContext(ctx).Create(&entry).Error
+}
+
+// findBriefEntryByPrefix 按内容前缀查已有条目；无匹配时 (false, nil)，避免 First 触发 GORM record not found 日志。
+func (s *Service) findBriefEntryByPrefix(
+	ctx context.Context,
+	petID uint64,
+	status, category, contentPrefix string,
+	dest *models.UserBriefEntry,
+) (bool, error) {
+	res := s.db.WithContext(ctx).
+		Where("pet_id = ? AND status = ? AND category = ? AND content LIKE ?", petID, status, category, contentPrefix).
+		Limit(1).
+		Find(dest)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected > 0, nil
 }
 
 func (s *Service) ApproveEntry(ctx context.Context, petID, entryID uint64) error {
