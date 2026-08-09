@@ -1,11 +1,11 @@
 /**
  * 主人人脸识别（P2）：客户端 InsightFace 风格 ONNX embedding。
  *
- * 识别模型：tools/models/face/rec.onnx（当前版本未启用，见 modelPaths.FACE_RECOGNITION_ENABLED）
+ * 识别模型：desktop/public/models/face/rec.onnx（当前版本未启用，见 modelPaths.FACE_RECOGNITION_ENABLED）
  *   输入 [1, 3, 112, 112]，像素 (x - 127.5) / 128
  *   输出 512 维 embedding（维度以模型为准）
  *
- * 可选检测模型：tools/models/face/det.onnx
+ * 可选检测模型：desktop/public/models/face/det.onnx
  *   未放置时退化为画面中心 square crop（录入时正对镜头即可）
  *
  * ModelScope / InsightFace buffalo_l 可导出 w600k_r50.onnx 作 rec。

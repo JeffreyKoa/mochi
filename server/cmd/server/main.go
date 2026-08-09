@@ -99,6 +99,7 @@ func main() {
 
 	authSvc := auth.NewService(db, cfg.JWT.Secret)
 	realtimeHandler := realtime.NewHandler(authSvc, chatSvc, cfg)
+	lifeSvc.SetVoiceBusyChecker(realtimeHandler.UserVoiceProcessing)
 
 	wellnessSvc := wellness.NewService(db, rdb, chatSvc.Runtime(), cfg.Wellness, hub, realtimeHandler.WellnessDeferred)
 	chatSvc.SetActivityReader(wellnessSvc)

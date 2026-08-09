@@ -8,6 +8,7 @@ use std::sync::Mutex;
 use chrono::Local;
 use tauri::AppHandle;
 
+#[cfg(not(debug_assertions))]
 use crate::voice_sidecar;
 
 static CLIENT_LOG_MUTEX: Mutex<()> = Mutex::new(());

@@ -17,6 +17,9 @@ type StateBroadcaster interface {
 	SendProactive(userID uint64, message, animation string) bool
 }
 
+// VoiceBusyChecker 用户 voice 管线处理中时跳过 life_nudge，避免与 LLM 抢 API/DB。
+type VoiceBusyChecker func(userID uint64) bool
+
 // ProactiveBrain 生命临界主动关怀：台词由 agent Runtime 生成，life 层只负责阈值检测。
 type ProactiveBrain interface {
 	GenerateLifeNudge(ctx context.Context, userID, petID uint64, triggerType string, state models.LifeState) (string, error)
@@ -26,6 +29,7 @@ type Service struct {
 	db              *gorm.DB
 	hub             StateBroadcaster
 	brain           ProactiveBrain
+	voiceBusy       VoiceBusyChecker
 	done            chan struct{}
 	mu              sync.Mutex
 	lastTriggerSent map[string]time.Time
@@ -43,6 +47,11 @@ func NewService(db *gorm.DB, hub StateBroadcaster) *Service {
 // SetProactiveBrain 注入大脑（agent.Runtime 实现）；未注入时不发主动台词。
 func (s *Service) SetProactiveBrain(b ProactiveBrain) {
 	s.brain = b
+}
+
+// SetVoiceBusyChecker 注入 voice 忙检测（realtime.Handler.UserVoiceProcessing）。
+func (s *Service) SetVoiceBusyChecker(fn VoiceBusyChecker) {
+	s.voiceBusy = fn
 }
 
 func (s *Service) GetState(ctx context.Context, petID uint64) (models.LifeState, error) {
@@ -260,6 +269,11 @@ func (s *Service) checkTriggers(userID uint64, state models.LifeState) {
 		return
 	}
 	s.mu.Unlock()
+
+	if s.voiceBusy != nil && s.voiceBusy(userID) {
+		log.Printf("[LifeEngine] skip nudge user=%d voice_busy", userID)
+		return
+	}
 
 	petID := state.PetID
 	animation := s.animationForState(state, triggerType)

@@ -1726,7 +1726,8 @@ export const useRealtimeStore = defineStore('realtime', () => {
     clearSilenceWatch()
     stopStreamCheck()
     submitLock = true
-    setPhase('processing')
+    // 等服务端 ASR final 后再 turn_ack → processing；避免尾音仍在识别时显示「正在想」
+    statusText.value = '收尾聆听...'
     heardSpeech = false
     lastSpeechAt = 0
     lastSpeechAtMs.value = 0
@@ -1734,7 +1735,6 @@ export const useRealtimeStore = defineStore('realtime', () => {
     speechEndedAt = 0
     bargeAccumMs = 0
     speechVad?.reset()
-    statusText.value = '处理中...'
     turnStartAt = Date.now()
     playbackMarked = false
     stopPlaybackBeforeSubmit()

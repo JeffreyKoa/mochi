@@ -1,13 +1,11 @@
-# X-TTS Sidecar（已归档 — 见 [ARCHIVED.md](./ARCHIVED.md)）
+# X-TTS Sidecar（服务端 TTS）
 
-> **2026-08 Phase 4**：正式发布客户端 TTS 已改为服务端 **DashScope CosyVoice**。  
-> 本目录仅用于 `MOCHI_VOICE_SIDECAR=1` 实验或历史对照。
-
-客户端优先（legacy）：本机运行 **Matcha zh-en**（sherpa-onnx），Mochi `tts_mode: local` 连接 **`http://127.0.0.1:8767`**。
+> 正式发布客户端 TTS 走服务端 **x-tts sidecar**（`scripts/restart-backend.ps1` 启动，端口 **8767**）。  
+> 本目录也可用于 `MOCHI_VOICE_SIDECAR=1` 本地实验。
 
 模型来源：[ModelScope dengcunqin/matcha_tts_zh_en_20251010](https://modelscope.cn/models/dengcunqin/matcha_tts_zh_en_20251010)（HF 镜像 `csukuangfj/matcha-icefall-zh-en`）。
 
-> **端口 8767**：与 X-ASR 8766 错开；均避开 Chrome 不安全端口 6666。
+> **端口 8767**：与 X-ASR 8766 错开。
 
 ## 一键启动
 
@@ -23,69 +21,4 @@ cd d:\ocr\Mochi\tools\x-tts
 ```powershell
 .\setup-and-start.ps1 -SkipDownload      # 模型已有，只启动
 .\setup-and-start.ps1 -SetupOnly         # 只安装/下载，不启动
-.\setup-and-start.ps1 -UseModelScope     # 强制从魔搭下载（默认先 HF，失败再魔搭）
-.\setup-and-start.ps1 -Port 8768         # 自定义端口
-.\setup-and-start.ps1 -NumThreads 4      # CPU 线程数
 ```
-
-## API
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/health` | 健康检查 |
-| POST | `/synthesize` | JSON body → WAV 或 PCM |
-
-### POST /synthesize
-
-```json
-{
-  "text": "你好呀，我是 Mochi！",
-  "speed": 1.0,
-  "pcm": false
-}
-```
-
-- `pcm: true` → 返回 int16 mono PCM（`X-Sample-Rate: 16000`）
-- `pcm: false`（默认）→ 返回 WAV
-
-PowerShell 测试：
-
-```powershell
-# 健康检查
-Invoke-RestMethod http://127.0.0.1:8767/health
-
-# 合成 WAV
-$body = @{ text = "你好，测试本地语音合成。"; speed = 1.0 } | ConvertTo-Json
-Invoke-WebRequest -Uri http://127.0.0.1:8767/synthesize -Method POST -Body $body -ContentType "application/json" -OutFile test.wav
-```
-
-## 与 X-ASR 配合
-
-| Sidecar | 端口 | 协议 |
-|---------|------|------|
-| X-ASR | 8766 | WebSocket |
-| X-TTS | 8767 | HTTP |
-
-两个窗口分别保持运行，或后续 Tauri 统一托管。
-
-## 模型体积（约）
-
-| 文件 | 大小 |
-|------|------|
-| matcha-zh-en（声学+词表+FST+espeak） | ~80–120MB |
-| vocos-16khz-univ.onnx | ~54MB |
-| **合计** | ~150MB |
-
-## 故障排查
-
-| 现象 | 处理 |
-|------|------|
-| 下载慢/失败 | 加 `-UseModelScope` 或重跑；检查网络 |
-| `Invalid OfflineTtsConfig` | 确认 `models/matcha-zh-en/model-steps-3.onnx` 存在 |
-| 合成慢 | 加 `-NumThreads 4`；短句 RTF 应 < 1 |
-| 音质不满意 | POC 阶段对比 MeloTTS 8k；或 fallback 云端 CosyVoice |
-
-## 后续
-
-- 正式发布路径见 `docs/20260806/云端语音链路迁移.md`（服务端 CosyVoice）
-- Legacy 客户端对接：`xTtsClient.ts`（`localTts.ts` 已于 Phase4 删除）

@@ -178,10 +178,6 @@ function Start-Emotion2vecService {
         throw "Missing $startScript"
     }
 
-    & $startScript -SetupOnly
-    if ($LASTEXITCODE -ne 0) { throw "emotion2vec setup failed" }
-
-    & $startScript -Background -RepoRoot $RepoRoot
     if ($LASTEXITCODE -ne 0) { throw "emotion2vec background start failed" }
 
     $mochiLog = Get-MochiDailyLogPath -RepoRoot $RepoRoot -ServiceName "mochi"
@@ -192,11 +188,7 @@ function Start-Emotion2vecService {
 
 function Start-XAsrService {
     Write-Step "Start x-asr sidecar (:$XasrPort)"
-    $setupScript = Join-Path $RepoRoot "server\scripts\start-xasr-sidecar.ps1"
-    $bgScript = Join-Path $RepoRoot "server\scripts\start-xasr-sidecar-background.ps1"
-
-    & $setupScript -SetupOnly -Port $XasrPort
-    if ($LASTEXITCODE -ne 0) { throw "x-asr setup failed" }
+    $bgScript = Join-Path $RepoRoot "scripts\start-xasr-sidecar-background.ps1"
 
     $xasrProcId = & $bgScript -Port $XasrPort -RepoRoot $RepoRoot
     if (-not $xasrProcId) { throw "x-asr background start failed" }
@@ -207,7 +199,7 @@ function Start-XAsrService {
         throw "x-asr port not open. Sidecar API calls are logged in $mochiLog"
     }
 
-    $probeScript = Join-Path $RepoRoot "server\scripts\probe-xasr.ps1"
+    $probeScript = Join-Path $RepoRoot "scripts\probe-xasr.ps1"
     if (Test-Path $probeScript) {
         & $probeScript -WsUrl "ws://127.0.0.1:$XasrPort"
         if ($LASTEXITCODE -ne 0) {
@@ -218,11 +210,7 @@ function Start-XAsrService {
 
 function Start-XTtsService {
     Write-Step "Start x-tts sidecar (:$XttsPort)"
-    $setupScript = Join-Path $RepoRoot "server\scripts\start-xtts-sidecar.ps1"
-    $bgScript = Join-Path $RepoRoot "server\scripts\start-xtts-sidecar-background.ps1"
-
-    & $setupScript -SetupOnly -Port $XttsPort
-    if ($LASTEXITCODE -ne 0) { throw "x-tts setup failed (models may need download - run tools\x-tts\setup-and-start.ps1 once)" }
+    $bgScript = Join-Path $RepoRoot "scripts\start-xtts-sidecar-background.ps1"
 
     $xttsProcId = & $bgScript -Port $XttsPort -RepoRoot $RepoRoot
     if (-not $xttsProcId) { throw "x-tts background start failed" }
@@ -330,6 +318,13 @@ Write-Host "  logs:    $LogsRoot"
 $mochiLogHint = Get-MochiDailyLogPath -RepoRoot $RepoRoot -ServiceName "mochi"
 Write-Host "  mochi:   $mochiLogHint (Go + sidecar API calls)" -ForegroundColor DarkGray
 Write-Host "  ports:   emotion2vec=$EmotionPort x-asr=$XasrPort x-tts=$XttsPort go=$ServerPort"
+
+Write-Step "Ensure server voice models / venv"
+. (Join-Path $RepoRoot "scripts\lib\ensure-models.ps1")
+Ensure-MochiServerModels -RepoRoot $RepoRoot `
+    -SkipEmotion2vec:$SkipEmotion2vec `
+    -SkipXasr:$SkipXasr `
+    -SkipXtts:$SkipXtts
 
 Stop-AllBackend
 

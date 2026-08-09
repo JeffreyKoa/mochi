@@ -3,7 +3,6 @@ import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
 import fs from 'fs'
 import path from 'path'
-import { mochiToolsModelsPlugin } from './vite.models'
 
 function readServerPort(): number {
   // 仅 Vite dev-server 启动时使用：决定 /api proxy 指向哪个端口，与运行时客户端无关。
@@ -25,7 +24,7 @@ const backendPort = readServerPort()
 const backendTarget = `http://localhost:${backendPort}`
 
 export default defineConfig(() => ({
-  plugins: [vue(), mochiToolsModelsPlugin()],
+  plugins: [vue()],
   resolve: {
     alias: {
       '@': resolve(__dirname, 'src'),

@@ -7,6 +7,13 @@
  * 仅在 evaluateTurnEnd → ready 时客户端才 sendAudioEnd，避免 Mochi 抢话。
  */
 
+/** 常见续说尾词（所有格/指代），句末停顿后往往还有宾语 */
+const CONTINUATION_TAILS = [
+  '你的', '我的', '他的', '她的', '它的', '我们的', '你们的',
+  '这个', '那个', '一个', '什么', '怎么', '为什么', '多少',
+  '在哪', '在这里', '在那里',
+]
+
 /** 与 realtimeStore 中 UNFINISHED_CONNECTIVES 保持一致 */
 const UNFINISHED_CONNECTIVES = [
   '但是', '但是呢', '因为', '所以', '然后', '而且', '如果', '不过',
@@ -67,6 +74,9 @@ export interface TurnEndDecision {
 export function isUnfinishedSpeech(text: string): boolean {
   const trimmed = text.trim()
   if (!trimmed) return false
+  for (const tail of CONTINUATION_TAILS) {
+    if (trimmed.endsWith(tail)) return true
+  }
   for (const conn of UNFINISHED_CONNECTIVES) {
     if (trimmed.endsWith(conn)) return true
   }
@@ -133,6 +143,15 @@ export function evaluateTurnEnd(signals: TurnEndSignals): TurnEndDecision {
   // ASR 仍在更新 → 嘴还在动（流式延迟），不提交
   if (partial && now - signals.partialUpdatedAt < partialStableMs) {
     return { ready: false, reason: 'partial_unstable' }
+  }
+
+  // VAD 已 speech_end 但 partial 在此之后仍更新 → 尾音/续说，勿提交
+  if (
+    signals.speechEndedAt &&
+    partial &&
+    signals.partialUpdatedAt > signals.speechEndedAt
+  ) {
+    return { ready: false, reason: 'partial_after_speech_end' }
   }
 
   // 本地 X-ASR：VAD 已 speech_end 且 partial 稳定 → 更短路径提交（未完成句不走快速路径）

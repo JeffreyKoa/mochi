@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ($RepoRoot -eq "") {
-    $RepoRoot = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
+    $RepoRoot = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 }
 . (Join-Path $RepoRoot "scripts\lib\daily-log.ps1")
 

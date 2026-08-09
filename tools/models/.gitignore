@@ -1,7 +1,1 @@
-# 模型体积大，本地按 README / download-desktop-models.ps1 下载，勿提交
-**/*.onnx
-**/*.pt
-**/*.bin
-**/*.safetensors
-emotion2vec/**/*
-!emotion2vec/.gitkeep
+# 模型体积大，本地按 README 下载，勿提交（emotion2vec 缓存除外见根 .gitignore）

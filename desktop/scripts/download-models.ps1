@@ -1,14 +1,18 @@
-# 下载桌宠前端 ONNX 到 tools/models/（不含 x-asr / x-tts，sidecar 模型见各子目录）
-# 用法: .\tools\models\download-desktop-models.ps1
+# 下载桌宠前端 ONNX 到 desktop/public/models/（dev + tauri build 随 dist 打包）
+# 用法: .\desktop\scripts\download-models.ps1
+# 从仓库根: powershell -File desktop/scripts/download-models.ps1
 
 $ErrorActionPreference = "Stop"
-$Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$DesktopRoot = Resolve-Path (Join-Path $ScriptDir "..")
+$Root = Join-Path $DesktopRoot "public\models"
 
 $SpeakerDir = Join-Path $Root "speaker"
 $AudioDir = Join-Path $Root "audio"
 $VadDir = Join-Path $Root "vad"
+$FaceDir = Join-Path $Root "face"
 
-New-Item -ItemType Directory -Force -Path $SpeakerDir, $AudioDir, $VadDir | Out-Null
+New-Item -ItemType Directory -Force -Path $SpeakerDir, $AudioDir, $VadDir, $FaceDir | Out-Null
 
 $CamppOut = Join-Path $SpeakerDir "campp.onnx"
 $YamnetOut = Join-Path $AudioDir "yamnet.onnx"
@@ -55,7 +59,7 @@ function Download-WithCurl([string[]]$Urls, [string]$OutPath, [long]$MinBytes, [
 }
 
 Write-Host "Mochi desktop ONNX -> $Root" -ForegroundColor White
-Write-Host "  (ASR/TTS 已在 tools/x-asr、tools/x-tts，本脚本不处理)" -ForegroundColor DarkGray
+Write-Host "  (ASR/TTS 在 tools/x-asr、tools/x-tts，由 restart-backend 管理)" -ForegroundColor DarkGray
 
 Write-Step "Speaker verification (CAM++)"
 $CamppUrls = @(
@@ -81,4 +85,4 @@ $SileroUrls = @(
 Download-WithCurl $SileroUrls $SileroOut 1MB "silero_vad_v5.onnx"
 
 Write-Host ""
-Write-Host "Done. Dev server: /models/* -> tools/models/" -ForegroundColor Green
+Write-Host "Done. Models served at /models/* from desktop/public/models/" -ForegroundColor Green

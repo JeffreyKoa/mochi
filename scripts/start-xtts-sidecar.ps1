@@ -1,8 +1,8 @@
 # Start X-TTS sidecar on the Go server host (Matcha/sherpa-onnx HTTP :8767)
 # Usage:
-#   .\server\scripts\start-xtts-sidecar.ps1
-#   .\server\scripts\start-xtts-sidecar.ps1 -SetupOnly
-#   .\server\scripts\start-xtts-sidecar.ps1 -Port 8767 -BindHost 127.0.0.1
+#   .\scripts\start-xtts-sidecar.ps1
+#   .\scripts\start-xtts-sidecar.ps1 -SetupOnly
+#   .\scripts\start-xtts-sidecar.ps1 -Port 8767 -BindHost 127.0.0.1
 
 param(
     [switch]$SetupOnly,
@@ -13,7 +13,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RepoRoot = Resolve-Path (Join-Path $ScriptDir "..\..")
+$RepoRoot = Resolve-Path (Join-Path $ScriptDir "..")
 $XTtsRoot = Join-Path $RepoRoot "tools\x-tts"
 $SetupScript = Join-Path $XTtsRoot "setup-and-start.ps1"
 

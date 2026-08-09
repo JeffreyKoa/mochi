@@ -544,7 +544,7 @@ async function startVoiceprintEnroll() {
     await enrollVerifier.init()
     if (!enrollVerifier.available) {
       voiceprintError.value =
-        `声纹模型未就绪。请运行 tools/models/download-desktop-models.ps1（${MODEL_PATH_HINTS.speakerCampp}）`
+        `声纹模型未就绪。请运行 npm run prepare:models（${MODEL_PATH_HINTS.speakerCampp}）`
       return
     }
     const embs: Float32Array[] = []
@@ -613,7 +613,7 @@ async function startFaceprintEnroll() {
     await enrollFaceVerifier.init()
     if (!enrollFaceVerifier.available) {
       faceprintError.value =
-        '面容模型未就绪。请将 rec.onnx 放到 public/models/face/rec.onnx'
+        '面容模型未就绪。请将 rec.onnx 放到 desktop/public/models/face/rec.onnx'
       return
     }
     const samples = getFaceprintConfig().enrollSamples || 3

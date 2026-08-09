@@ -1,8 +1,8 @@
 # X-ASR sidecar 健康探测（connect + ping + start/end 空会话）
 # 用法:
-#   .\server\scripts\probe-xasr.ps1
-#   .\server\scripts\probe-xasr.ps1 -WsUrl ws://127.0.0.1:8766
-#   .\server\scripts\probe-xasr.ps1 -GoProbe   # 同时跑 go run ./cmd/xasrprobe
+#   .\scripts\probe-xasr.ps1
+#   .\scripts\probe-xasr.ps1 -WsUrl ws://127.0.0.1:8766
+#   .\scripts\probe-xasr.ps1 -GoProbe   # 同时跑 go run ./cmd/xasrprobe
 
 param(
     [string]$WsUrl = "ws://127.0.0.1:8766",
@@ -11,7 +11,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RepoRoot = Resolve-Path (Join-Path $ScriptDir "..\..")
+$RepoRoot = Resolve-Path (Join-Path $ScriptDir "..")
 
 function Test-TcpPort([string]$HostName, [int]$Port) {
     try {
@@ -33,7 +33,7 @@ if ($port -le 0) { $port = 8766 }
 
 Write-Host "==> TCP $hostName`:$port" -ForegroundColor Cyan
 if (-not (Test-TcpPort $hostName $port)) {
-    Write-Host "FAIL: port not open. Start sidecar: .\server\scripts\start-xasr-sidecar.ps1" -ForegroundColor Red
+    Write-Host "FAIL: port not open. Start sidecar: .\scripts\start-xasr-sidecar.ps1" -ForegroundColor Red
     exit 1
 }
 Write-Host "OK  port open" -ForegroundColor Green

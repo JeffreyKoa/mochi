@@ -4,7 +4,7 @@
  * Model input: `x` with shape [N, T, 80] (Kaldi fbank + global mean norm).
  * Model output: `embedding` with shape [N, 192].
  *
- * 模型文件：tools/models/speaker/campp.onnx（见 tools/models/download-desktop-models.ps1）
+ * 模型文件：desktop/public/models/speaker/campp.onnx（见 desktop/scripts/download-models.ps1）
  * ModelScope keyword: iic/speech_campplus_sv_zh-cn_16k-common
  */
 import * as ort from 'onnxruntime-web/wasm'

@@ -71,6 +71,14 @@ func (h *Handler) WellnessDeferred(userID uint64) bool {
 	return ok && time.Now().Before(until)
 }
 
+// UserVoiceProcessing 用户是否有 voice WebSocket 管线正在跑（ASR/LLM/TTS）。
+func (h *Handler) UserVoiceProcessing(userID uint64) bool {
+	if h.sessions == nil {
+		return false
+	}
+	return h.sessions.IsUserProcessing(userID)
+}
+
 func (h *Handler) SendProactiveReminder(userID, reminderID uint64, message, animation string) bool {
 	if h.sessions == nil {
 		return false
@@ -282,6 +290,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 		processingMu.Lock()
 		processing = true
 		processingMu.Unlock()
+		h.sessions.SetUserProcessing(userID, true)
 		h.DeferWellness(userID, 15*time.Minute)
 
 		resetASR("text_input")
@@ -298,6 +307,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 
 		go func() {
 			defer func() {
+				h.sessions.SetUserProcessing(userID, false)
 				textTurnMu.Lock()
 				textTurnActive = false
 				textTurnMu.Unlock()
@@ -342,20 +352,31 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 		processingMu.Lock()
 		processing = true
 		processingMu.Unlock()
+		h.sessions.SetUserProcessing(userID, true)
 		h.DeferWellness(userID, 15*time.Minute)
 
-		sess.SetState(StateThinking)
-		sender.SendAnimation(StateThinking)
-		_ = sender.Send(MsgTurnAck, map[string]any{})
+		// turn_ack 延后到 ASR final 完成后再发，避免尾音仍在识别时客户端进入 thinking
 
 		go func() {
 			defer func() {
+				h.sessions.SetUserProcessing(userID, false)
 				processingMu.Lock()
 				processing = false
 				processingMu.Unlock()
 				// 本轮结束后预建流式 ASR，避免下一句首包时 asrSess 仍为 nil
 				ensureASR()
 			}()
+
+			thinkingStarted := false
+			beginThinkingTurn := func() {
+				if thinkingStarted {
+					return
+				}
+				thinkingStarted = true
+				sess.SetState(StateThinking)
+				sender.SendAnimation(StateThinking)
+				_ = sender.Send(MsgTurnAck, map[string]any{})
+			}
 
 			asrMu.Lock()
 			activeASR := asrSess
@@ -402,10 +423,12 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 					ensureASR()
 					if partial := strings.TrimSpace(lastPartial); partial != "" {
 						log.Printf("[realtime] asr fallback last_partial session=%s text=%q", sessionID, partial)
+						beginThinkingTurn()
 						h.pipeline.OnTranscript(ctx, sess, partial, sender)
 						lastPartial = ""
 						return
 					}
+					beginThinkingTurn()
 					h.pipeline.OnSpeechEnd(ctx, sess, trimPCMForASR(buf), sender)
 					return
 				}
@@ -438,6 +461,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 						batchText, batchErr := xs.RecognizeBatch(ctx, trimmed)
 						if batchErr == nil && strings.TrimSpace(batchText) != "" {
 							log.Printf("[realtime] streaming asr batch reuse session=%s text=%q", sessionID, batchText)
+							beginThinkingTurn()
 							h.pipeline.OnTranscript(ctx, sess, batchText, sender)
 							lastPartial = ""
 							return
@@ -446,15 +470,18 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 					}
 					log.Printf("[realtime] streaming asr empty, batch fallback session=%s bytes=%d trimmed=%d last_partial=%q",
 						sessionID, len(buf), len(trimmed), lastPartial)
+					beginThinkingTurn()
 					h.pipeline.OnSpeechEnd(ctx, sess, trimmed, sender)
 					lastPartial = ""
 					return
 				}
+				beginThinkingTurn()
 				h.pipeline.OnTranscript(ctx, sess, text, sender)
 				lastPartial = ""
 				return
 			}
 
+			beginThinkingTurn()
 			h.pipeline.OnSpeechEnd(ctx, sess, trimPCMForASR(buf), sender)
 		}()
 	}

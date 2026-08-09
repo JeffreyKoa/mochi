@@ -56,6 +56,29 @@ describe('turnEndArbiter', () => {
     expect(isUnfinishedSpeech('你今天在做什么呢')).toBe(false)
     expect(isUnfinishedSpeech('因为')).toBe(true)
     expect(isUnfinishedSpeech('你说喝什么啤酒好呢？雪花还是')).toBe(true)
+    expect(isUnfinishedSpeech('还是在家里继续开发你的')).toBe(true)
+  })
+
+  it('blocks submit when partial updates after VAD speech_end', () => {
+    const now = 10_000
+    const speechEndedAt = now - 200
+    const d = evaluateTurnEnd(
+      base({
+        partialText: '还是在家里继续开发你的朋友呢',
+        partialUpdatedAt: now - 50,
+        lastSpeechAt: now - 2500,
+        speechEndedAt,
+        speechEndSubmitMs: 400,
+        partialStableMs: 800,
+        minCompleteSilenceMs: 700,
+        unfinishedSilenceMs: 2200,
+        silenceMsConfig: 600,
+        disablePauseProbe: true,
+        now,
+      }),
+    )
+    expect(d.ready).toBe(false)
+    expect(d.reason).toBe('partial_after_speech_end')
   })
 
   it('x-asr speech_end blocks unfinished connective 还是', () => {

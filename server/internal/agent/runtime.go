@@ -701,9 +701,7 @@ func (r *Runtime) Turn(ctx context.Context, input TurnInput) (TurnOutput, error)
 			outChan <- ai.ChatChunk{Done: true}
 
 			// Post-processing execution
-			postStart := time.Now()
-			r.postProcess(context.Background(), pet.ID, input.Message, directReply, agentCtx.EmotionHint)
-			trace.StepTimings.PostTurnMs = time.Since(postStart).Milliseconds()
+			trace.StepTimings.PostTurnMs = r.runPostTurn(input, pet.ID, input.Message, directReply, agentCtx.EmotionHint)
 			trace.DurationMs = time.Since(startTime).Milliseconds()
 			r.logTrace(trace)
 		}()
@@ -737,27 +735,21 @@ func (r *Runtime) Turn(ctx context.Context, input TurnInput) (TurnOutput, error)
 			select {
 			case <-ctx.Done():
 				reply := finalizeReply(fullResponse.String() + sanitizer.Flush() + moodStrip.Flush())
-				postStart := time.Now()
-				r.postProcess(context.Background(), pet.ID, input.Message, reply, agentCtx.EmotionHint)
-				trace.StepTimings.PostTurnMs = time.Since(postStart).Milliseconds()
+				trace.StepTimings.PostTurnMs = r.runPostTurn(input, pet.ID, input.Message, reply, agentCtx.EmotionHint)
 				trace.DurationMs = time.Since(startTime).Milliseconds()
 				r.logTrace(trace)
 				return
 			case chunk, ok := <-chunkChan:
 				if !ok {
 					reply := finalizeReply(fullResponse.String() + sanitizer.Flush() + moodStrip.Flush())
-					postStart := time.Now()
-					r.postProcess(context.Background(), pet.ID, input.Message, reply, agentCtx.EmotionHint)
-					trace.StepTimings.PostTurnMs = time.Since(postStart).Milliseconds()
+					trace.StepTimings.PostTurnMs = r.runPostTurn(input, pet.ID, input.Message, reply, agentCtx.EmotionHint)
 					trace.DurationMs = time.Since(startTime).Milliseconds()
 					r.logTrace(trace)
 					return
 				}
 				if chunk.Done {
 					reply := finalizeReply(fullResponse.String() + sanitizer.Flush() + moodStrip.Flush())
-					postStart := time.Now()
-					r.postProcess(context.Background(), pet.ID, input.Message, reply, agentCtx.EmotionHint)
-					trace.StepTimings.PostTurnMs = time.Since(postStart).Milliseconds()
+					trace.StepTimings.PostTurnMs = r.runPostTurn(input, pet.ID, input.Message, reply, agentCtx.EmotionHint)
 					outChan <- chunk
 					trace.DurationMs = time.Since(startTime).Milliseconds()
 					r.logTrace(trace)
@@ -941,6 +933,33 @@ func (r *Runtime) postProcess(ctx context.Context, petID uint64, userMsg, petRep
 	}
 	r.db.Create(&models.ChatMessage{PetID: petID, Role: "assistant", Content: petReply})
 
+	r.postProcessSideEffects(ctx, petID, userMsg, petReply, quickHint)
+	_, _, _ = r.life.Interact(ctx, petID, "chat")
+}
+
+// postProcessVoice 语音回合：聊天落库同步，记忆/反思等异步，减轻 RDS 与下一语音轮 recall 争抢。
+func (r *Runtime) postProcessVoice(ctx context.Context, petID uint64, userMsg, petReply string, quickHint emotion.Hint) {
+	if r.testPostProcessNotify != nil {
+		select {
+		case r.testPostProcessNotify <- struct{}{}:
+		default:
+		}
+	}
+	if r.testSkipPostProcess {
+		return
+	}
+
+	if strings.TrimSpace(userMsg) != "" {
+		r.db.Create(&models.ChatMessage{PetID: petID, Role: "user", Content: userMsg})
+	}
+	r.db.Create(&models.ChatMessage{PetID: petID, Role: "assistant", Content: petReply})
+	_, _, _ = r.life.Interact(ctx, petID, "chat")
+
+	bg := context.Background()
+	go r.postProcessSideEffects(bg, petID, userMsg, petReply, quickHint)
+}
+
+func (r *Runtime) postProcessSideEffects(ctx context.Context, petID uint64, userMsg, petReply string, quickHint emotion.Hint) {
 	if strings.TrimSpace(userMsg) != "" {
 		_ = r.memory.AddShortTerm(ctx, petID, "user", userMsg)
 	}
@@ -963,8 +982,16 @@ func (r *Runtime) postProcess(ctx context.Context, petID uint64, userMsg, petRep
 	if r.reflection != nil {
 		r.reflection.ReflectAsync(ctx, petID, userMsg, petReply, bondProfile, quickHint.NeedsEmpathy)
 	}
+}
 
-	r.life.Interact(ctx, petID, "chat")
+func (r *Runtime) runPostTurn(input TurnInput, petID uint64, userMsg, petReply string, hint emotion.Hint) (ms int64) {
+	postStart := time.Now()
+	if input.TriggerType == "user_voice" {
+		r.postProcessVoice(context.Background(), petID, userMsg, petReply, hint)
+	} else {
+		r.postProcess(context.Background(), petID, userMsg, petReply, hint)
+	}
+	return time.Since(postStart).Milliseconds()
 }
 
 func (r *Runtime) applyBondFromMessage(ctx context.Context, petID uint64, userMsg, petReply string) {

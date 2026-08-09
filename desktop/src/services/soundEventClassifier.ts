@@ -1,7 +1,7 @@
 /**
  * YAMNet sound-event classifier (521-class AudioSet) via ONNX.
  *
- * 模型文件：tools/models/audio/yamnet.onnx
+ * 模型文件：desktop/public/models/audio/yamnet.onnx
  */
 import * as ort from 'onnxruntime-web/wasm'
 import { fetchOnnxArrayBuffer } from '@/services/onnxFetch'

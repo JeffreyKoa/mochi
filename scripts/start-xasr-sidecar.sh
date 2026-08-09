@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # 在 Go 服务器同机启动 X-ASR sidecar（Linux/macOS）
 # 用法:
-#   ./server/scripts/start-xasr-sidecar.sh
-#   ./server/scripts/start-xasr-sidecar.sh --setup-only
-#   MOCHI_XASR_LOG_DIR=/var/log/mochi/x-asr ./server/scripts/start-xasr-sidecar.sh
+#   ./scripts/start-xasr-sidecar.sh
+#   ./scripts/start-xasr-sidecar.sh --setup-only
+#   MOCHI_XASR_LOG_DIR=/var/log/mochi/x-asr ./scripts/start-xasr-sidecar.sh
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 XASR_ROOT="$REPO_ROOT/tools/x-asr"
 PORT="${MOCHI_XASR_PORT:-8766}"
 BIND_HOST="${MOCHI_XASR_BIND:-127.0.0.1}"

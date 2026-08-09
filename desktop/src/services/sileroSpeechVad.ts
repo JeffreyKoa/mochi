@@ -96,7 +96,7 @@ export class SileroSpeechVad {
       ort.env.wasm.wasmPaths = ORT_BASE
 
       const model = await SileroV5.new(ort, async () => {
-        // 优先 tools/models/vad，缺失时回退 CDN
+        // 优先 public/models/vad，缺失时回退 CDN
         try {
           return await fetchOnnxArrayBuffer(MODEL_URLS.vadSileroV5)
         } catch (e) {

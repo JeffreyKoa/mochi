@@ -1,8 +1,8 @@
 # Start X-ASR sidecar on the Go server host (Phase1 cloud ASR)
 # Usage:
-#   .\server\scripts\start-xasr-sidecar.ps1
-#   .\server\scripts\start-xasr-sidecar.ps1 -SetupOnly
-#   .\server\scripts\start-xasr-sidecar.ps1 -Port 8766 -BindHost 127.0.0.1
+#   .\scripts\start-xasr-sidecar.ps1
+#   .\scripts\start-xasr-sidecar.ps1 -SetupOnly
+#   .\scripts\start-xasr-sidecar.ps1 -Port 8766 -BindHost 127.0.0.1
 #
 # Logs (sidecar_log.py): set MOCHI_XASR_LOG_DIR
 
@@ -14,7 +14,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RepoRoot = Resolve-Path (Join-Path $ScriptDir "..\..")
+$RepoRoot = Resolve-Path (Join-Path $ScriptDir "..")
 $XAsrRoot = Join-Path $RepoRoot "tools\x-asr"
 $SetupScript = Join-Path $XAsrRoot "setup-and-start.ps1"
 

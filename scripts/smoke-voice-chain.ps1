@@ -1,7 +1,7 @@
 # 云端语音链路联调：x-asr sidecar + Go server + 客户端 PCM 路径
 # 用法:
-#   .\server\scripts\smoke-voice-chain.ps1
-#   .\server\scripts\smoke-voice-chain.ps1 -SkipSidecarStart
+#   .\scripts\smoke-voice-chain.ps1
+#   .\scripts\smoke-voice-chain.ps1 -SkipSidecarStart
 
 param(
     [switch]$SkipSidecarStart,
@@ -11,7 +11,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RepoRoot = Resolve-Path (Join-Path $ScriptDir "..\..")
+$RepoRoot = Resolve-Path (Join-Path $ScriptDir "..")
 
 function Write-Step([string]$Msg) {
     Write-Host ""
@@ -37,7 +37,7 @@ if (-not $SkipSidecarStart) {
 
     if (-not $open) {
         Write-Host "Sidecar not running. Start in a separate terminal:" -ForegroundColor Yellow
-        Write-Host "  .\server\scripts\start-xasr-sidecar.ps1" -ForegroundColor Yellow
+        Write-Host "  .\scripts\start-xasr-sidecar.ps1" -ForegroundColor Yellow
         Write-Host "Then re-run this script with -SkipSidecarStart" -ForegroundColor Yellow
         exit 2
     }
