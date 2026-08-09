@@ -33,5 +33,9 @@ tools/python-embed/
 services/emotion2vec/.venv
 services/emotion2vec/.__pycache__
 
-# ONNX 模型体积大，本地按 public/models/*/README.md 下载，勿提交
+# ONNX 模型体积大，本地按 tools/models/README.md 下载，勿提交
+tools/models/**/*.onnx
+tools/models/**/*.pt
+tools/models/emotion2vec/**/*
+!tools/models/emotion2vec/.gitkeep
 desktop/public/models/**/*.onnx

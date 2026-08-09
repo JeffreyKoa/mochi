@@ -4,7 +4,7 @@
  * Model input: `x` with shape [N, T, 80] (Kaldi fbank + global mean norm).
  * Model output: `embedding` with shape [N, 192].
  *
- * Place the model at desktop/public/models/speaker/campp.onnx
+ * 模型文件：tools/models/speaker/campp.onnx（见 tools/models/download-desktop-models.ps1）
  * ModelScope keyword: iic/speech_campplus_sv_zh-cn_16k-common
  */
 import * as ort from 'onnxruntime-web/wasm'
@@ -14,9 +14,11 @@ import {
   fbankFrameCount,
   packFbankBatch,
 } from '@/services/kaldiFbank'
+import { fetchOnnxArrayBuffer } from '@/services/onnxFetch'
+import { MODEL_URLS } from '@/services/modelPaths'
 
 const ORT_BASE = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/'
-const MODEL_URL = '/models/speaker/campp.onnx'
+const MODEL_URL = MODEL_URLS.speakerCampp
 const SAMPLE_RATE = 16000
 const MIN_SAMPLES = SAMPLE_RATE / 2 // 0.5 s
 const FBANK_DIM = 80
@@ -41,9 +43,7 @@ export class SpeakerVerifier {
       ort.env.logLevel = 'error'
       ort.env.wasm.wasmPaths = ORT_BASE
 
-      const res = await fetch(MODEL_URL)
-      if (!res.ok) throw new Error(`model fetch ${res.status}`)
-      const buf = await res.arrayBuffer()
+      const buf = await fetchOnnxArrayBuffer(MODEL_URL)
 
       this.session = await ort.InferenceSession.create(buf, {
         executionProviders: ['wasm'],

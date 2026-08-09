@@ -107,3 +107,18 @@ func TestStreamMoodStripper(t *testing.T) {
 		t.Errorf("mid-tag chunk 2 = %q, want 今晚", got)
 	}
 }
+
+func TestSanitizeForTTS(t *testing.T) {
+	if got := SanitizeForTTS("]在陪主人呀。"); got != "在陪主人呀。" {
+		t.Errorf("SanitizeForTTS stray ] = %q", got)
+	}
+	if got := SanitizeForTTS("worried]不过主人"); got != "不过主人" {
+		t.Errorf("SanitizeForTTS worried] = %q", got)
+	}
+	if got := SanitizeForTTS("le]我在桌面上陪着你呢。"); got != "我在桌面上陪着你呢。" {
+		t.Errorf("SanitizeForTTS le] prefix = %q", got)
+	}
+	if got := SanitizeForTTS("在找吃的呀？[mood快去吃点东西，"); got != "在找吃的呀？" {
+		t.Errorf("SanitizeForTTS broken mood prefix = %q", got)
+	}
+}

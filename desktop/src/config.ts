@@ -154,10 +154,10 @@ export const DEFAULT_XASR: RealtimeXasrConfig = {
   wsUrl: 'ws://127.0.0.1:8766',
   chunkMs: 40,
   silenceMs: 600,
-  partialStableMs: 300,
-  minCompleteSilenceMs: 450,
-  unfinishedSilenceMs: 900,
-  speechEndSubmitMs: 200,
+  partialStableMs: 800,
+  minCompleteSilenceMs: 700,
+  unfinishedSilenceMs: 2200,
+  speechEndSubmitMs: 400,
 }
 
 export const DEFAULT_XTTS: RealtimeXttsConfig = {
@@ -197,7 +197,7 @@ export const DEFAULT_REALTIME: RealtimeClientConfig = {
     nonOwnerReplyCooldownMs: 12000,
   },
   faceprint: {
-    enabled: true,
+    enabled: false,
     required: false,
     matchThreshold: 0.42,
     grayZoneLow: 0.28,

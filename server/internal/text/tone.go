@@ -27,8 +27,10 @@ var (
 	// LLM 误写 [gentle]（缺 mood: 前缀）
 	bareMoodTagRE = regexp.MustCompile(`(?i)\[` + moodTagPattern + `\]`)
 	// 清理流式/漏标产生的残缺标记（如 [mood:pla、m]、playful]）
-	moodTagOrphanRE   = regexp.MustCompile(`(?i)\[mood:[^\]]*\]?`)
+	moodTagOrphanRE   = regexp.MustCompile(`(?i)\[mood:?[^\]]*\]?`)
 	bareMoodOrphanRE  = regexp.MustCompile(`(?i)(` + moodTagPattern + `)\]`)
+	// 流式切 token 残留的 mood 后缀（如 le]、calm] 缺左括号）
+	moodStraySuffixRE = regexp.MustCompile(`(?i)(?:^|[。！？.!?\s])[a-z]{1,10}\]`)
 	moodStrayTailRE   = regexp.MustCompile(`(?i)^m\]`)
 	moodStrayMidRE    = regexp.MustCompile(`([。！？.!?])\s*\]`)
 	strayLeadBracketRE = regexp.MustCompile(`^\s*\]\s*`)
@@ -68,10 +70,20 @@ func StripMoodTags(s string) string {
 	out = bareMoodTagRE.ReplaceAllString(out, "")
 	out = moodTagOrphanRE.ReplaceAllString(out, "")
 	out = bareMoodOrphanRE.ReplaceAllString(out, " ")
+	out = moodStraySuffixRE.ReplaceAllString(out, " ")
 	out = moodStrayTailRE.ReplaceAllString(out, "")
 	out = moodStrayMidRE.ReplaceAllString(out, "$1")
 	out = strayLeadBracketRE.ReplaceAllString(out, "")
 	return collapseSpaces(strings.TrimSpace(out))
+}
+
+// SanitizeForTTS 剥离 mood 标记与流式切 token 残留（如 worried]、]在陪），避免 TTS 播放失败。
+func SanitizeForTTS(s string) string {
+	s = StripMoodTags(s)
+	s = moodStraySuffixRE.ReplaceAllString(s, " ")
+	s = strayLeadBracketRE.ReplaceAllString(s, "")
+	s = collapseSpaces(strings.TrimSpace(s))
+	return s
 }
 
 // MoodTracker 在流式/分句场景下继承上一句 mood。

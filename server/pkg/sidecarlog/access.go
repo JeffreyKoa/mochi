@@ -6,10 +6,43 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 )
 
-const maxBodyLog = 512
+const (
+	maxBodyLog          = 512
+	wsAudioSampleEvery  = 50   // 流式 PCM 每 N 个 chunk 采样一条
+	wsAudioBatchChunk   = 640  // 与 Desktop/x-asr 一致的 20ms@16kHz mono int16
+	wsAudioLargeBytes   = 8192 // 单包超过此大小视为 bulk，单独记一条
+)
+
+// WSSessionStats 单次 sidecar WS 会话的汇总（用于排查 ASR/TTS 链路）。
+type WSSessionStats struct {
+	AudioChunks    int
+	AudioBytes     int
+	EmptyPartials  int
+	TextPartials   int
+	LastPartial    string
+	FinalText      string
+	StartedWaitMS  int64
+	ElapsedMS      int64
+}
+
+type wsStreamKey struct {
+	service, url string
+}
+
+type wsAudioAgg struct {
+	chunks     int
+	bytes      int
+	firstLogAt time.Time
+}
+
+var (
+	wsAggMu     sync.Mutex
+	wsAudioAggs = map[wsStreamKey]*wsAudioAgg{}
+)
 
 // LogHTTP 记录 HTTP sidecar 请求与响应摘要（大 payload 自动截断/脱敏）。
 func LogHTTP(service, method, url string, reqBody []byte, status int, respBody []byte, err error, elapsed time.Duration) {
@@ -34,15 +67,61 @@ func LogWSConnect(service, url string, err error) {
 	log.Printf("[sidecar][%s] WS CONNECT %s ok", service, url)
 }
 
-// LogWSOutbound 记录 WebSocket 出站 JSON 或二进制摘要。
+// LogWSOutbound 记录 WebSocket 出站 JSON 控制帧。
 func LogWSOutbound(service, url, kind string, payload any) {
 	log.Printf("[sidecar][%s] WS -> %s %s payload=%s", service, url, kind, formatPayload(payload))
 }
 
-// LogWSInbound 记录 WebSocket 入站消息。
+// LogWSOutboundPCM 记录出站 PCM：小 chunk 采样聚合，bulk 单包单独记。
+func LogWSOutboundPCM(service, url string, pcmLen int, mode string) {
+	if pcmLen <= 0 {
+		return
+	}
+	key := wsStreamKey{service, url}
+	wsAggMu.Lock()
+	agg := wsAudioAggs[key]
+	if agg == nil {
+		agg = &wsAudioAgg{firstLogAt: time.Now()}
+		wsAudioAggs[key] = agg
+	}
+	agg.chunks++
+	agg.bytes += pcmLen
+	chunks := agg.chunks
+	bytes := agg.bytes
+	wsAggMu.Unlock()
+
+	// bulk 或首包必记；其余按采样间隔记
+	if pcmLen >= wsAudioLargeBytes || chunks == 1 || chunks%wsAudioSampleEvery == 0 {
+		log.Printf("[sidecar][%s] WS -> %s audio mode=%s chunk=%d chunk_bytes=%d total_chunks=%d total_bytes=%d",
+			service, url, mode, chunks, pcmLen, chunks, bytes)
+	}
+}
+
+// LogWSBatchPCMStart 批量识别开始分块发送前记一条汇总。
+func LogWSBatchPCMStart(service, url string, totalBytes, chunkBytes int) {
+	log.Printf("[sidecar][%s] WS -> %s audio mode=batch_start total_bytes=%d chunk_bytes=%d est_chunks=%d",
+		service, url, totalBytes, chunkBytes, (totalBytes+chunkBytes-1)/chunkBytes)
+}
+
+// LogWSInbound 记录 WebSocket 入站消息（非空 partial / final / started / error）。
 func LogWSInbound(service, url, kind string, payload any) {
 	log.Printf("[sidecar][%s] WS <- %s %s payload=%s", service, url, kind, formatPayload(payload))
 }
+
+// LogWSSessionSummary 会话结束汇总：便于对照「发了多少音频、收到多少 partial、final 是否为空」。
+func LogWSSessionSummary(service, url, reason string, st WSSessionStats) {
+	wsAggMu.Lock()
+	delete(wsAudioAggs, wsStreamKey{service, url})
+	wsAggMu.Unlock()
+	log.Printf("[sidecar][%s] WS session summary %s reason=%s audio_chunks=%d audio_bytes=%d empty_partials=%d text_partials=%d last_partial=%q final=%q started_wait_ms=%d elapsed_ms=%d",
+		service, url, reason,
+		st.AudioChunks, st.AudioBytes, st.EmptyPartials, st.TextPartials,
+		truncate(st.LastPartial, 80), truncate(st.FinalText, 120),
+		st.StartedWaitMS, st.ElapsedMS)
+}
+
+// WSBatchChunkBytes 返回批量发送推荐 chunk 大小。
+func WSBatchChunkBytes() int { return wsAudioBatchChunk }
 
 func summarizeReqBody(body []byte) string {
 	if len(body) == 0 {

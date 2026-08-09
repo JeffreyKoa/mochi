@@ -10,9 +10,11 @@ import {
 import { SileroV5 } from '@ricky0123/vad-web/dist/models/v5'
 import * as ort from 'onnxruntime-web/wasm'
 import type { RealtimeVadConfig } from '@/config'
+import { fetchOnnxArrayBuffer, OnnxFetchError } from '@/services/onnxFetch'
+import { MODEL_URLS } from '@/services/modelPaths'
 
 const VAD_VER = '0.0.30'
-const VAD_BASE = `https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@${VAD_VER}/dist/`
+const VAD_CDN_BASE = `https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@${VAD_VER}/dist/`
 const ORT_BASE = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/'
 
 const FRAME_SAMPLES = 512
@@ -46,19 +48,19 @@ export class HybridSpeechVad {
     if (!ok) this.silero = null
   }
 
-  /** During TTS playback: disable Silero and raise energy threshold to reduce echo false triggers. */
+  /** During TTS playback: disable Silero and energy VAD to reduce echo false triggers. */
   setPlaybackMode(playing: boolean) {
     this.playbackMode = playing
     this.energy.setPeakThreshold(playing ? this.playbackPeak : this.idlePeak)
+    this.energy.setEnabled(!playing)
     if (playing) {
       this.silero?.reset()
     }
   }
 
   feed(samples: Float32Array) {
-    if (!this.playbackMode) {
-      this.silero?.feed(samples)
-    }
+    if (this.playbackMode) return
+    this.silero?.feed(samples)
     this.energy.feed(samples)
   }
 
@@ -94,9 +96,13 @@ export class SileroSpeechVad {
       ort.env.wasm.wasmPaths = ORT_BASE
 
       const model = await SileroV5.new(ort, async () => {
-        const res = await fetch(`${VAD_BASE}silero_vad_v5.onnx`)
-        if (!res.ok) throw new Error(`model fetch ${res.status}`)
-        return res.arrayBuffer()
+        // 优先 tools/models/vad，缺失时回退 CDN
+        try {
+          return await fetchOnnxArrayBuffer(MODEL_URLS.vadSileroV5)
+        } catch (e) {
+          if (!(e instanceof OnnxFetchError)) throw e
+          return fetchOnnxArrayBuffer(`${VAD_CDN_BASE}silero_vad_v5.onnx`)
+        }
       })
 
       this.processor = new FrameProcessor(
@@ -186,7 +192,18 @@ export class EnergySpeechVad {
     this.peakThreshold = threshold
   }
 
+  /** 播放 TTS 时完全关闭能量 VAD，避免回声触发 speech_start。 */
+  setEnabled(enabled: boolean) {
+    if (!enabled) {
+      this.reset()
+    }
+    this.enabled = enabled
+  }
+
+  private enabled = true
+
   feed(samples: Float32Array) {
+    if (!this.enabled) return
     let peak = 0
     for (let i = 0; i < samples.length; i++) {
       peak = Math.max(peak, Math.abs(samples[i]))

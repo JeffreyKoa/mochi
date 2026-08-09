@@ -84,4 +84,7 @@ func TestIsNoiseTranscript(t *testing.T) {
 	if p.isNoiseTranscript("喂") {
 		t.Fatalf("expected valid for '喂'")
 	}
+	if p.isNoiseTranscript("") {
+		t.Fatalf("empty text should not be noise filler")
+	}
 }

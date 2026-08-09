@@ -59,6 +59,10 @@ async function broadcastVoiceOwner(owner: VoiceOwner) {
 /** Take voice ownership (the other window should disconnect on event). */
 export async function claimVoiceOwner(owner: VoiceOwner) {
   await broadcastVoiceOwner(owner)
+  // 给另一 WebView 时间 yield WS，避免 4001 replaced by new session
+  if (isTauri()) {
+    await new Promise((r) => setTimeout(r, 220))
+  }
 }
 
 /** Release ownership; hand voice back to pet when chat closes. */

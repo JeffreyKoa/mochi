@@ -160,12 +160,17 @@ Install-CudaTorchIfNeeded
 
 # Step 3: env vars (auto-detect cuda/cpu)
 Write-Host "[3/4] Environment..." -ForegroundColor Yellow
+$RepoRootForCache = if ($RepoRoot -ne "") { $RepoRoot } else { (Resolve-Path (Join-Path $Root "..\..")).Path }
+$ModelScopeCache = Join-Path $RepoRootForCache "tools\models\emotion2vec"
+New-Item -ItemType Directory -Force -Path $ModelScopeCache | Out-Null
+if (-not $env:MODELSCOPE_CACHE) { $env:MODELSCOPE_CACHE = $ModelScopeCache }
 if (-not $env:EMOTION2VEC_MODEL) { $env:EMOTION2VEC_MODEL = "iic/emotion2vec_plus_base" }
 if (-not $env:EMOTION2VEC_HUB) { $env:EMOTION2VEC_HUB = "ms" }
 if (-not $env:EMOTION2VEC_PORT) { $env:EMOTION2VEC_PORT = "8091" }
 $env:EMOTION2VEC_DEVICE = Resolve-EmotionDevice
 
 Write-Host "  Model : $env:EMOTION2VEC_MODEL"
+Write-Host "  Cache : $env:MODELSCOPE_CACHE"
 Write-Host "  Device: $env:EMOTION2VEC_DEVICE"
 Write-Host "  Port  : $env:EMOTION2VEC_PORT"
 

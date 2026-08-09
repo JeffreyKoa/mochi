@@ -7,17 +7,152 @@ import { getPetAnimIntervalMs } from '@/services/lowPowerMode'
 
 const pet = usePetStore()
 const canvasRef = ref<HTMLCanvasElement>()
-/** PIXI 初始化失败时显示可见占位，避免透明窗体完全点不透 */
+/** PIXI 初始化失败或 WebGL 丢失时显示占位，避免透明窗体完全空白 */
 const pixiFailed = ref(false)
+const renderStale = ref(false)
 
 const CANVAS_W = 280
 const CANVAS_H = 280
 const BODY_R = 48
 const BODY_CY = 18
+const RENDER_STALE_MS = 8000
 
 let app: PIXI.Application | null = null
 let petGraphic: PIXI.Graphics | null = null
 let animTimer: ReturnType<typeof setInterval> | null = null
+let renderWatchdog: ReturnType<typeof setInterval> | null = null
+let initInFlight = false
+let lastDrawAt = 0
+let ctxLostHandler: ((ev: Event) => void) | null = null
+let ctxRestoredHandler: ((ev: Event) => void) | null = null
+function markDrawn() {
+  lastDrawAt = Date.now()
+  if (renderStale.value) renderStale.value = false
+}
+
+function stopAnimLoop() {
+  if (animTimer) {
+    clearInterval(animTimer)
+    animTimer = null
+  }
+}
+
+function stopRenderWatchdog() {
+  if (renderWatchdog) {
+    clearInterval(renderWatchdog)
+    renderWatchdog = null
+  }
+}
+
+function startRenderWatchdog() {
+  stopRenderWatchdog()
+  lastDrawAt = Date.now()
+  renderWatchdog = setInterval(() => {
+    if (pixiFailed.value || !app || !petGraphic) return
+    if (Date.now() - lastDrawAt > RENDER_STALE_MS) {
+      renderStale.value = true
+      console.warn('[pet] render stale >%dms, reinit PIXI', RENDER_STALE_MS)
+      void reinitPixi('render_stale')
+    }
+  }, 2000)
+}
+
+function detachCanvasContextHandlers() {
+  const canvas = canvasRef.value
+  if (!canvas) return
+  if (ctxLostHandler) {
+    canvas.removeEventListener('webglcontextlost', ctxLostHandler)
+    ctxLostHandler = null
+  }
+  if (ctxRestoredHandler) {
+    canvas.removeEventListener('webglcontextrestored', ctxRestoredHandler)
+    ctxRestoredHandler = null
+  }
+}
+
+function attachCanvasContextHandlers() {
+  const canvas = canvasRef.value
+  if (!canvas) return
+  detachCanvasContextHandlers()
+  ctxLostHandler = (ev: Event) => {
+    ev.preventDefault()
+    console.error('[pet] WebGL context lost')
+    renderStale.value = true
+    void reinitPixi('webgl_context_lost')
+  }
+  ctxRestoredHandler = () => {
+    console.warn('[pet] WebGL context restored')
+    void reinitPixi('webgl_context_restored')
+  }
+  canvas.addEventListener('webglcontextlost', ctxLostHandler)
+  canvas.addEventListener('webglcontextrestored', ctxRestoredHandler)
+}
+
+function destroyPixi() {
+  stopAnimLoop()
+  stopRenderWatchdog()
+  detachCanvasContextHandlers()
+  if (app) {
+    app.destroy(true)
+    app = null
+  }
+  petGraphic = null
+}
+
+async function initPixi(reason: string): Promise<boolean> {
+  if (!canvasRef.value || initInFlight) return false
+  initInFlight = true
+  try {
+    destroyPixi()
+    pixiFailed.value = false
+    renderStale.value = false
+
+    app = new PIXI.Application()
+    await app.init({
+      canvas: canvasRef.value,
+      width: CANVAS_W,
+      height: CANVAS_H,
+      backgroundAlpha: 0,
+      antialias: true,
+      resolution: window.devicePixelRatio || 1,
+      autoDensity: true,
+    })
+
+    petGraphic = new PIXI.Graphics()
+    petGraphic.pivot.set(0, BODY_CY)
+    petGraphic.x = CANVAS_W / 2
+    petGraphic.y = CANVAS_H / 2 + BODY_CY
+    petGraphic.scale.x = pet.facing === 'left' ? -1 : 1
+    app.stage.addChild(petGraphic)
+
+    attachCanvasContextHandlers()
+    startAnimLoop(pet.currentAnimation)
+    startRenderWatchdog()
+    markDrawn()
+    console.info('[pet] PIXI init ok reason=%s', reason)
+    return true
+  } catch (e) {
+    console.error('[pet] PIXI init failed reason=%s', reason, e)
+    pixiFailed.value = true
+    renderStale.value = false
+    destroyPixi()
+    return false
+  } finally {
+    initInFlight = false
+  }
+}
+
+async function reinitPixi(reason: string) {
+  await initPixi(reason)
+}
+
+function onVisibilityRestore() {
+  if (document.visibilityState !== 'visible') return
+  if (pixiFailed.value || renderStale.value || !app) {
+    void reinitPixi('visibility_restore')
+  }
+}
+
 let bounceOffset = 0
 let legSwing = 0
 let earWiggle = 0
@@ -408,10 +543,11 @@ function drawPet(color: number, scale = 1, eyeOpen = true, face: BurstFace = bur
     petGraphic.ellipse(28, 14 + cy, 3, 5)
     petGraphic.fill({ color: 0x6eb5ff, alpha: 0.55 })
   }
+  markDrawn()
 }
 
 function startAnimLoop(anim: Animation) {
-  if (animTimer) clearInterval(animTimer)
+  stopAnimLoop()
   let frame = 0
 
   animTimer = setInterval(() => {
@@ -521,33 +657,14 @@ watch(() => pet.animationColors, () => {
   applyDanceTransform(pet.currentAnimation)
 }, { deep: true })
 
+function onWindowRecover() {
+  void reinitPixi('window_recover')
+}
+
 onMounted(async () => {
-  if (!canvasRef.value) return
-
-  try {
-    app = new PIXI.Application()
-    await app.init({
-      canvas: canvasRef.value,
-      width: CANVAS_W,
-      height: CANVAS_H,
-      backgroundAlpha: 0,
-      antialias: true,
-      resolution: window.devicePixelRatio || 1,
-      autoDensity: true,
-    })
-
-    petGraphic = new PIXI.Graphics()
-    petGraphic.pivot.set(0, BODY_CY)
-    petGraphic.x = CANVAS_W / 2
-    petGraphic.y = CANVAS_H / 2 + BODY_CY
-    petGraphic.scale.x = pet.facing === 'left' ? -1 : 1
-    app.stage.addChild(petGraphic)
-
-    startAnimLoop(pet.currentAnimation)
-  } catch (e) {
-    console.error('[pet] PIXI init failed', e)
-    pixiFailed.value = true
-  }
+  await initPixi('mount')
+  document.addEventListener('visibilitychange', onVisibilityRestore)
+  window.addEventListener('mochi:pet-render-recover', onWindowRecover)
 })
 
 watch(() => pet.currentAnimation, (anim) => {
@@ -558,16 +675,34 @@ watch(() => pet.facing, () => {
   applyDanceTransform(pet.currentAnimation)
 })
 
+function retryRender() {
+  void reinitPixi('user_retry')
+}
+
 onUnmounted(() => {
-  if (animTimer) clearInterval(animTimer)
-  app?.destroy(true)
+  document.removeEventListener('visibilitychange', onVisibilityRestore)
+  window.removeEventListener('mochi:pet-render-recover', onWindowRecover)
+  destroyPixi()
 })
 </script>
 
 <template>
   <div class="pet-canvas-wrap">
-    <canvas ref="canvasRef" class="pet-canvas" :class="{ 'pet-canvas--hidden': pixiFailed }" />
-    <div v-if="pixiFailed" class="pet-fallback" aria-label="Mochi">🍡</div>
+    <canvas
+      ref="canvasRef"
+      class="pet-canvas"
+      :class="{ 'pet-canvas--hidden': pixiFailed || renderStale }"
+    />
+    <div
+      v-if="pixiFailed || renderStale"
+      class="pet-fallback"
+      aria-label="Mochi"
+      @click.stop="retryRender"
+    >
+      <span class="pet-fallback-emoji">🍡</span>
+      <span v-if="renderStale && !pixiFailed" class="pet-fallback-hint">渲染恢复中…</span>
+      <span v-else class="pet-fallback-hint">点我恢复</span>
+    </div>
   </div>
 </template>
 
@@ -594,11 +729,26 @@ onUnmounted(() => {
   width: 280px;
   height: 280px;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 8px;
   font-size: 96px;
   line-height: 1;
   filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.25));
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: pointer;
+  user-select: none;
+}
+
+.pet-fallback-emoji {
+  font-size: 96px;
+  line-height: 1;
+}
+
+.pet-fallback-hint {
+  font-size: 12px;
+  color: #c2185b;
+  font-weight: 600;
 }
 </style>

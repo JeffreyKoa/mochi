@@ -1,20 +1,21 @@
 /**
  * 主人人脸识别（P2）：客户端 InsightFace 风格 ONNX embedding。
  *
- * 识别模型：desktop/public/models/face/rec.onnx
+ * 识别模型：tools/models/face/rec.onnx（当前版本未启用，见 modelPaths.FACE_RECOGNITION_ENABLED）
  *   输入 [1, 3, 112, 112]，像素 (x - 127.5) / 128
  *   输出 512 维 embedding（维度以模型为准）
  *
- * 可选检测模型：desktop/public/models/face/det.onnx
+ * 可选检测模型：tools/models/face/det.onnx
  *   未放置时退化为画面中心 square crop（录入时正对镜头即可）
  *
  * ModelScope / InsightFace buffalo_l 可导出 w600k_r50.onnx 作 rec。
  */
 import * as ort from 'onnxruntime-web/wasm'
 import { faceDetector, type FaceCropRect } from '@/services/faceDet'
+import { FACE_RECOGNITION_ENABLED, MODEL_URLS } from '@/services/modelPaths'
 
 const ORT_BASE = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/'
-const REC_MODEL_URL = '/models/face/rec.onnx'
+const REC_MODEL_URL = MODEL_URLS.faceRec
 const INPUT_SIZE = 112
 const MIN_FACE_SIDE = 48
 /** 低于此分视为「看不清脸」，不算 detected（中心 crop 误检）。 */
@@ -102,6 +103,11 @@ export class FaceVerifier {
   }
 
   async init(): Promise<void> {
+    if (!FACE_RECOGNITION_ENABLED) {
+      this._available = false
+      this._detAvailable = false
+      return
+    }
     try {
       ort.env.logLevel = 'error'
       ort.env.wasm.wasmPaths = ORT_BASE

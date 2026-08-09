@@ -1,13 +1,14 @@
 /**
  * YAMNet sound-event classifier (521-class AudioSet) via ONNX.
  *
- * Place exported YAMNet ONNX at desktop/public/models/audio/yamnet.onnx
- * (not wired into the realtime pipeline yet — standalone module).
+ * 模型文件：tools/models/audio/yamnet.onnx
  */
 import * as ort from 'onnxruntime-web/wasm'
+import { fetchOnnxArrayBuffer } from '@/services/onnxFetch'
+import { MODEL_URLS } from '@/services/modelPaths'
 
 const ORT_BASE = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/'
-const MODEL_URL = '/models/audio/yamnet.onnx'
+const MODEL_URL = MODEL_URLS.audioYamnet
 const WINDOW_SAMPLES = 15360 // 0.96 s @ 16 kHz
 
 /** YAMNet AudioSet indices that represent human speech or vocalization. */
@@ -64,9 +65,7 @@ export class SoundEventClassifier {
       ort.env.logLevel = 'error'
       ort.env.wasm.wasmPaths = ORT_BASE
 
-      const res = await fetch(MODEL_URL)
-      if (!res.ok) throw new Error(`model fetch ${res.status}`)
-      const buf = await res.arrayBuffer()
+      const buf = await fetchOnnxArrayBuffer(MODEL_URL)
 
       this.session = await ort.InferenceSession.create(buf, {
         executionProviders: ['wasm'],

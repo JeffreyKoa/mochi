@@ -3,9 +3,10 @@
  * 参考 insightface/model_zoo/scrfd.py
  */
 import * as ort from 'onnxruntime-web/wasm'
+import { FACE_RECOGNITION_ENABLED, MODEL_URLS } from '@/services/modelPaths'
 
 const ORT_BASE = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/'
-const DET_MODEL_URL = '/models/face/det.onnx'
+const DET_MODEL_URL = MODEL_URLS.faceDet
 const DET_SIZE = 640
 const DET_THRESH = 0.5
 const NMS_THRESH = 0.4
@@ -107,6 +108,10 @@ export class FaceDetector {
   }
 
   async init(): Promise<void> {
+    if (!FACE_RECOGNITION_ENABLED) {
+      this._available = false
+      return
+    }
     try {
       ort.env.logLevel = 'error'
       ort.env.wasm.wasmPaths = ORT_BASE

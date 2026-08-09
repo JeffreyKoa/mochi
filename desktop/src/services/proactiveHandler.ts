@@ -10,11 +10,9 @@ export function wasProactiveRecentlyShown(text: string): boolean {
 export type ProactiveOptions = {
   /** When true, use persistent reminder bubble (voice chat should pass true). */
   priority?: boolean
-  /** When true, skip browser speechSynthesis (server TTS will speak). */
-  skipSpeak?: boolean
 }
 
-/** Show reminder/proactive UI. Caller should append chat message separately. */
+/** Show reminder/proactive UI. 语音朗读由 realtimeStore.speakCloudOnly 经 /ws/voice 下发。 */
 export function handleProactiveMessage(payload: ProactivePayload, opts: ProactiveOptions = {}) {
   if (!payload.message?.trim()) return
   const now = Date.now()
@@ -30,17 +28,4 @@ export function handleProactiveMessage(payload: ProactivePayload, opts: Proactiv
   }
   void broadcastProactive(payload)
   void notifyTasksRefresh()
-  if (!opts.skipSpeak) {
-    speakReminder(payload.message)
-  }
-}
-
-function speakReminder(text: string) {
-  if (localStorage.getItem('mochi_reminder_voice') === '0') return
-  if (typeof window === 'undefined' || !window.speechSynthesis) return
-  window.speechSynthesis.cancel()
-  const utterance = new SpeechSynthesisUtterance(text)
-  utterance.lang = 'zh-CN'
-  utterance.rate = 1.05
-  window.speechSynthesis.speak(utterance)
 }

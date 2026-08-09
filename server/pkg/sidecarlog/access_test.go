@@ -26,3 +26,9 @@ func TestSummarizeHTTPRespBinary(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestWSBatchChunkBytes(t *testing.T) {
+	if WSBatchChunkBytes() != 640 {
+		t.Fatalf("chunk=%d want 640", WSBatchChunkBytes())
+	}
+}

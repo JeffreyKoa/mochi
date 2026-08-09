@@ -45,22 +45,48 @@ export class RealtimeSession {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
   /** Suppress disconnected event when replacing an existing socket during connect(). */
   private replacing = false
+  /** 本连接是否已发送 client_caps（避免重复日志与状态覆盖）。 */
+  private clientCapsSent = false
 
-  connect(): Promise<void> {
+  connect(timeoutMs = 12000): Promise<void> {
+    const token = getToken()
+    if (!token) {
+      return Promise.reject(new Error('not logged in'))
+    }
+
+    // 已连通：禁止 close+重建（日志里 5s 内双 connect 的主因）
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      return Promise.resolve()
+    }
+
+    // 握手进行中：复用同一 promise
+    if (this.connectPromise) {
+      return this.connectPromise
+    }
+
+    this.connectPromise = this.connectOnce(timeoutMs)
+    return this.connectPromise
+  }
+
+  private connectOnce(timeoutMs: number): Promise<void> {
     return new Promise((resolve, reject) => {
-      const token = getToken()
-      if (!token) {
-        reject(new Error('not logged in'))
-        return
-      }
-
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const base = getApiBase()
       const url = base
-        ? `${base.replace(/^http/, 'ws')}/ws/voice?token=${encodeURIComponent(token)}`
-        : `${proto}//${window.location.host}/ws/voice?token=${encodeURIComponent(token)}`
+        ? `${base.replace(/^http/, 'ws')}/ws/voice?token=${encodeURIComponent(getToken()!)}`
+        : `${proto}//${window.location.host}/ws/voice?token=${encodeURIComponent(getToken()!)}`
 
-      if (this.ws) {
+      const existing = this.ws?.readyState
+      if (existing === WebSocket.CONNECTING) {
+        // 极端竞态：旧 socket 仍在 CONNECTING，先关掉再建新连接
+        this.replacing = true
+        this.ws!.onopen = null
+        this.ws!.onmessage = null
+        this.ws!.onerror = null
+        this.ws!.onclose = null
+        this.ws!.close()
+        this.ws = null
+      } else if (this.ws) {
         this.replacing = true
         this.ws.onopen = null
         this.ws.onmessage = null
@@ -70,14 +96,38 @@ export class RealtimeSession {
         this.ws = null
       }
 
+      let settled = false
+      let opened = false
+      const finish = (fn: () => void) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        this.connectPromise = null
+        fn()
+      }
+
+      const timer = setTimeout(() => {
+        finish(() => {
+          this.replacing = false
+          try {
+            this.ws?.close()
+          } catch {
+            // ignore
+          }
+          this.ws = null
+          reject(new Error('websocket connect timeout'))
+        })
+      }, timeoutMs)
+
       this.ws = new WebSocket(url)
       this.ws.binaryType = 'arraybuffer'
 
       this.ws.onopen = () => {
+        opened = true
         this.replacing = false
         this.startHeartbeat()
         this.emit({ type: 'connected' })
-        resolve()
+        finish(resolve)
       }
 
       this.ws.onmessage = (e) => {
@@ -108,20 +158,28 @@ export class RealtimeSession {
           ev.code,
           ev.reason || '',
         )
+        if (!opened) {
+          finish(() =>
+            reject(new Error(`websocket closed before open code=${ev.code}`)),
+          )
+          return
+        }
+        this.connectPromise = null
         this.emit({ type: 'disconnected' })
       }
 
       this.ws.onerror = () => {
-        if (!this.replacing) {
-          console.warn('[realtime] /ws/voice error target=', url.replace(/token=[^&]+/, 'token=***'))
-          reject(new Error('websocket error'))
-        }
+        if (this.replacing) return
+        console.warn('[realtime] /ws/voice error target=', url.replace(/token=[^&]+/, 'token=***'))
+        finish(() => reject(new Error('websocket error')))
       }
     })
   }
 
   disconnect() {
     this.stopHeartbeat()
+    this.connectPromise = null
+    this.clientCapsSent = false
     this.ws?.close()
     this.ws = null
   }
@@ -185,13 +243,16 @@ export class RealtimeSession {
     return this.send('speak_only', { text })
   }
 
-  async sendClientCaps(options?: { localTts?: boolean }): Promise<boolean> {
+  async sendClientCaps(options?: { localTts?: boolean; force?: boolean }): Promise<boolean> {
+    if (this.clientCapsSent && !options?.force) return true
     const aecEnabled = await probeAecEnabled()
-    return this.send('client_caps', {
+    const sent = this.send('client_caps', {
       opus_decode: isOpusDecodeSupported(),
       aec_enabled: aecEnabled,
       local_tts: options?.localTts ?? false,
     })
+    if (sent) this.clientCapsSent = true
+    return sent
   }
 
   sendPrewarm(): boolean {

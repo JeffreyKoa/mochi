@@ -42,13 +42,17 @@ type Handler struct {
 }
 
 func NewHandler(authSvc *auth.Service, chatSvc *chat.Service, appCfg *config.Config) *Handler {
-	return &Handler{
+	h := &Handler{
 		authSvc:  authSvc,
 		pipeline: NewPipeline(chatSvc, appCfg.Realtime, appCfg),
 		cfg:      appCfg.Realtime,
 		sessions: NewRegistry(),
 		deferUntil: make(map[uint64]time.Time),
 	}
+	if h.pipeline != nil && appCfg.Realtime.Enabled {
+		h.pipeline.PrewarmASR(context.Background())
+	}
+	return h
 }
 
 func (h *Handler) DeferWellness(userID uint64, d time.Duration) {
@@ -198,10 +202,11 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 		return nil
 	})
 
-	resetASR := func() {
+	resetASR := func(reason string) {
 		asrMu.Lock()
 		defer asrMu.Unlock()
 		if asrSess != nil {
+			log.Printf("[realtime] asr session reset session=%s reason=%s", sessionID, reason)
 			asrSess.Close()
 			asrSess = nil
 		}
@@ -243,7 +248,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 
 	interrupt := func() {
 		h.pipeline.Interrupt(sess, sender)
-		resetASR()
+		resetASR("interrupt")
 		audioMu.Lock()
 		audioBuf = audioBuf[:0]
 		audioMu.Unlock()
@@ -279,7 +284,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 		processingMu.Unlock()
 		h.DeferWellness(userID, 15*time.Minute)
 
-		resetASR()
+		resetASR("text_input")
 		audioMu.Lock()
 		audioBuf = audioBuf[:0]
 		audioMu.Unlock()
@@ -354,6 +359,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 
 			asrMu.Lock()
 			activeASR := asrSess
+			asrSess = nil
 			asrMu.Unlock()
 
 			sess.SetTurnPCM(buf)
@@ -361,15 +367,39 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 				h.pipeline.PrefetchAcoustic(ctx, sess, buf)
 			}
 
-			asrMu.Lock()
-			asrSess = nil
-			asrMu.Unlock()
+			closeASR := func() {
+				if activeASR != nil {
+					activeASR.Close()
+					activeASR = nil
+				}
+			}
+			// 识别结束后复用 WS，减少下一句 started_wait_ms。
+			restartASR := func() bool {
+				xs, ok := activeASR.(*xasrSession)
+				if !ok || activeASR == nil {
+					closeASR()
+					ensureASR()
+					return false
+				}
+				if err := xs.Restart(ctx); err != nil {
+					log.Printf("[realtime] asr restart failed session=%s: %v", sessionID, err)
+					closeASR()
+					ensureASR()
+					return false
+				}
+				asrMu.Lock()
+				asrSess = activeASR
+				asrMu.Unlock()
+				log.Printf("[realtime] asr session reused session=%s", sessionID)
+				return true
+			}
 
 			if activeASR != nil {
 				text, err := activeASR.Finish(ctx)
-				activeASR.Close()
 				if err != nil {
 					log.Printf("[realtime] streaming asr finish error session=%s: %v", sessionID, err)
+					closeASR()
+					ensureASR()
 					if partial := strings.TrimSpace(lastPartial); partial != "" {
 						log.Printf("[realtime] asr fallback last_partial session=%s text=%q", sessionID, partial)
 						h.pipeline.OnTranscript(ctx, sess, partial, sender)
@@ -379,13 +409,43 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 					h.pipeline.OnSpeechEnd(ctx, sess, trimPCMForASR(buf), sender)
 					return
 				}
+				restartASR()
 				if text == "" {
 					text = lastPartial
 				}
-				// 流式空结果但缓冲有足够音频 → 批量 ASR 回退（常见于 WS 断流后仅 buf 有有效 PCM）
+				if text != "" {
+					log.Printf("[realtime] streaming asr final session=%s text=%q bytes=%d", sessionID, text, len(buf))
+				}
+				// 流式空结果：无 partial 时直接 dismiss，不走 batch（省 4–6s 且 batch 对空流式常仍为空）
 				if text == "" && len(buf) >= minBatchASRFallbackBytes {
 					trimmed := trimPCMForASR(buf)
-					log.Printf("[realtime] streaming asr empty, batch fallback session=%s bytes=%d trimmed=%d", sessionID, len(buf), len(trimmed))
+					if strings.TrimSpace(lastPartial) == "" {
+						log.Printf("[realtime] streaming asr empty skip batch session=%s bytes=%d trimmed=%d",
+							sessionID, len(buf), len(trimmed))
+						sess.SetTurnPCM(trimmed)
+						sess.SetTurnAudioBytes(len(trimmed))
+						if h.pipeline != nil {
+							h.pipeline.AbortEmptyASR(ctx, sess, sender)
+						}
+						lastPartial = ""
+						return
+					}
+					// 有 partial 线索时在同 WS 上 batch 识别，避免 Recognize 新建连接
+					asrMu.Lock()
+					batchSess := asrSess
+					asrMu.Unlock()
+					if xs, ok := batchSess.(*xasrSession); ok && len(trimmed) > 0 {
+						batchText, batchErr := xs.RecognizeBatch(ctx, trimmed)
+						if batchErr == nil && strings.TrimSpace(batchText) != "" {
+							log.Printf("[realtime] streaming asr batch reuse session=%s text=%q", sessionID, batchText)
+							h.pipeline.OnTranscript(ctx, sess, batchText, sender)
+							lastPartial = ""
+							return
+						}
+						log.Printf("[realtime] streaming asr batch reuse empty session=%s err=%v", sessionID, batchErr)
+					}
+					log.Printf("[realtime] streaming asr empty, batch fallback session=%s bytes=%d trimmed=%d last_partial=%q",
+						sessionID, len(buf), len(trimmed), lastPartial)
 					h.pipeline.OnSpeechEnd(ctx, sess, trimmed, sender)
 					lastPartial = ""
 					return
@@ -402,7 +462,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 	for {
 		select {
 		case <-ctx.Done():
-			resetASR()
+			resetASR("disconnect")
 			return
 		default:
 		}
@@ -410,7 +470,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
 			log.Printf("[realtime] read error session=%s: %v", sessionID, err)
-			resetASR()
+			resetASR("read_error")
 			return
 		}
 
@@ -474,12 +534,36 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 
         case MsgAudioStart:
 			// Client detected owner speech — begin a fresh utterance buffer.
-			log.Printf("[realtime] audio_start session=%s", sessionID)
+			st := sess.State()
+			// TTS/思考中忽略 audio_start（应由 barge-in 或 utterance 结束后再开新轮）。
+			if st == StateSpeaking || st == StateThinking {
+				log.Printf("[realtime] audio_start ignored session=%s state=%s", sessionID, st)
+				break
+			}
+			audioMu.Lock()
+			bufLen := len(audioBuf)
+			audioMu.Unlock()
+			asrMu.Lock()
+			hasASR := asrSess != nil
+			asrMu.Unlock()
+			// 已有 PCM 缓冲时不 reset ASR，避免打断进行中的 utterance。
+			if bufLen > 0 {
+				log.Printf("[realtime] audio_start with buffer session=%s buf_bytes=%d skip_reset=true", sessionID, bufLen)
+				sess.SetState(StateListening)
+				sender.SendAnimation(StateListening)
+				break
+			}
+			// 已在聆听且无缓冲、ASR 已就绪时跳过 reset，避免重复 audio_start 打断识别。
+			if st == StateListening && hasASR {
+				log.Printf("[realtime] audio_start dedup session=%s state=%s skip_reset=true", sessionID, st)
+				break
+			}
+			log.Printf("[realtime] audio_start session=%s state=%s buf_bytes=%d had_asr=%v", sessionID, st, bufLen, hasASR)
 			audioMu.Lock()
 			audioBuf = audioBuf[:0]
 			audioMu.Unlock()
 			vad.Reset()
-			resetASR()
+			resetASR("audio_start")
 			sess.ClearTurnMedia()
 			sess.SetState(StateListening)
 			sender.SendAnimation(StateListening)
@@ -550,7 +634,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 			if curASR != nil {
 				if err := curASR.SendAudio(pcm); err != nil {
 					log.Printf("[realtime] asr send error session=%s: %v", sessionID, err)
-					resetASR()
+					resetASR("asr_send_error")
 					ensureASR()
 					asrMu.Lock()
 					curASR = asrSess
@@ -603,11 +687,12 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 			audioMu.Unlock()
 			vad.Reset()
 			if len(buf) > 0 {
-				log.Printf("[realtime] audio_end session=%s bytes=%d has_vision=%v", sessionID, len(buf), sess.HasVisionFrame())
+				log.Printf("[realtime] audio_end session=%s bytes=%d has_vision=%v last_partial=%q state=%s",
+					sessionID, len(buf), sess.HasVisionFrame(), lastPartial, sess.State())
 				_ = sender.Send(MsgVAD, VADEvent{Event: "speech_end"})
 				processSpeechEnd(buf)
 			} else if sess.State() == StateIdle {
-				resetASR()
+				resetASR("no_audio")
 				_ = sender.Send(MsgError, ErrorData{
 					Code:    "NO_AUDIO",
 					Message: "未收到音频数据，请检查麦克风是否正常",
@@ -690,7 +775,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 			audioBuf = audioBuf[:0]
 			audioMu.Unlock()
 			vad.Reset()
-			resetASR()
+			resetASR("utterance_cancel")
 			sess.ClearTurnMedia()
 			sess.SetState(StateIdle)
 			sender.SendAnimation(StateIdle)

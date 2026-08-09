@@ -35,7 +35,7 @@ import {
 } from '@/services/voiceSessionOwner'
 import { invoke } from '@tauri-apps/api/core'
 import { type UnlistenFn } from '@tauri-apps/api/event'
-import { playWakeGreeting, getWakeGreetingText } from '@/services/wakeGreeting'
+import { getWakeGreetingText } from '@/services/wakeGreeting'
 
 const { sidePanelOpen = false } = defineProps<{ sidePanelOpen?: boolean }>()
 
@@ -62,9 +62,8 @@ const DRAG_THRESHOLD = 5
 /** 单击 Mochi 唤醒时的唯一提示语；之后仅展示 ASR 实时识别文字。 */
 const PET_WAKE_GREETING = getWakeGreetingText()
 
-/** 即时唤醒反馈：气泡 + 本地 TTS，不等待 WS。 */
+/** 即时唤醒反馈：气泡；语音在 WS 就绪后由 speakWakeGreeting 云端播报。 */
 function giveWakeFeedback() {
-  playWakeGreeting()
   pet.showPersistentBubble(PET_WAKE_GREETING)
 }
 
@@ -492,8 +491,12 @@ async function openChat() {
 
   pet.hideSpeechBubble()
   if (isTauri()) {
+    // 聊天接管语音前先释放桌宠 WS，避免双窗口争抢 /ws/voice
+    await rt.yieldVoiceConnection()
+    await claimVoiceOwner('chat')
     const ok = await showSidePanelPopup('chat')
     if (!ok) {
+      console.warn('[pet] open chat failed: showSidePanelPopup returned false')
       pet.showSpeechBubble('聊天打开失败，请重试~', 4000)
       roamer?.resume()
       return
@@ -557,6 +560,7 @@ async function startVoiceInteraction() {
       const wake = await rt.wakeListening({ manual: true })
       if (wake.ok) {
         pet.showPersistentBubble(PET_WAKE_GREETING)
+        rt.speakWakeGreeting()
       } else {
         await showWakeFailure(wake.reason)
       }
@@ -590,13 +594,15 @@ async function handlePetTap() {
       const wake = await rt.wakeListening({ manual: true })
       if (wake.ok) {
         pet.showPersistentBubble(PET_WAKE_GREETING)
+        rt.speakWakeGreeting()
       } else {
         await showWakeFailure(wake.reason)
       }
       return
     }
     if (rt.userSpeaking) {
-      rt.submitUtterance(true)
+      if (rt.trySubmitFromTap()) return
+      pet.showSpeechBubble('还没说完，继续讲~', 2500)
       return
     }
     if (rt.processing) {
@@ -635,6 +641,7 @@ async function endVoiceFromMenu() {
 
 async function onFeed() {
   closeMenu(false)
+  console.info('[pet] menu feed')
   roamer?.pause()
   try {
     const result = await interactWithRetry('feed')
@@ -758,7 +765,10 @@ async function onContextMenu(e: MouseEvent) {
   // 先用估算尺寸预定位，避免贴边时被窗口裁切
   menuPos.value = clampMenuPos(e.clientX, e.clientY, 108, rt.talking ? 168 : 168)
   menuVisible.value = true
-  window.addEventListener('pointerdown', onDocumentPointerDown, true)
+  // 延迟注册，避免 contextmenu 同一次 pointer 事件立刻触发 capture 关闭菜单
+  setTimeout(() => {
+    window.addEventListener('pointerdown', onDocumentPointerDown, true)
+  }, 0)
 
   await nextTick()
   const el = menuEl.value
@@ -786,6 +796,7 @@ function onDblClick() {
     clearTimeout(clickTimer)
     clickTimer = null
   }
+  console.info('[pet] dblclick open chat')
   void openChat()
   setTimeout(() => {
     suppressClick = false

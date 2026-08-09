@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,7 +46,12 @@ func (x *xasrASR) Recognize(ctx context.Context, pcm []byte, onPartial ASRPartia
 	}
 	defer sess.Close()
 	if len(pcm) > 0 {
-		if err := sess.SendAudio(pcm); err != nil {
+		// 批量回退按 chunk 发送，与流式路径一致，避免单次超大 PCM 包。
+		if xs, ok := sess.(*xasrSession); ok {
+			if err := xs.SendAudioBatch(pcm); err != nil {
+				return "", err
+			}
+		} else if err := sess.SendAudio(pcm); err != nil {
 			return "", err
 		}
 	}
@@ -62,55 +68,134 @@ func (x *xasrASR) StartSession(ctx context.Context, onPartial ASRPartialHandler)
 	}
 
 	s := &xasrSession{
-		conn:       conn,
-		wsURL:      x.wsURL,
-		onPartial:  onPartial,
-		started:    make(chan struct{}),
-		done:       make(chan struct{}),
-		errCh:      make(chan error, 1),
+		conn:        conn,
+		wsURL:       x.wsURL,
+		sampleRate:  x.sampleRate,
+		onPartial:   onPartial,
+		done:        make(chan struct{}),
+		errCh:       make(chan error, 1),
+		connectedAt: time.Now(),
 	}
+	s.resetHandshake()
 
 	go s.readLoop()
 
-	if err := s.sendJSON(map[string]any{
-		"type":        "start",
-		"sample_rate": x.sampleRate,
-	}); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("xasr start: %w", err)
-	}
-
-	select {
-	case <-s.started:
-		return s, nil
-	case err := <-s.errCh:
+	if err := s.sendStart(ctx); err != nil {
 		conn.Close()
 		return nil, err
-	case <-ctx.Done():
-		conn.Close()
-		return nil, ctx.Err()
-	case <-time.After(45 * time.Second):
-		conn.Close()
-		return nil, fmt.Errorf("xasr start timeout")
 	}
+	return s, nil
 }
 
 type xasrSession struct {
-	conn      *websocket.Conn
-	wsURL     string
-	onPartial ASRPartialHandler
-	started   chan struct{}
-	done      chan struct{}
-	errCh     chan error
-	mu        sync.Mutex
-	finalText string
-	startOnce sync.Once
-	closeOnce sync.Once
+	conn        *websocket.Conn
+	wsURL       string
+	sampleRate  int
+	onPartial   ASRPartialHandler
+	done        chan struct{}
+	errCh       chan error
+	mu          sync.Mutex
+	finalText   string
+	startCh     chan struct{}
+	finalCh     chan struct{}
+	closeOnce   sync.Once
+	connectedAt time.Time
+	stats       sidecarlog.WSSessionStats
 }
 
 type xasrMessage struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+}
+
+func (s *xasrSession) resetHandshake() {
+	s.startCh = make(chan struct{})
+	s.finalCh = make(chan struct{})
+}
+
+func (s *xasrSession) signalStarted() {
+	s.mu.Lock()
+	ch := s.startCh
+	s.mu.Unlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case <-ch:
+	default:
+		close(ch)
+	}
+}
+
+func (s *xasrSession) signalFinal() {
+	s.mu.Lock()
+	ch := s.finalCh
+	s.mu.Unlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case <-ch:
+	default:
+		close(ch)
+	}
+}
+
+func (s *xasrSession) waitStarted(ctx context.Context) error {
+	s.mu.Lock()
+	ch := s.startCh
+	s.mu.Unlock()
+	select {
+	case <-ch:
+		return nil
+	case err := <-s.errCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(45 * time.Second):
+		return fmt.Errorf("xasr start timeout")
+	}
+}
+
+func (s *xasrSession) sendStart(ctx context.Context) error {
+	if err := s.sendJSON(map[string]any{
+		"type":        "start",
+		"sample_rate": s.sampleRate,
+	}); err != nil {
+		return fmt.Errorf("xasr start: %w", err)
+	}
+	if err := s.waitStarted(ctx); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.stats.StartedWaitMS = time.Since(s.connectedAt).Milliseconds()
+	s.mu.Unlock()
+	return nil
+}
+
+// Restart 在同一 WS 上开启下一轮识别，避免每句 4–5s 冷启动。
+func (s *xasrSession) Restart(ctx context.Context) error {
+	s.mu.Lock()
+	s.finalText = ""
+	s.stats.EmptyPartials = 0
+	s.stats.TextPartials = 0
+	s.stats.LastPartial = ""
+	s.mu.Unlock()
+	s.resetHandshake()
+	return s.sendStart(ctx)
+}
+
+// RecognizeBatch 在同一 WS 上批量识别（handler 空流式结果回退，避免 Recognize 新建连接）。
+func (s *xasrSession) RecognizeBatch(ctx context.Context, pcm []byte) (string, error) {
+	if err := s.Restart(ctx); err != nil {
+		return "", err
+	}
+	if len(pcm) > 0 {
+		if err := s.SendAudioBatch(pcm); err != nil {
+			return "", err
+		}
+	}
+	return s.Finish(ctx)
 }
 
 func (s *xasrSession) readLoop() {
@@ -133,25 +218,43 @@ func (s *xasrSession) readLoop() {
 			}
 			continue
 		}
-		sidecarlog.LogWSInbound("xasr", s.wsURL, msg.Type, msg)
 		switch msg.Type {
 		case "started":
-			s.startOnce.Do(func() { close(s.started) })
+			sidecarlog.LogWSInbound("xasr", s.wsURL, msg.Type, msg)
+			s.signalStarted()
 		case "partial":
-			if msg.Text != "" && s.onPartial != nil {
-				s.onPartial(msg.Text, false)
+			text := strings.TrimSpace(msg.Text)
+			s.mu.Lock()
+			if text == "" {
+				s.stats.EmptyPartials++
+			} else {
+				s.stats.TextPartials++
+				s.stats.LastPartial = text
+			}
+			s.mu.Unlock()
+			if text == "" {
+				continue
+			}
+			sidecarlog.LogWSInbound("xasr", s.wsURL, msg.Type, msg)
+			if s.onPartial != nil {
+				s.onPartial(text, false)
 			}
 		case "final":
 			s.mu.Lock()
 			s.finalText = msg.Text
+			s.stats.FinalText = msg.Text
 			s.mu.Unlock()
-			return
+			sidecarlog.LogWSInbound("xasr", s.wsURL, msg.Type, msg)
+			s.signalFinal()
 		case "error":
+			sidecarlog.LogWSInbound("xasr", s.wsURL, msg.Type, msg)
 			select {
 			case s.errCh <- fmt.Errorf("xasr: %s", msg.Text):
 			default:
 			}
 			return
+		default:
+			sidecarlog.LogWSInbound("xasr", s.wsURL, msg.Type, msg)
 		}
 	}
 }
@@ -165,21 +268,55 @@ func (s *xasrSession) sendJSON(v any) error {
 	return s.conn.WriteMessage(websocket.TextMessage, data)
 }
 
+// SendAudio 流式发送单个 PCM chunk。
 func (s *xasrSession) SendAudio(pcm []byte) error {
+	return s.sendPCM(pcm, "stream")
+}
+
+// SendAudioBatch 批量识别：按 sidecar 推荐 chunk 分片发送。
+func (s *xasrSession) SendAudioBatch(pcm []byte) error {
 	if len(pcm) == 0 {
 		return nil
 	}
-	sidecarlog.LogWSOutbound("xasr", s.wsURL, "audio", fmt.Sprintf("<pcm bytes=%d>", len(pcm)))
+	chunk := sidecarlog.WSBatchChunkBytes()
+	sidecarlog.LogWSBatchPCMStart("xasr", s.wsURL, len(pcm), chunk)
+	for off := 0; off < len(pcm); off += chunk {
+		end := off + chunk
+		if end > len(pcm) {
+			end = len(pcm)
+		}
+		if err := s.sendPCM(pcm[off:end], "batch"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *xasrSession) sendPCM(pcm []byte, mode string) error {
+	if len(pcm) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	s.stats.AudioChunks++
+	s.stats.AudioBytes += len(pcm)
+	s.mu.Unlock()
+	sidecarlog.LogWSOutboundPCM("xasr", s.wsURL, len(pcm), mode)
 	return s.conn.WriteMessage(websocket.BinaryMessage, pcm)
 }
 
 func (s *xasrSession) Finish(ctx context.Context) (string, error) {
+	s.mu.Lock()
+	s.finalText = ""
+	s.finalCh = make(chan struct{})
+	finalCh := s.finalCh
+	s.mu.Unlock()
+
 	if err := s.sendJSON(map[string]any{"type": "end"}); err != nil {
 		return "", fmt.Errorf("xasr end: %w", err)
 	}
 
 	select {
-	case <-s.done:
+	case <-finalCh:
 	case <-ctx.Done():
 		return "", ctx.Err()
 	case err := <-s.errCh:
@@ -207,6 +344,11 @@ func (s *xasrSession) Finish(ctx context.Context) (string, error) {
 
 func (s *xasrSession) Close() {
 	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		st := s.stats
+		st.ElapsedMS = time.Since(s.connectedAt).Milliseconds()
+		s.mu.Unlock()
+		sidecarlog.LogWSSessionSummary("xasr", s.wsURL, "close", st)
 		_ = s.conn.Close()
 	})
 }

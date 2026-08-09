@@ -542,6 +542,22 @@ func (r *Runtime) Turn(ctx context.Context, input TurnInput) (TurnOutput, error)
 	trace.MemoryHitCount = len(agentCtx.Memories)
 	trace.StepTimings.RecallMs = time.Since(recallStart).Milliseconds()
 
+	// 语音回合：缩短上下文以降低 LLM TTFT（记忆/历史更少 token）
+	if input.TriggerType == "user_voice" {
+		if len(agentCtx.Memories) > 3 {
+			agentCtx.Memories = agentCtx.Memories[:3]
+		}
+		if len(agentCtx.ShortHistory) > 6 {
+			agentCtx.ShortHistory = agentCtx.ShortHistory[len(agentCtx.ShortHistory)-6:]
+		}
+		const voiceBriefMax = 900
+		if len(agentCtx.UserBrief) > voiceBriefMax {
+			agentCtx.UserBrief = agentCtx.UserBrief[:voiceBriefMax]
+		}
+		log.Printf("[Runtime] voice context trim memories=%d history=%d brief_chars=%d",
+			len(agentCtx.Memories), len(agentCtx.ShortHistory), len(agentCtx.UserBrief))
+	}
+
 	// 用户说完后立即切换 FSM，在 LLM/TTS 之前推送共情动画。
 	perceptionForFSM := PerceptionResult{
 		UserMood:     agentCtx.EmotionHint.UserMood,
@@ -630,6 +646,7 @@ func (r *Runtime) Turn(ctx context.Context, input TurnInput) (TurnOutput, error)
 		Species:            pet.Species,
 		StyleConfig:        styleCfg,
 		IsFocusWorkMode:    isFocusWorkMode,
+		IsVoiceTurn:        input.TriggerType == "user_voice",
 	})
 	if input.TopicAnchor.CurrentTopic != "" || input.TopicAnchor.OpenQuestion != "" {
 		log.Printf("[topic_anchor] prompt pet=%d topic=%q open=%q",
@@ -652,12 +669,19 @@ func (r *Runtime) Turn(ctx context.Context, input TurnInput) (TurnOutput, error)
 	}
 	trace.StepTimings.BuildPromptMs = time.Since(buildStart).Milliseconds()
 
-	// Tool execution turn
-	toolRes, err := r.applyToolTurn(ctx, messages, input.Message, pet, input.UserID, agentCtx.BondProfile, agentCtx.EmotionHint)
-	if err != nil {
-		log.Printf("[Runtime] applyToolTurn failed: %v", err)
-		toolRes = toolTurnResult{messages: messages}
+	// Tool execution turn（语音默认跳过，除非明显需要提醒/待办，降低 TTFT）
+	toolRes := toolTurnResult{messages: messages}
+	if input.TriggerType != "user_voice" || tools.NeedsToolAction(input.Message, agentCtx.EmotionHint) {
+		var err error
+		toolRes, err = r.applyToolTurn(ctx, messages, input.Message, pet, input.UserID, agentCtx.BondProfile, agentCtx.EmotionHint)
+		if err != nil {
+			log.Printf("[Runtime] applyToolTurn failed: %v", err)
+			toolRes = toolTurnResult{messages: messages}
+		}
+	} else {
+		log.Printf("[Runtime] skip tool pre-turn trigger=%s (voice fast path)", input.TriggerType)
 	}
+	messages = toolRes.messages
 
 	outChan := make(chan ai.ChatChunk, 100)
 

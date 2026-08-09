@@ -35,6 +35,9 @@ type Pipeline struct {
 	vision       *vision.Service
 	asrSampleRate int
 	minAcousticConf float64
+	prewarmMu     sync.Mutex
+	prewarmAt     *time.Time
+	asrPrewarmOnce sync.Once
 }
 
 func NewPipeline(chatSvc *chat.Service, cfg config.RealtimeConfig, appCfg *config.Config) *Pipeline {
@@ -176,10 +179,21 @@ func (p *Pipeline) StartASRSession(ctx context.Context, onPartial ASRPartialHand
 }
 
 // PrewarmTTS primes the TTS provider with a minimal synthesis (best-effort).
+// 同一会话内 60s 内不重复预热，避免 client_caps 重复触发。
 func (p *Pipeline) PrewarmTTS(ctx context.Context) {
 	if p.tts == nil {
 		return
 	}
+	p.prewarmMu.Lock()
+	if p.prewarmAt != nil && time.Since(*p.prewarmAt) < 60*time.Second {
+		p.prewarmMu.Unlock()
+		log.Printf("[realtime] tts prewarm skipped recent=%dms", time.Since(*p.prewarmAt).Milliseconds())
+		return
+	}
+	now := time.Now()
+	p.prewarmAt = &now
+	p.prewarmMu.Unlock()
+
 	go func() {
 		warmCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
@@ -189,6 +203,26 @@ func (p *Pipeline) PrewarmTTS(ctx context.Context) {
 		}
 		log.Printf("[realtime] tts prewarm ok")
 	}()
+}
+
+// PrewarmASR 启动时预热 x-asr，避免首句 started 等 4–5s（进程内仅一次）。
+func (p *Pipeline) PrewarmASR(ctx context.Context) {
+	if p.asr == nil {
+		return
+	}
+	p.asrPrewarmOnce.Do(func() {
+		go func() {
+			warmCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			defer cancel()
+			sess, err := p.asr.StartSession(warmCtx, nil)
+			if err != nil {
+				log.Printf("[realtime] asr prewarm: %v", err)
+				return
+			}
+			sess.Close()
+			log.Printf("[realtime] asr prewarm ok")
+		}()
+	})
 }
 
 func (p *Pipeline) OnSpeechEnd(ctx context.Context, sess *Session, audio []byte, send Sender) {
@@ -700,10 +734,21 @@ func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text
 		_ = send.Send(MsgASRFinal, ASRText{Text: text})
 	}
 
+	if strings.TrimSpace(text) == "" {
+		if !withVoice {
+			turnStarted = true
+			_ = send.Send(MsgLLMDone, LLMDone{Text: "你好像还没输入内容？"})
+			return
+		}
+		log.Printf("[realtime] asr empty dismiss session=%s audio_bytes=%d pcm_hint=no_transcript", sess.ID, sess.TurnAudioBytes())
+		p.abortTurnSilent(sess, send, "empty_asr")
+		return
+	}
+
 	// Noise gate: silently dismiss false-trigger ASR results (voice turns only)
 	// before they reach the LLM.
 	if withVoice && p.isNoiseTranscript(text) {
-		log.Printf("[realtime] asr noise dismiss session=%s text=%q audio_bytes=%d", sess.ID, text, sess.TurnAudioBytes())
+		log.Printf("[realtime] asr noise dismiss session=%s text=%q audio_bytes=%d reason=filler_only", sess.ID, text, sess.TurnAudioBytes())
 		p.abortTurnSilent(sess, send, "noise_filler")
 		return
 	}
@@ -718,21 +763,10 @@ func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text
 			}
 		}
 		if ok, reason := p.gate.Decide(ctx, text, callNames...); !ok {
-			log.Printf("[realtime] gate dismiss session=%s text=%q reason=%s", sess.ID, text, reason)
+			log.Printf("[realtime] gate dismiss session=%s text=%q reason=%s audio_bytes=%d", sess.ID, text, reason, sess.TurnAudioBytes())
 			p.abortTurnSilent(sess, send, "gate:"+reason)
 			return
 		}
-	}
-
-	if text == "" {
-		if !withVoice {
-			turnStarted = true
-			_ = send.Send(MsgLLMDone, LLMDone{Text: "你好像还没输入内容？"})
-			return
-		}
-		log.Printf("[realtime] asr empty silent dismiss session=%s audio_bytes=%d", sess.ID, sess.TurnAudioBytes())
-		p.abortTurnSilent(sess, send, "empty_asr")
-		return
 	}
 
 	sess.SetState(StateThinking)
@@ -965,7 +999,8 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 			return
 		}
 		tone := moodTracker.Process(raw)
-		if tone.Text == "" {
+		speakText := text.SanitizeForTTS(tone.Text)
+		if speakText == "" {
 			return
 		}
 		if !replyMoodAnimSent && p.chat != nil {
@@ -983,7 +1018,7 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		// 本地 TTS：按句下发 mood prosody，客户端 X-TTS 合成
 		if sess.LocalTTS() {
 			_ = send.Send(MsgTTSSynthSegment, TTSSynthSegment{
-				Text: tone.Text,
+				Text: speakText,
 				Mood: string(tone.Mood),
 				Rate: prosody.Rate,
 			})
@@ -994,7 +1029,7 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		}
 		opts := prosody.ToSynthOptions()
 		select {
-		case segCh <- ttsSegment{text: tone.Text, opts: opts}:
+		case segCh <- ttsSegment{text: speakText, opts: opts}:
 		case <-ctx.Done():
 		}
 	}
@@ -1301,6 +1336,11 @@ func (p *Pipeline) setListening(sess *Session, send Sender) {
 	send.SendAnimation(StateListening)
 }
 
+// AbortEmptyASR 流式 ASR 无文本时静默结束（handler 空结果快速路径）。
+func (p *Pipeline) AbortEmptyASR(_ context.Context, sess *Session, send Sender) {
+	p.abortTurnSilent(sess, send, "empty_asr")
+}
+
 func (p *Pipeline) abortTurnSilent(sess *Session, send Sender, reason string) {
 	if lat := sess.TurnLatency(); lat != nil {
 		lat.LogSummary(sess.ID)
@@ -1329,7 +1369,7 @@ func (p *Pipeline) failTurn(_ context.Context, sess *Session, send Sender, code,
 func (p *Pipeline) isNoiseTranscript(text string) bool {
 	t := strings.TrimSpace(text)
 	if t == "" {
-		return true
+		return false // 空文本由 empty_asr 分支处理，避免误标 noise dismiss
 	}
 	rs := make([]rune, 0, len(t))
 	for _, r := range t {

@@ -6,6 +6,7 @@ use tauri::{
 };
 
 mod activity;
+mod client_log;
 mod voice_sidecar;
 mod webview_permissions;
 
@@ -328,6 +329,9 @@ pub fn run() {
             voice_sidecar::restart_xtts_sidecar,
             voice_sidecar::get_voice_log_dir,
             voice_sidecar::open_voice_logs,
+            client_log::append_client_logs,
+            client_log::get_client_log_dir,
+            client_log::open_client_logs,
         ])
         .setup(|app| {
             // 本地语音 sidecar：Release 用内置 bundle，Debug 用仓库 tools/
@@ -347,6 +351,10 @@ pub fn run() {
                 eprintln!("[voice-sidecar] skipped (set MOCHI_VOICE_SIDECAR=1 to enable local ASR/TTS)");
             }
             app.manage(sidecar_mgr);
+
+            if let Err(e) = client_log::bootstrap_startup_log(app.handle()) {
+                eprintln!("[client-log] bootstrap failed: {e}");
+            }
 
             let pet = app
                 .get_webview_window("pet")

@@ -28,6 +28,8 @@ type CompanionContext struct {
 	Species            string
 	StyleConfig        models.StyleConfig
 	IsFocusWorkMode    bool
+	// IsVoiceTurn 实时语音回合：允许更长口语回复（4–8 句观点类）。
+	IsVoiceTurn bool
 }
 
 // TopicAnchorContext 跨 turn 话题锚点（P1），注入 L3。

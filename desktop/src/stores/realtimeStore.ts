@@ -31,6 +31,7 @@ import {
   ambientPresence,
 } from '@/services/ambientMic'
 import { handleProactiveMessage, wasProactiveRecentlyShown } from '@/services/proactiveHandler'
+import { getWakeGreetingText } from '@/services/wakeGreeting'
 import {
   streamChatMessage,
   getVoiceprintStatus,
@@ -61,6 +62,7 @@ import {
   getStreamCheckGraceMs,
   getStreamCheckIntervalMs,
 } from '@/services/perception/earChannel'
+import { FACE_RECOGNITION_ENABLED } from '@/services/modelPaths'
 import { FaceVerifier, FACE_OWNER_BOOST_SCORE } from '@/services/faceVerifier'
 import {
   evaluateTurnEnd,
@@ -217,11 +219,43 @@ export const useRealtimeStore = defineStore('realtime', () => {
   /** Which window may hold /ws/voice: pet | chat | inline (browser single-window). */
   let voiceWindow: VoiceOwner | 'inline' = 'inline'
   let connectFlight: Promise<void> | null = null
+  /** 递增以作废进行中的 connect()，避免后端重启后 connectFlight 永久卡住。 */
+  let connectGeneration = 0
+
+  function resetConnectFlight(reason?: string) {
+    connectGeneration += 1
+    connectFlight = null
+    if (reason) {
+      console.warn('[realtime] reset connect flight:', reason)
+    }
+  }
   let intentionalDisconnect = false
   let reconnecting = false
   let eventLoopProbeStarted = false
   /** 在场闲聊：speak_only 播完后进入连续聆听。 */
   let presenceChatListenAfterTts = false
+
+  /** 与提醒 TTS 共用开关；关闭时仅气泡、不发起 speak_only。 */
+  function cloudVoiceEnabled(): boolean {
+    if (typeof localStorage === 'undefined') return true
+    return localStorage.getItem('mochi_reminder_voice') !== '0'
+  }
+
+  /** 云端短句播报前停掉在途 TTS，避免叠音。 */
+  function stopActiveTtsForCloudSpeak() {
+    ttsPlayer.stop()
+    if (phase === 'agent_speaking' || phase === 'processing') {
+      realtimeSession.sendInterrupt()
+    }
+  }
+
+  /** 提交前停播残留 TTS（连续聆听时上一句可能仍在队列）。 */
+  function stopPlaybackBeforeSubmit() {
+    ttsPlayer.stop()
+    if (phase === 'agent_speaking') {
+      realtimeSession.sendInterrupt()
+    }
+  }
 
   function resetTurnAbort() {
     turnAbortController?.abort()
@@ -301,6 +335,33 @@ export const useRealtimeStore = defineStore('realtime', () => {
   function detachHandler() {
     unsub?.()
     unsub = null
+  }
+
+  /** 连接已就绪时的默认状态文案（清除 connect 失败残留提示）。 */
+  function defaultVoiceReadyStatus(): string {
+    return recording ? 'Mochi 在休息... 说话我就听' : '输入消息或开始语音对话'
+  }
+
+  /** connect 失败后会写入超时/失败文案；连接恢复时须主动清掉，避免误报残留。 */
+  function clearStaleConnectStatus() {
+    const stale = new Set([
+      '语音连接超时，请再点一次话筒',
+      '连接失败，请关闭面板重新打开',
+      '连接中...',
+      '连接失败，请稍后再试',
+    ])
+    if (stale.has(statusText.value)) {
+      statusText.value = defaultVoiceReadyStatus()
+    }
+  }
+
+  /** WS 已 OPEN 时同步 store 状态，避免 connected 与 socket 不一致导致重复 connect。 */
+  function syncOpenVoiceChannel() {
+    connected.value = true
+    if (!unsub) {
+      unsub = realtimeSession.on(handleEvent)
+    }
+    clearStaleConnectStatus()
   }
 
   function setVoiceWindow(window: VoiceOwner | 'inline') {
@@ -464,7 +525,14 @@ export const useRealtimeStore = defineStore('realtime', () => {
     return localStorage.getItem('mochi_focus_work_dnd') === '1'
   }
 
+  /** 讨论模式：优先连续聆听与展开观点（localStorage mochi_voice_discussion_mode=1）。 */
+  function readVoiceDiscussionMode(): boolean {
+    if (typeof window === 'undefined') return false
+    return localStorage.getItem('mochi_voice_discussion_mode') === '1'
+  }
+
   function shouldPreferContinuousListen(): boolean {
+    if (readVoiceDiscussionMode()) return true
     return !readFocusWorkDnd()
   }
 
@@ -525,6 +593,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
   }
 
   function faceprintReady(): boolean {
+    if (!FACE_RECOGNITION_ENABLED) return false
     const fp = getFaceprintConfig()
     if (!fp.enabled) return false
     if (!fp.required) return faceVerifier.available && !!ownerFaceEmbedding?.length
@@ -881,10 +950,11 @@ export const useRealtimeStore = defineStore('realtime', () => {
       endNameWakeProbe(false)
       return
     }
-    // VAD 已报 speech_start 但声纹/分类器误拒：能量明显时仍唤醒（宠物点按场景）
+    // VAD 已报 speech_start 但声纹/分类器误拒：仅极高能量 + VAD 同时命中才 fallback（避免 0.13 分误唤醒）
     if (
-      (probe === 'not_owner' || probe === 'not_speech') &&
-      micLevel.value >= params.wakePeak * 1.5
+      probe === 'not_speech' &&
+      micLevel.value >= params.wakePeak * 2.5 &&
+      (speechVad?.isSpeaking() ?? false)
     ) {
       if (import.meta.env.DEV) {
         console.debug('[voiceprint] vad energy wake fallback peak=%s', micLevel.value.toFixed(3))
@@ -894,6 +964,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
       wakeOnSpeech()
       return
     }
+    // 声纹低分（非主人）时不走能量 fallback，避免 resting 空 ASR
     if (probe === 'not_owner' && import.meta.env.DEV) {
       console.debug('[voiceprint] wake silent reject score=%s', lastWakeProbeScore?.toFixed(3) ?? 'null')
     }
@@ -912,7 +983,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
       return
     }
     if (shouldUploadPcmToServer()) {
-      realtimeSession.sendAudioStart()
+      sendUtteranceAudioStart(true)
     }
     flushPreRollAudio()
 
@@ -1072,6 +1143,22 @@ export const useRealtimeStore = defineStore('realtime', () => {
   /** Phase4：固定云端 STT，PCM 始终上传服务端。 */
   function shouldUploadPcmToServer(): boolean {
     return true
+  }
+
+  /** 本 utterance 是否已向服务端发送 audio_start（防重复 reset ASR）。 */
+  let utteranceAudioStartSent = false
+
+  function resetUtteranceAudioStart() {
+    utteranceAudioStartSent = false
+  }
+
+  /** 发送 audio_start：播放/思考期与重复 utterance 内 dedup。 */
+  function sendUtteranceAudioStart(force = false): boolean {
+    if (!force && utteranceAudioStartSent) return false
+    if (phase === 'agent_speaking' || phase === 'processing') return false
+    if (!shouldUploadPcmToServer() || !realtimeSession.isOpen()) return false
+    utteranceAudioStartSent = true
+    return realtimeSession.sendAudioStart()
   }
 
   function syncReplyBubble(text: string) {
@@ -1308,38 +1395,58 @@ export const useRealtimeStore = defineStore('realtime', () => {
     processingRef.value = v
   }
 
-  /** Mochi 说完后保持会话敞开：主人可直接接下一句，无需 resting→重新唤醒。 */
+  /**
+   * 经 /ws/voice speak_only 播报短句（唤醒问候、提醒等），统一云端 TTS。
+   * @returns 是否已成功发送 speak_only
+   */
+  async function speakCloudOnly(
+    text: string,
+    opts?: { ensureTalk?: boolean; listenAfter?: boolean },
+  ): Promise<boolean> {
+    const trimmed = text.trim()
+    if (!trimmed || !cloudVoiceEnabled()) return false
+
+    if (opts?.ensureTalk && !recording) {
+      const ok = await startTalk()
+      if (!ok) return false
+    }
+
+    if (!realtimeSession.isOpen()) return false
+
+    stopActiveTtsForCloudSpeak()
+
+    if (opts?.listenAfter) {
+      presenceChatListenAfterTts = true
+    }
+
+    replyText.value = trimmed
+    syncReplyBubble(trimmed)
+    setPhase('agent_speaking')
+    serverSessionState.value = 'speaking'
+    statusText.value = opts?.listenAfter ? 'Mochi 想跟你说说话~' : 'Mochi 正在说话...'
+    startTtsWatchdog()
+
+    if (!realtimeSession.sendSpeakOnly(trimmed)) {
+      if (opts?.listenAfter) presenceChatListenAfterTts = false
+      return false
+    }
+    return true
+  }
+
+  /** 桌宠唤醒后云端朗读「在呢，主人！」。 */
+  function speakWakeGreeting(): void {
+    void speakCloudOnly(getWakeGreetingText())
+  }
+
   /** 在场闲聊送达：Mochi 声线播报并进入可接话状态。 */
   async function deliverPresenceChat(message: string, animation?: string) {
     const trimmed = message.trim()
     if (!trimmed || wasProactiveRecentlyShown(trimmed)) return
 
-    handleProactiveMessage({ message: trimmed, animation }, { priority: true, skipSpeak: true })
+    handleProactiveMessage({ message: trimmed, animation }, { priority: true })
     commitAssistantMessage(trimmed)
 
-    if (!recording) {
-      const ok = await startTalk()
-      if (!ok) {
-        handleProactiveMessage({ message: trimmed, animation }, { priority: true })
-        return
-      }
-    }
-
-    if (!realtimeSession.isOpen()) {
-      handleProactiveMessage({ message: trimmed, animation }, { priority: true })
-      return
-    }
-
-    presenceChatListenAfterTts = true
-    replyText.value = trimmed
-    syncReplyBubble(trimmed)
-    setPhase('agent_speaking')
-    statusText.value = 'Mochi 想跟你说说话~'
-    startTtsWatchdog()
-    if (!realtimeSession.sendSpeakOnly(trimmed)) {
-      presenceChatListenAfterTts = false
-      handleProactiveMessage({ message: trimmed, animation }, { priority: true })
-    }
+    await speakCloudOnly(trimmed, { ensureTalk: true, listenAfter: true })
   }
 
   function enterContinuousListen(hint?: string) {
@@ -1366,6 +1473,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     thinkingHoldUntil = 0
     resetTurnTiming()
     chunksSent.value = 0
+    resetUtteranceAudioStart()
     // 保留 pcm ring，连续对话时 pre-roll 仍有效
 
     setPhase('user_speaking')
@@ -1380,14 +1488,14 @@ export const useRealtimeStore = defineStore('realtime', () => {
     partialUpdatedAt = 0
     speechVad?.reset()
 
-    const echoDelayMs = Math.min(params.echoGuardMs, 800)
+    const echoDelayMs = Math.max(1200, params.echoGuardMs)
 
     setTimeout(() => {
       if (!recording || phase !== 'user_speaking') return
       turnUploadStarted = true
       utteranceStartedAt = Date.now()
       if (shouldUploadPcmToServer()) {
-        realtimeSession.sendAudioStart()
+        sendUtteranceAudioStart(true)
       }
       startStreamCheck()
       startSilenceWatch()
@@ -1423,6 +1531,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     chunksSent.value = 0
     resetPcmRing()
     speechVad?.reset()
+    resetUtteranceAudioStart()
     ambientPresence.setOwnerSpeaking(false)
     if (recording) {
       statusText.value = hint ?? 'Mochi 在休息... 说话我就听'
@@ -1486,8 +1595,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
     ownerTurnUploadLock = true
     // 唤醒即连续上传（含点击 manual wake），避免 VAD 已触发但 PCM 未传导致 ASR 空
     turnUploadStarted = true
+    resetUtteranceAudioStart()
     if (shouldUploadPcmToServer()) {
-      realtimeSession.sendAudioStart()
+      sendUtteranceAudioStart(true)
       flushPreRollAudio()
     } else {
       flushPreRollAudio()
@@ -1560,6 +1670,14 @@ export const useRealtimeStore = defineStore('realtime', () => {
     void submitUtteranceAsync(force)
   }
 
+  /** 桌宠单击：仅当 turn-end 已就绪时才 force 提交，避免误触截断长句。 */
+  function trySubmitFromTap(): boolean {
+    if (phase !== 'user_speaking') return false
+    if (!evaluateTurnEnd(buildTurnEndSignals()).ready) return false
+    void submitUtterance(true)
+    return true
+  }
+
   async function submitUtteranceAsync(force = false) {
     if (!talking.value && !recording) {
       statusText.value = '请先点击开始对话'
@@ -1576,6 +1694,13 @@ export const useRealtimeStore = defineStore('realtime', () => {
     if (!force) {
       if (speechVad?.isSpeaking()) return
       if (!evaluateTurnEnd(buildTurnEndSignals()).ready) return
+      // 无 ASR partial 不提交（手动 force 除外），避免服务端空识别
+      if (partialText.value.trim().length < 2) {
+        if (chunksSentCount > 50) {
+          finishEmptyCapture('no_text')
+        }
+        return
+      }
     }
 
     if (chunksSentCount === 0) {
@@ -1612,6 +1737,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     statusText.value = '处理中...'
     turnStartAt = Date.now()
     playbackMarked = false
+    stopPlaybackBeforeSubmit()
     ttsPlayer.resetTurn()
 
     resetTurnAbort()
@@ -1684,7 +1810,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     if (phase !== 'agent_speaking') return
     if (!ttsPlayer.hadPlayback && !replyText.value.trim()) return
     cancelTurnAbort()
-    ttsPlayer.stop()
+    stopActiveTtsForCloudSpeak()
     clearTtsWatchdog()
     replyText.value = ''
     usePetStore().releaseVoiceBubble(0)
@@ -1890,7 +2016,10 @@ export const useRealtimeStore = defineStore('realtime', () => {
       }
       return
     }
-    if (connected.value && realtimeSession.isOpen()) return
+    if (realtimeSession.isOpen()) {
+      syncOpenVoiceChannel()
+      return
+    }
 
     if (connected.value && !realtimeSession.isOpen()) {
       connected.value = false
@@ -1911,19 +2040,28 @@ export const useRealtimeStore = defineStore('realtime', () => {
       connected.value = false
       detachHandler()
       console.warn('[realtime] /ws/voice connect failed', e)
-      statusText.value = '连接失败，请关闭面板重新打开'
+      const msg = e instanceof Error ? e.message : String(e)
+      if (msg.includes('timeout') || msg.includes('closed before open')) {
+        statusText.value = '语音连接超时，请再点一次话筒'
+      } else {
+        statusText.value = '连接失败，请关闭面板重新打开'
+      }
       return
     }
     connected.value = true
     realtimeSession.sendPrewarm()
-    statusText.value = recording ? 'Mochi 在休息... 说话我就听' : '输入消息或开始语音对话'
+    statusText.value = defaultVoiceReadyStatus()
   }
 
   async function connect(): Promise<void> {
     if (connectFlight) return connectFlight
-    connectFlight = connectInternal().finally(() => {
-      connectFlight = null
-    })
+    const gen = ++connectGeneration
+    connectFlight = connectInternal()
+      .finally(() => {
+        if (connectGeneration === gen) {
+          connectFlight = null
+        }
+      })
     return connectFlight
   }
 
@@ -1933,6 +2071,9 @@ export const useRealtimeStore = defineStore('realtime', () => {
     statusText.value = '连接断开，正在重连...'
     try {
       await connectIfOwner()
+      if (connected.value && realtimeSession.isOpen()) {
+        clearStaleConnectStatus()
+      }
       if (restoreVoice && connected.value && capture.isActive) {
         talking.value = true
         recording = true
@@ -2009,8 +2150,14 @@ export const useRealtimeStore = defineStore('realtime', () => {
               realtimeSession.sendAudio(arrayBufferToBase64(boosted), uploadSeq)
             }
           }
-          // 需 VAD 认为在说话，或能量明显偏高，才尝试唤醒（避免杂音误触）
-          if (peak >= params.wakePeak && (vadSpeaking || peak >= params.wakePeak * 2)) {
+          // 休息态：须 Silero/能量 VAD 认为在说话，或峰值极高，才尝试唤醒
+          if (vadSpeaking && peak >= params.wakePeak * 0.85) {
+            wakeAccumMs += 20
+            if (wakeAccumMs >= WAKE_CONFIRM_MS) {
+              wakeAccumMs = 0
+              void tryWakeFromResting()
+            }
+          } else if (peak >= params.wakePeak * 2.8) {
             wakeAccumMs += 20
             if (wakeAccumMs >= WAKE_CONFIRM_MS) {
               wakeAccumMs = 0
@@ -2087,8 +2234,11 @@ export const useRealtimeStore = defineStore('realtime', () => {
     await initClientConfig().catch(() => {})
     refreshRuntimeParams()
 
-    // Phase D #12：并行预热摄像头，减少首帧 capture 冷启动延迟
-    const visionWarmPromise = prewarmVisionSession()
+    // Phase：语音优先，面容/摄像头预热延后（FACE_RECOGNITION_ENABLED=false）
+    const visionWarmPromise =
+      FACE_RECOGNITION_ENABLED && getClientConfig().visionEnabled
+        ? prewarmVisionSession()
+        : Promise.resolve()
 
     await connect()
     if (!realtimeSession.isOpen()) {
@@ -2110,10 +2260,12 @@ export const useRealtimeStore = defineStore('realtime', () => {
     }
 
     await speakerVerifier.init().catch(() => {})
-    await faceVerifier.init().catch(() => {})
+    if (FACE_RECOGNITION_ENABLED) {
+      await faceVerifier.init().catch(() => {})
+      await loadOwnerFaceprint()
+    }
     await soundClassifier.init().catch(() => {})
     await loadOwnerVoiceprint()
-    await loadOwnerFaceprint()
 
     if (!voiceprintReady()) {
       statusText.value = '请先在设置中录入主人声纹（设置 → 主人声纹）'
@@ -2440,8 +2592,12 @@ export const useRealtimeStore = defineStore('realtime', () => {
           { priority: true },
         )
         commitAssistantMessage(ev.message)
+        if (recording && realtimeSession.isOpen()) {
+          void speakCloudOnly(ev.message)
+        }
         break
       case 'disconnected':
+        resetConnectFlight('ws disconnected')
         connected.value = false
         const restoreVoice = recording && talking.value && !intentionalDisconnect
 
@@ -2528,9 +2684,12 @@ export const useRealtimeStore = defineStore('realtime', () => {
     sendTextMessage,
     loadHistory,
     deliverPresenceChat,
+    speakCloudOnly,
+    speakWakeGreeting,
     appendAssistantMessage: commitAssistantMessage,
     interruptForReminder,
     submitUtterance,
+    trySubmitFromTap,
     endConversation,
     stopTalk: submitUtterance,
     lastTurnMetrics,

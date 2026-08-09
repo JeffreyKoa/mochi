@@ -1,14 +1,23 @@
 [[permission]]
 identifier = "allow-chat-window"
-description = "Allow chat window show/hide and pet resize"
+description = "Allow chat window show/hide, pet resize, voice sidecar, client logs"
 commands.allow = [
   "show_chat_window",
   "hide_chat_window",
   "expand_pet_for_chat",
   "collapse_pet_chat",
   "recover_pet_window",
+  "sync_chat_beside_pet",
+  "get_activity_snapshot",
+  "reset_microphone_permission",
+  "ensure_microphone_permission",
   "get_voice_sidecar_status",
   "restart_voice_sidecars",
   "restart_xasr_sidecar",
   "restart_xtts_sidecar",
+  "get_voice_log_dir",
+  "open_voice_logs",
+  "append_client_logs",
+  "get_client_log_dir",
+  "open_client_logs",
 ]

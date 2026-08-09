@@ -11,7 +11,7 @@
 const UNFINISHED_CONNECTIVES = [
   '但是', '但是呢', '因为', '所以', '然后', '而且', '如果', '不过',
   '虽然', '觉得', '特别是', '比如', '并且', '另外', '还有', '其实',
-  '或者', '结果', '就是', '就是说', '意思是', '也就是说', '然后呢', '所以说',
+  '或者', '还是', '结果', '就是', '就是说', '意思是', '也就是说', '然后呢', '所以说',
   '……', '...', '---', '、',
 ]
 
@@ -78,6 +78,14 @@ export function isUnfinishedSpeech(text: string): boolean {
   if (trimmed.length < 8 && !/[。！？?!]$/.test(trimmed)) {
     return true
   }
+  // 长句末二字为汉字且无句末标点 → 可能说到一半（如「…像白」）
+  if (
+    trimmed.length > 20 &&
+    !/[。！？?!]$/.test(trimmed) &&
+    /^[\u4e00-\u9fff]{2}$/.test(trimmed.slice(-2))
+  ) {
+    return true
+  }
   return false
 }
 
@@ -120,16 +128,15 @@ export function evaluateTurnEnd(signals: TurnEndSignals): TurnEndDecision {
 
   const silence = now - activityAt
   /** 判定句中可能未完（空 partial 不算未完，避免 ASR 延迟误拦） */
-  const unfinished =
-    isUnfinishedSpeech(partial) || (partial.length > 0 && partial.length < 12)
+  const unfinished = isUnfinishedSpeech(partial)
 
   // ASR 仍在更新 → 嘴还在动（流式延迟），不提交
   if (partial && now - signals.partialUpdatedAt < partialStableMs) {
     return { ready: false, reason: 'partial_unstable' }
   }
 
-  // 本地 X-ASR：VAD 已 speech_end 且 partial 稳定 → 更短路径提交（含 redemption 中 vadSpeaking）
-  if (xasrSpeechEndReady) {
+  // 本地 X-ASR：VAD 已 speech_end 且 partial 稳定 → 更短路径提交（未完成句不走快速路径）
+  if (xasrSpeechEndReady && !unfinished) {
     const silenceSinceSpeech = now - activityAt
     const fastSilence = Math.min(signals.silenceMsConfig, minCompleteSilenceMs)
     if (silenceSinceSpeech >= fastSilence) {
@@ -161,6 +168,11 @@ export function evaluateTurnEnd(signals: TurnEndSignals): TurnEndDecision {
       extendHoldMs: THINKING_HOLD_EXTEND_MS,
       shouldPauseProbe: true,
     }
+  }
+
+  // 已上传足够音频仍无 partial → 不提交，避免空 ASR 回合（误唤醒/环境音）
+  if (!partial && signals.chunksSent > 50) {
+    return { ready: false, reason: 'no_partial' }
   }
 
   const requiredSilence = unfinished

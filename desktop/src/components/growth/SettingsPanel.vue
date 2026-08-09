@@ -33,6 +33,7 @@ import {
   clearVoiceprintEmbeddingCache,
 } from '@/services/voiceprintCache'
 import { FaceVerifier } from '@/services/faceVerifier'
+import { FACE_RECOGNITION_ENABLED, MODEL_PATH_HINTS } from '@/services/modelPaths'
 import {
   CATEGORY_LABELS,
   parseInsideJokes,
@@ -58,6 +59,8 @@ import {
   visionSession,
 } from '@/services/visionCapture'
 import { hideSidePanelPopup, isTauri } from '@/services/chatWindow'
+import { openClientLogDir, getClientLogDir } from '@/services/clientLog'
+import { getVoiceLogDir, openVoiceLogs } from '@/services/voiceSidecar'
 import { refreshPresenceChatPrefs } from '@/services/presenceChat'
 import { listenTasksRefresh } from '@/services/proactiveSync'
 import {
@@ -121,6 +124,9 @@ const enrollingFace = ref(false)
 const faceEnrollProgress = ref('')
 const micFixBusy = ref(false)
 const micFixMsg = ref('')
+const clientLogDirHint = ref('')
+const voiceLogDirHint = ref('')
+const logOpenMsg = ref('')
 const enrollingVoice = ref(false)
 const enrollProgress = ref('')
 const enrollCapture = new PCMCapture()
@@ -431,6 +437,42 @@ function openMeTab() {
   tab.value = 'me'
   void loadPreferences()
   void loadLearningPrefs()
+  void refreshLogDirHints()
+}
+
+/** 加载日志目录路径，供设置页展示。 */
+async function refreshLogDirHints() {
+  if (!isTauri()) return
+  try {
+    clientLogDirHint.value = await getClientLogDir()
+  } catch {
+    clientLogDirHint.value = ''
+  }
+  try {
+    voiceLogDirHint.value = await getVoiceLogDir()
+  } catch {
+    voiceLogDirHint.value = ''
+  }
+}
+
+async function onOpenClientLogs() {
+  logOpenMsg.value = ''
+  try {
+    await openClientLogDir()
+    logOpenMsg.value = '已打开客户端日志目录'
+  } catch (e) {
+    logOpenMsg.value = e instanceof Error ? e.message : '打开失败'
+  }
+}
+
+async function onOpenVoiceSidecarLogs() {
+  logOpenMsg.value = ''
+  try {
+    const ok = await openVoiceLogs()
+    logOpenMsg.value = ok ? '已打开 sidecar 日志目录' : '当前环境不支持打开日志目录'
+  } catch (e) {
+    logOpenMsg.value = e instanceof Error ? e.message : '打开失败'
+  }
 }
 
 function selectTab(id: TabId) {
@@ -502,7 +544,7 @@ async function startVoiceprintEnroll() {
     await enrollVerifier.init()
     if (!enrollVerifier.available) {
       voiceprintError.value =
-        '声纹模型未就绪。请将 CAM++ ONNX 放到 public/models/speaker/campp.onnx'
+        `声纹模型未就绪。请运行 tools/models/download-desktop-models.ps1（${MODEL_PATH_HINTS.speakerCampp}）`
       return
     }
     const embs: Float32Array[] = []
@@ -950,6 +992,7 @@ onUnmounted(() => {
           </SettingsCard>
 
           <SettingsCard
+            v-if="FACE_RECOGNITION_ENABLED"
             title="主人面容"
             :badge="faceprintStatus?.enrolled ? '已录入' : undefined"
             hint="与声纹配合认人；需开启「语音时看我」。看不清脸时不影响纯声纹对话"
@@ -1049,8 +1092,8 @@ onUnmounted(() => {
               <p class="hint">语音合成：本地 X-TTS Matcha（8767）</p>
               <p class="hint advanced-gap">在场声音感知 · 当前：{{ pet.ownerPresence }}</p>
               <p class="hint">
-                模型路径：<code>public/models/speaker/campp.onnx</code>、
-                <code>public/models/audio/yamnet.onnx</code>
+                模型路径：<code>{{ MODEL_PATH_HINTS.speakerCampp }}</code>、
+                <code>{{ MODEL_PATH_HINTS.audioYamnet }}</code>
               </p>
             </div>
           </SettingsCard>
@@ -1243,6 +1286,24 @@ onUnmounted(() => {
               {{ savingLearning ? '…' : '保存学习偏好' }}
             </button>
             <p v-if="learningError" class="error">{{ learningError }}</p>
+          </SettingsCard>
+
+          <SettingsCard v-if="isTauri()" title="排查与日志" hint="语音/界面异常时可导出给开发者">
+            <p class="hint">
+              客户端（开发）：<code>logs/desktop/desktop-YYYYMMDD.log</code>
+            </p>
+            <p class="hint">
+              服务端：<code>logs/mochi/mochi-YYYYMMDD.log</code>（需先运行 restart-backend.bat）
+            </p>
+            <p v-if="clientLogDirHint" class="hint log-path">当前客户端目录：{{ clientLogDirHint }}</p>
+            <p v-if="voiceLogDirHint" class="hint log-path">Sidecar：{{ voiceLogDirHint }}</p>
+            <button type="button" class="primary-sm full" @click="onOpenClientLogs">
+              打开客户端日志目录
+            </button>
+            <button type="button" class="primary-sm full log-open-second" @click="onOpenVoiceSidecarLogs">
+              打开 Sidecar 日志目录
+            </button>
+            <p v-if="logOpenMsg" class="hint">{{ logOpenMsg }}</p>
           </SettingsCard>
 
           <SettingsCard title="关于我">
@@ -1764,6 +1825,17 @@ onUnmounted(() => {
 .primary-sm.full {
   width: 100%;
   margin-top: 8px;
+}
+
+.log-open-second {
+  background: #fff;
+  color: #c2185b;
+  border: 1px solid #ffb3c6;
+}
+
+.log-path {
+  font-size: 11px;
+  word-break: break-all;
 }
 
 .select-sm,

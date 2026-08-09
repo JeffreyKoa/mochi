@@ -152,6 +152,9 @@ function setupWs() {
       }
       handleProactiveMessage({ message: d.message, animation: d.animation }, { priority: true })
       rt.appendAssistantMessage(d.message)
+      if (rt.talking && rt.connected) {
+        void rt.speakCloudOnly(d.message)
+      }
     })
     wsManager.on('life_stage_changed', (data: unknown) => {
       const d = data as Partial<PetLifecycle> & { life_stage_label?: string }
@@ -338,92 +341,105 @@ async function loadUserData() {
 }
 
 onMounted(async () => {
-  if (isTauri()) {
-    await waitForTauriWindow()
-    winLabel.value = readTauriWindowLabel()
-  } else {
-    winLabel.value = 'browser'
-  }
+  // 启动占位最长显示 4s，避免 init 卡住时整窗一直停在「醒来中」
+  const splashCap = window.setTimeout(() => {
+    shellReady.value = true
+  }, 4000)
 
-  ready.value = true
-  pet.registerBootRetry(() => void retryLoadUserData())
-
-  if (isTauri() && isPetWindowLabel(winLabel.value)) {
-    auth.syncFromStorage()
-  }
-
-  if (isChatWindow.value) {
-    auth.syncFromStorage()
-    await initClientConfig().catch((e) => console.warn('[chat] config', e))
-    // 先恢复 pending mode，避免 v-else 误挂载 ChatPanel
-    const hadPending = syncPopupPanelFromPending()
-    loading.value = false
-    unlistenProactive = await listenProactive((payload) => {
-      rt.appendAssistantMessage(payload.message)
-    })
-    try {
-      const { listen } = await import('@tauri-apps/api/event')
-      await listen('side-panel-opened', async (event) => {
-        const payload = event.payload as { mode?: 'chat' | 'settings'; token?: string | null } | undefined
-        const mode = payload?.mode ?? 'chat'
-        await applyPopupPanelMode(mode, payload?.token)
-      })
-      await listen('chat-opened', async (event) => {
-        const payload = event.payload as { mode?: 'chat' | 'settings'; token?: string | null } | undefined
-        if (payload?.mode === 'settings') return
-        await applyPopupPanelMode('chat', payload?.token)
-      })
-      await listen('side-panel-closed', (event) => {
-        const mode = (event.payload as { mode?: string } | undefined)?.mode
-        if (mode === 'settings') growth.closeSettings()
-        popupPanelMode.value = null
-      })
-      await listen('side-panel-side-changed', (event) => {
-        sidePanelOnLeft.value = !!event.payload
-      })
-    } catch (e) {
-      console.warn('[chat] init listener failed', e)
+  try {
+    if (isTauri()) {
+      await waitForTauriWindow()
+      winLabel.value = readTauriWindowLabel()
+    } else {
+      winLabel.value = 'browser'
     }
-    if (!hadPending && popupPanelMode.value === 'chat' && auth.isLoggedIn) {
+
+    ready.value = true
+    pet.registerBootRetry(() => void retryLoadUserData())
+
+    if (isTauri() && isPetWindowLabel(winLabel.value)) {
+      auth.syncFromStorage()
+    }
+
+    if (isChatWindow.value) {
+      auth.syncFromStorage()
+      await initClientConfig().catch((e) => console.warn('[chat] config', e))
+      // 先恢复 pending mode，避免 v-else 误挂载 ChatPanel
+      const hadPending = syncPopupPanelFromPending()
+      loading.value = false
+      unlistenProactive = await listenProactive((payload) => {
+        rt.appendAssistantMessage(payload.message)
+      })
+      try {
+        const { listen } = await import('@tauri-apps/api/event')
+        await listen('side-panel-opened', async (event) => {
+          const payload = event.payload as { mode?: 'chat' | 'settings'; token?: string | null } | undefined
+          const mode = payload?.mode ?? 'chat'
+          await applyPopupPanelMode(mode, payload?.token)
+        })
+        await listen('chat-opened', async (event) => {
+          const payload = event.payload as { mode?: 'chat' | 'settings'; token?: string | null } | undefined
+          if (payload?.mode === 'settings') return
+          await applyPopupPanelMode('chat', payload?.token)
+        })
+        await listen('side-panel-closed', (event) => {
+          const mode = (event.payload as { mode?: string } | undefined)?.mode
+          if (mode === 'settings') growth.closeSettings()
+          popupPanelMode.value = null
+        })
+        await listen('side-panel-side-changed', (event) => {
+          sidePanelOnLeft.value = !!event.payload
+        })
+      } catch (e) {
+        console.warn('[chat] init listener failed', e)
+      }
+      if (!hadPending && popupPanelMode.value === 'chat' && auth.isLoggedIn) {
+        void loadUserData()
+      } else if (!hadPending && popupPanelMode.value === null && auth.isLoggedIn) {
+        // 弹窗被 show 但未带 pending（不应出现）→ 默认聊天
+        popupPanelMode.value = 'chat'
+        void loadUserData()
+      }
+      return
+    }
+
+    // 桌宠：先恢复窗口壳并关闭启动占位；拉配置/用户数据不阻塞「醒来」
+    if (isTauri() && isPetWindowLabel(winLabel.value)) {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core')
+        await invoke('recover_pet_window')
+      } catch (e) {
+        console.warn('[init] recover_pet_window', e)
+      }
+      try {
+        const { listen } = await import('@tauri-apps/api/event')
+        await listen('pet-window-recover', () => {
+          localStorage.removeItem('mochi_window_position')
+          // 窗口 recover 后尝试恢复 PIXI（WebView2/GPU 崩溃后常见白屏）
+          window.dispatchEvent(new CustomEvent('mochi:pet-render-recover'))
+        })
+      } catch {
+        // optional
+      }
+      await initPetWindowChrome()
+      await ensurePetWindowVisible()
+      shellReady.value = true
+    }
+
+    await initClientConfig().catch((e) => console.warn('[init] config', e))
+
+    if (auth.isLoggedIn) {
+      loading.value = false
+      void setPetOnlyLayout()
       void loadUserData()
-    } else if (!hadPending && popupPanelMode.value === null && auth.isLoggedIn) {
-      // 弹窗被 show 但未带 pending（不应出现）→ 默认聊天
-      popupPanelMode.value = 'chat'
-      void loadUserData()
+    } else {
+      loading.value = false
+      await setLoginLayout()
     }
-    return
+  } finally {
+    window.clearTimeout(splashCap)
+    shellReady.value = true
   }
-
-  await initClientConfig().catch((e) => console.warn('[init] config', e))
-
-  if (isTauri() && isPetWindowLabel(winLabel.value)) {
-    try {
-      const { invoke } = await import('@tauri-apps/api/core')
-      await invoke('recover_pet_window')
-    } catch (e) {
-      console.warn('[init] recover_pet_window', e)
-    }
-    try {
-      const { listen } = await import('@tauri-apps/api/event')
-      await listen('pet-window-recover', () => {
-        localStorage.removeItem('mochi_window_position')
-      })
-    } catch {
-      // optional
-    }
-    await initPetWindowChrome()
-    await ensurePetWindowVisible()
-  }
-
-  if (auth.isLoggedIn) {
-    loading.value = false
-    void setPetOnlyLayout()
-    void loadUserData()
-  } else {
-    loading.value = false
-    await setLoginLayout()
-  }
-  shellReady.value = true
 })
 
 watch(
@@ -615,7 +631,8 @@ onUnmounted(() => {
   font-size: 15px;
   font-weight: 600;
   z-index: 500;
-  pointer-events: auto;
+  /* 仅占位视觉，不拦截点击（避免 init 未完成时桌宠完全点不了） */
+  pointer-events: none;
 }
 
 .load-error {
