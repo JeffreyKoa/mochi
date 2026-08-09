@@ -6,6 +6,24 @@ import {
   turnPhaseToPerception,
 } from './orchestrator'
 
+vi.mock('@/config', () => ({
+  getClientConfig: () => ({
+    visionEnabled: true,
+    visionSnapshotOnSpeechStart: true,
+    visionSnapshotOnAudioEnd: true,
+    visionSnapshotOnObjectIntent: true,
+  }),
+  getFaceprintConfig: () => ({ enabled: false, probeOnSpeechStart: false }),
+}))
+
+vi.mock('@/services/visionCapture', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/services/visionCapture')>()
+  return {
+    ...actual,
+    isVisionCaptureEnabled: () => true,
+  }
+})
+
 describe('perceptionAllowsVision', () => {
   it('glance only in think', () => {
     expect(perceptionAllowsVision('glance', 'think')).toBe(true)

@@ -140,18 +140,18 @@ export function evaluateTurnEnd(signals: TurnEndSignals): TurnEndDecision {
   /** 判定句中可能未完（空 partial 不算未完，避免 ASR 延迟误拦） */
   const unfinished = isUnfinishedSpeech(partial)
 
-  // ASR 仍在更新 → 嘴还在动（流式延迟），不提交
-  if (partial && now - signals.partialUpdatedAt < partialStableMs) {
-    return { ready: false, reason: 'partial_unstable' }
-  }
-
-  // VAD 已 speech_end 但 partial 在此之后仍更新 → 尾音/续说，勿提交
+  // VAD 已 speech_end 但 partial 在此之后仍更新 → 尾音/续说，勿提交（优先于 partial_unstable）
   if (
     signals.speechEndedAt &&
     partial &&
     signals.partialUpdatedAt > signals.speechEndedAt
   ) {
     return { ready: false, reason: 'partial_after_speech_end' }
+  }
+
+  // ASR 仍在更新 → 嘴还在动（流式延迟），不提交
+  if (partial && now - signals.partialUpdatedAt < partialStableMs) {
+    return { ready: false, reason: 'partial_unstable' }
   }
 
   // 本地 X-ASR：VAD 已 speech_end 且 partial 稳定 → 更短路径提交（未完成句不走快速路径）

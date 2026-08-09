@@ -5,7 +5,7 @@
 | 路径 | 用途 |
 |------|------|
 | `speaker/campp.onnx` | 声纹 CAM++ |
-| `audio/yamnet.onnx` | 环境音 YAMNet |
+| `audio/yamnet.onnx` + `audio/yamnet.data` | 环境音 YAMNet（external data） |
 | `vad/silero_vad_v5.onnx` | Silero VAD（可选，缺失回退 CDN） |
 | `face/rec.onnx` | 人脸（**暂未对接**） |
 

@@ -25,7 +25,12 @@
     "tauri:dev": "tauri dev",
 
     "tauri:build": "tauri build && powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/copy-nsis-installer.ps1",
-    "prepare:server-voice": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/prepare-server-voice.ps1"
+
+    "prepare:server-voice": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/prepare-server-voice.ps1",
+
+    "test": "vitest run",
+
+    "test:watch": "vitest"
 
   },
 
@@ -57,10 +62,11 @@
 
     "vite": "^6.0.5",
 
+    "vitest": "^3.2.7",
+
     "vue-tsc": "^2.2.0"
 
   }
 
 }
-
 

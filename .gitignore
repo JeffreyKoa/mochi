@@ -35,6 +35,7 @@ services/emotion2vec/.__pycache__
 
 # ONNX 模型体积大，本地按 README 下载，勿提交
 desktop/public/models/**/*.onnx
+desktop/public/models/**/*.data
 desktop/public/models/**/*.pt
 tools/models/emotion2vec/**/*
 !tools/models/emotion2vec/.gitkeep

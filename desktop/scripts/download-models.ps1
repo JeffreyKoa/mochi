@@ -58,6 +58,52 @@ function Download-WithCurl([string[]]$Urls, [string]$OutPath, [long]$MinBytes, [
     throw "Failed to download $Label (tried $($Urls.Count) mirrors)"
 }
 
+function Download-YamnetFromZip([string]$OutPath, [long]$DataMinBytes) {
+    $outDir = Split-Path -Parent $OutPath
+    $dataPath = Join-Path $outDir "yamnet.data"
+    if ((Test-FileReady $OutPath 1) -and (Test-FileReady $dataPath $DataMinBytes)) {
+        $size = (Get-Item $dataPath).Length
+        Write-Host "  skip (exists): yamnet.onnx + yamnet.data ($([math]::Round($size/1MB, 1)) MB data)" -ForegroundColor DarkGray
+        return
+    }
+
+    $zipUrls = @(
+        "https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/yamnet/releases/v0.46.1/yamnet-onnx-float.zip",
+        "https://hf-mirror.com/qualcomm/YamNet/resolve/cada60b8b5ee661f6d2b584001e7659af7670478/YamNet_float.onnx.zip"
+    )
+    $tmpZip = Join-Path $env:TEMP ("mochi-yamnet-" + [guid]::NewGuid().ToString("n") + ".zip")
+    $tmpDir = Join-Path $env:TEMP ("mochi-yamnet-" + [guid]::NewGuid().ToString("n"))
+
+    try {
+        $downloaded = $false
+        foreach ($url in $zipUrls) {
+            Write-Host "  download zip: yamnet" -ForegroundColor Yellow
+            Write-Host "  from: $url" -ForegroundColor DarkGray
+            & curl.exe -L --retry 3 --connect-timeout 30 -o $tmpZip $url
+            if ($LASTEXITCODE -eq 0 -and (Test-Path $tmpZip) -and (Get-Item $tmpZip).Length -gt 1MB) {
+                $downloaded = $true
+                break
+            }
+            if (Test-Path $tmpZip) { Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue }
+            Write-Host "  retry next zip mirror..." -ForegroundColor DarkYellow
+        }
+        if (-not $downloaded) { throw "Failed to download yamnet zip" }
+
+        New-Item -ItemType Directory -Force -Path $tmpDir, $outDir | Out-Null
+        Expand-Archive -Path $tmpZip -DestinationPath $tmpDir -Force
+        $onnx = Get-ChildItem -Path $tmpDir -Recurse -Filter "yamnet.onnx" | Select-Object -First 1
+        $data = Get-ChildItem -Path $tmpDir -Recurse -Filter "yamnet.data" | Select-Object -First 1
+        if (-not $onnx -or -not $data) { throw "yamnet.onnx / yamnet.data missing inside zip" }
+        if ($data.Length -lt $DataMinBytes) { throw "yamnet.data too small ($($data.Length) bytes)" }
+        Copy-Item -Force $onnx.FullName $OutPath
+        Copy-Item -Force $data.FullName $dataPath
+        Write-Host "  saved: $OutPath + $dataPath ($([math]::Round($data.Length/1MB, 1)) MB data)" -ForegroundColor Green
+    } finally {
+        if (Test-Path $tmpZip) { Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue }
+        if (Test-Path $tmpDir) { Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue }
+    }
+}
+
 Write-Host "Mochi desktop ONNX -> $Root" -ForegroundColor White
 Write-Host "  (ASR/TTS 在 tools/x-asr、tools/x-tts，由 restart-backend 管理)" -ForegroundColor DarkGray
 
@@ -70,13 +116,7 @@ $CamppUrls = @(
 Download-WithCurl $CamppUrls $CamppOut $CamppMinBytes "campp.onnx"
 
 Write-Step "Sound event classifier (YAMNet)"
-$YamnetUrls = @(
-    "https://hf-mirror.com/qualcomm/YamNet/resolve/main/YamNet.onnx"
-    "https://huggingface.co/qualcomm/YamNet/resolve/main/YamNet.onnx"
-    "https://github.com/onnx/models/raw/main/validated/vision/classification/yamnet/model/yamnet-256.onnx"
-    "https://media.githubusercontent.com/media/onnx/models/main/validated/vision/classification/yamnet/model/yamnet-256.onnx"
-)
-Download-WithCurl $YamnetUrls $YamnetOut $YamnetMinBytes "yamnet.onnx"
+Download-YamnetFromZip $YamnetOut $YamnetMinBytes
 
 Write-Step "Silero VAD v5 (optional local copy)"
 $SileroUrls = @(

@@ -23,6 +23,7 @@ npm run tauri:dev
 | `smoke-voice-chain.ps1` | 语音链路冒烟 |
 | `copy-nsis-installer.ps1` | tauri:build 后复制安装包 |
 | `desktop/scripts/download-models.ps1` | 桌宠 ONNX → `desktop/public/models/` |
+| `cd desktop && npm test` | 前端单测（vitest） |
 
 Sidecar 包装脚本：`start-xasr-sidecar.ps1`、`start-xtts-sidecar.ps1`、`probe-xasr.ps1` 等。
 

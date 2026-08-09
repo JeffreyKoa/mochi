@@ -9,6 +9,7 @@ import { listenProactive } from '@/services/proactiveSync'
 import {
   claimVoiceOwner,
   getStoredVoiceOwner,
+  isChatWindowVisible,
   releaseVoiceOwner,
   setupVoiceOwnerListener,
 } from '@/services/voiceSessionOwner'
@@ -261,12 +262,14 @@ onMounted(async () => {
     } catch {
       // optional
     }
-    // side-panel-opened 可能在 listener 注册前已发出，挂载后补一次自动连麦
-    void acquireChatVoice().catch(() => {
-      if (!rt.statusText) {
-        rt.statusText = realtimeEnabled.value ? '连接失败' : '文字模式'
-      }
-    })
+    // side-panel-opened 可能在 listener 注册前已发出；仅弹窗可见时补连，避免隐藏 chat 窗抢 pet 的 /ws/voice
+    if (await isChatWindowVisible()) {
+      void acquireChatVoice().catch(() => {
+        if (!rt.statusText) {
+          rt.statusText = realtimeEnabled.value ? '连接失败' : '文字模式'
+        }
+      })
+    }
   } else {
     await acquireChatVoice().catch(() => {
       rt.statusText = realtimeEnabled.value ? '连接失败' : '文字模式'

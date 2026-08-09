@@ -65,9 +65,9 @@ export class SoundEventClassifier {
       ort.env.logLevel = 'error'
       ort.env.wasm.wasmPaths = ORT_BASE
 
-      const buf = await fetchOnnxArrayBuffer(MODEL_URL)
-
-      this.session = await ort.InferenceSession.create(buf, {
+      // YAMNet 为 external data 格式（yamnet.onnx + yamnet.data），须从 URL 加载
+      await fetchOnnxArrayBuffer('/models/audio/yamnet.data')
+      this.session = await ort.InferenceSession.create(MODEL_URL, {
         executionProviders: ['wasm'],
       })
       this.inputName = this.session.inputNames[0] ?? 'input'

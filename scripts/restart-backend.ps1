@@ -178,6 +178,8 @@ function Start-Emotion2vecService {
         throw "Missing $startScript"
     }
 
+    # SetupOnly 已由 Ensure-MochiServerModels 完成；此处仅后台拉起 uvicorn
+    & $startScript -Background -RepoRoot $RepoRoot
     if ($LASTEXITCODE -ne 0) { throw "emotion2vec background start failed" }
 
     $mochiLog = Get-MochiDailyLogPath -RepoRoot $RepoRoot -ServiceName "mochi"

@@ -393,11 +393,8 @@ onMounted(async () => {
       } catch (e) {
         console.warn('[chat] init listener failed', e)
       }
+      // 隐藏 chat 弹窗未打开时不要挂载 ChatPanel（否则会抢 /ws/voice，Vite dev 报 ws proxy ECONNRESET）
       if (!hadPending && popupPanelMode.value === 'chat' && auth.isLoggedIn) {
-        void loadUserData()
-      } else if (!hadPending && popupPanelMode.value === null && auth.isLoggedIn) {
-        // 弹窗被 show 但未带 pending（不应出现）→ 默认聊天
-        popupPanelMode.value = 'chat'
         void loadUserData()
       }
       return
