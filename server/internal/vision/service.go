@@ -3,6 +3,7 @@ package vision
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -10,10 +11,11 @@ import (
 	"github.com/mochi-ai/server/internal/config"
 )
 
-// Service 调用 Qwen-VL（OpenAI 兼容接口），按焦点生成 VisualHint。
+// Service 调用视觉后端（本地 Moondream sidecar 或 Qwen-VL），按焦点生成 VisualHint。
 type Service struct {
 	cfg    config.VisionConfig
 	vl     *vlClient
+	local  *localMoondreamClient
 	aiBase string
 	aiKey  string
 }
@@ -24,21 +26,59 @@ func NewService(app config.AIConfig, vis config.VisionConfig) *Service {
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
-	model := vis.Model
-	if model == "" {
-		model = "qwen-vl-plus"
-	}
-	return &Service{
+	s := &Service{
 		cfg:    vis,
-		vl:     newVLClient(app.APIBase, app.APIKey, model, timeout),
 		aiBase: app.APIBase,
 		aiKey:  app.APIKey,
 	}
+	if useLocalMoondreamBackend(vis.Backend) {
+		s.local = newLocalMoondreamClient(vis.SidecarURL, vis.Model, timeout)
+	} else {
+		model := vis.Model
+		if model == "" {
+			model = "qwen-vl-plus"
+		}
+		s.vl = newVLClient(app.APIBase, app.APIKey, model, timeout)
+	}
+	return s
+}
+
+func useLocalMoondreamBackend(backend string) bool {
+	switch strings.ToLower(strings.TrimSpace(backend)) {
+	case "local_moondream", "moondream", "local":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Service) visionBackendLabel() string {
+	if s != nil && s.local != nil {
+		return "local_moondream"
+	}
+	return "dashscope_vl"
+}
+
+// runVLChat 统一视觉推理入口（本地 sidecar 或云端 VL）。
+func (s *Service) runVLChat(ctx context.Context, jpeg []byte, prompt string) (string, error) {
+	if s.local != nil {
+		return s.local.chat(ctx, jpeg, prompt)
+	}
+	if s.vl != nil {
+		return s.vl.chat(ctx, jpeg, prompt)
+	}
+	return "", fmt.Errorf("vision backend not configured")
 }
 
 // Enabled 服务端 vision 总开关。
 func (s *Service) Enabled() bool {
-	return s != nil && s.cfg.Enabled && s.aiKey != ""
+	if s == nil || !s.cfg.Enabled {
+		return false
+	}
+	if s.local != nil {
+		return strings.TrimSpace(s.cfg.SidecarURL) != ""
+	}
+	return s.aiKey != ""
 }
 
 // Describe 分析 JPEG 帧；sessionID 仅用于日志。
@@ -63,8 +103,8 @@ func (s *Service) Describe(ctx context.Context, jpeg []byte, focus Focus, sessio
 		return Hint{Focus: FocusSkip, Skipped: true, SkipReason: "unknown_focus"}
 	}
 
-	log.Printf("[vision] session=%s vl_start focus=%s jpeg_bytes=%d model=%s", sessionID, focus, len(jpeg), s.cfg.Model)
-	raw, err := s.vl.chat(ctx, jpeg, prompt)
+	log.Printf("[vision] session=%s vl_start focus=%s jpeg_bytes=%d backend=%s model=%s", sessionID, focus, len(jpeg), s.visionBackendLabel(), s.cfg.Model)
+	raw, err := s.runVLChat(ctx, jpeg, prompt)
 	elapsed := time.Since(start).Milliseconds()
 	if err != nil {
 		log.Printf("[vision] session=%s vl_error focus=%s err=%v elapsed_ms=%d", sessionID, focus, err, elapsed)
@@ -199,9 +239,9 @@ func (s *Service) DescribeContextual(ctx context.Context, jpeg []byte, focus Foc
 	if s == nil || !s.Enabled() || len(jpeg) == 0 || userPrompt == "" {
 		return EmptyHint()
 	}
-	log.Printf("[vision] session=%s vl_contextual focus=%s jpeg_bytes=%d model=%s",
-		sessionID, focus, len(jpeg), s.cfg.Model)
-	raw, err := s.vl.chat(ctx, jpeg, userPrompt)
+	log.Printf("[vision] session=%s vl_contextual focus=%s jpeg_bytes=%d backend=%s model=%s",
+		sessionID, focus, len(jpeg), s.visionBackendLabel(), s.cfg.Model)
+	raw, err := s.runVLChat(ctx, jpeg, userPrompt)
 	elapsed := time.Since(start).Milliseconds()
 	if err != nil {
 		log.Printf("[vision] session=%s vl_contextual_error focus=%s err=%v elapsed_ms=%d",
@@ -368,11 +408,18 @@ func parseVLResponse(focus Focus, raw string) Hint {
 	raw = strings.TrimSpace(raw)
 
 	var hint Hint
+	if isVLTemplateGarbage(raw) {
+		log.Printf("[vision][parse] %s template_garbage raw=%q", focus, truncate(raw, 120))
+		return markVLGarbage(Hint{Focus: focus}, "vl_template_garbage")
+	}
 	switch focus {
 	case FocusOwnerFace:
 		var j vlFaceJSON
 		if err := json.Unmarshal([]byte(raw), &j); err != nil {
 			log.Printf("[vision][parse] owner_face json_fail err=%v raw=%q", err, truncate(raw, 120))
+			if isVLTemplateGarbage(raw) {
+				return markVLGarbage(Hint{Focus: focus}, "vl_template_garbage")
+			}
 			hint.Note = raw
 			hint.UserExpression = "unknown"
 			return hint
@@ -384,11 +431,17 @@ func parseVLResponse(focus Focus, raw string) Hint {
 		var j vlObjectJSON
 		if err := json.Unmarshal([]byte(raw), &j); err != nil {
 			log.Printf("[vision][parse] object json_fail err=%v raw=%q", err, truncate(raw, 120))
+			if isVLTemplateGarbage(raw) {
+				return markVLGarbage(Hint{Focus: focus}, "vl_template_garbage")
+			}
 			hint.Note = raw
 			return hint
 		}
 		hint.ObjectSummary = strings.TrimSpace(j.ObjectSummary)
 		hint.Note = strings.TrimSpace(j.Note)
+		if isVLTemplateGarbage(hint.Note) || isVLTemplateGarbage(hint.ObjectSummary) {
+			return markVLGarbage(Hint{Focus: focus}, "vl_template_garbage")
+		}
 		if hint.Note == "" && hint.ObjectSummary != "" {
 			hint.Note = hint.ObjectSummary
 		}
@@ -396,11 +449,17 @@ func parseVLResponse(focus Focus, raw string) Hint {
 		var j vlSceneJSON
 		if err := json.Unmarshal([]byte(raw), &j); err != nil {
 			log.Printf("[vision][parse] scene json_fail err=%v raw=%q", err, truncate(raw, 120))
+			if isVLTemplateGarbage(raw) {
+				return markVLGarbage(Hint{Focus: focus}, "vl_template_garbage")
+			}
 			hint.Note = raw
 			return hint
 		}
 		hint.SceneSummary = strings.TrimSpace(j.SceneSummary)
 		hint.Note = strings.TrimSpace(j.Note)
+		if isVLTemplateGarbage(hint.Note) || isVLTemplateGarbage(hint.SceneSummary) {
+			return markVLGarbage(Hint{Focus: focus}, "vl_template_garbage")
+		}
 		if hint.Note == "" && hint.SceneSummary != "" {
 			hint.Note = hint.SceneSummary
 		}
@@ -409,6 +468,15 @@ func parseVLResponse(focus Focus, raw string) Hint {
 	}
 	if focus == FocusOwnerFace && hint.Note == "" && hint.UserExpression != "" && hint.UserExpression != "unknown" {
 		hint.Note = "主人看起来" + expressionLabel(hint.UserExpression)
+	}
+	if hint.Note != "" && isVLTemplateGarbage(hint.Note) {
+		return markVLGarbage(hint, "vl_template_garbage")
+	}
+	if hint.ObjectSummary != "" && isVLTemplateGarbage(hint.ObjectSummary) {
+		return markVLGarbage(hint, "vl_template_garbage")
+	}
+	if hint.SceneSummary != "" && isVLTemplateGarbage(hint.SceneSummary) {
+		return markVLGarbage(hint, "vl_template_garbage")
 	}
 	return hint
 }

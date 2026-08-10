@@ -30,9 +30,9 @@ desktop/src-tauri/bundle/voice/x-asr/
 desktop/src-tauri/bundle/voice/x-tts/
 tools/python-embed/
 .build-tmp/
-services/emotion2vec/.venv
-services/emotion2vec/.__pycache__
-
+# Python sidecars：本地 venv 与字节码勿提交
+**/.venv/
+**/__pycache__/
 # ONNX 模型体积大，本地按 README 下载，勿提交
 desktop/public/models/**/*.onnx
 desktop/public/models/**/*.data

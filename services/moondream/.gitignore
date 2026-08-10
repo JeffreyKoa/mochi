@@ -1,0 +1,4 @@
+# 本地 Python 环境，勿提交
+.venv/
+__pycache__/
+*.py[cod]

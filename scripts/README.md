@@ -15,7 +15,7 @@ npm run tauri:dev
 
 | 脚本 | 用途 |
 |------|------|
-| `restart-backend.ps1` | 主入口：ensure server 模型 → 启 emotion2vec/x-asr/x-tts/Go |
+| `restart-backend.ps1` | 主入口：ensure server 模型 → 启 emotion2vec/moondream/x-asr/x-tts/Go |
 | `restart-backend.bat` | 同上（批处理入口） |
 | `prepare-server-voice.ps1` | 仅 setup server voice（不启动） |
 | `stop-voice-sidecars.ps1` | 停止 8766/8767 sidecar（tauri dev 前） |
@@ -35,5 +35,6 @@ Opus 构建：使用 `server/build-opus.bat`（`restart-backend.ps1 -BuildOpus`�
 |------|------|
 | Go API | 8081 |
 | emotion2vec | 8091 |
+| moondream | 8093 |
 | x-asr | 8766 |
 | x-tts | 8767 |

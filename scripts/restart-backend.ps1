@@ -2,6 +2,7 @@
 #
 # Services:
 #   emotion2vec  :8091  acoustic SER
+#   moondream    :8093  local vision JPEG→text
 #   x-asr sidecar :8766  server ASR
 #   x-tts sidecar :8767  server TTS (Matcha)
 #   Go API server :8081  main backend
@@ -22,6 +23,7 @@ param(
     [switch]$KillOnly,
     [switch]$BuildOpus,
     [switch]$SkipEmotion2vec,
+    [switch]$SkipMoondream,
     [switch]$SkipXasr,
     [switch]$SkipXtts,
     [switch]$FollowLogs,
@@ -30,6 +32,7 @@ param(
     [int]$XasrPort = 8766,
     [int]$XttsPort = 8767,
     [int]$EmotionPort = 8091,
+    [int]$MoondreamPort = 8093,
     [int]$HealthTimeoutSec = 180
 )
 
@@ -37,6 +40,10 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Resolve-Path (Join-Path $ScriptDir "..")
 $LogsRoot = Join-Path $RepoRoot "logs"
+$MoondreamLegacyPort = 8092
+
+# Align sidecar launcher with config.yaml (avoid stale shell MOONDREAM_PORT=8092)
+$env:MOONDREAM_PORT = "$MoondreamPort"
 
 New-Item -ItemType Directory -Force -Path $LogsRoot | Out-Null
 . (Join-Path $RepoRoot "scripts\lib\daily-log.ps1")
@@ -46,22 +53,54 @@ function Write-Step([string]$Msg) {
     Write-Host "==> $Msg" -ForegroundColor Cyan
 }
 
+function Get-PortListenerPids {
+    param([int]$Port)
+    $pids = New-Object System.Collections.Generic.List[int]
+    foreach ($c in @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)) {
+        if ($c.OwningProcess -gt 0) { [void]$pids.Add([int]$c.OwningProcess) }
+    }
+    foreach ($line in @(netstat -ano | Select-String "127\.0\.0\.1:$Port\s")) {
+        $text = $line.ToString().Trim()
+        if ($text -notmatch 'LISTENING') { continue }
+        $procId = [int](($text -split '\s+')[-1])
+        if ($procId -gt 0) { [void]$pids.Add($procId) }
+    }
+    return @($pids | Sort-Object -Unique)
+}
+
 function Stop-PortListener {
     param(
         [int]$Port,
         [string]$Label
     )
-    for ($attempt = 0; $attempt -lt 3; $attempt++) {
-        $conns = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
-        if ($conns.Count -eq 0) { return }
-        foreach ($c in $conns) {
-            $procId = $c.OwningProcess
-            if ($procId -le 0) { continue }
+    for ($attempt = 0; $attempt -lt 5; $attempt++) {
+        $pids = @(Get-PortListenerPids $Port)
+        if ($pids.Count -eq 0) { return }
+        foreach ($procId in $pids) {
             Write-Host "  stop $Label : port $Port PID $procId (attempt $($attempt + 1))" -ForegroundColor Yellow
             Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
             cmd /c "taskkill /PID $procId /T /F >nul 2>&1"
         }
-        Start-Sleep -Milliseconds 600
+        Start-Sleep -Milliseconds 800
+    }
+}
+
+function Assert-BackendPortsFree {
+    $blocked = @()
+    foreach ($p in @($ServerPort, $XasrPort, $XttsPort, $EmotionPort, $MoondreamPort)) {
+        $pids = @(Get-PortListenerPids $p)
+        if ($pids.Count -gt 0) {
+            $blocked += "port $p PID $($pids -join ',')"
+        }
+    }
+    if ($MoondreamLegacyPort -ne $MoondreamPort) {
+        $legacyPids = @(Get-PortListenerPids $MoondreamLegacyPort)
+        if ($legacyPids.Count -gt 0) {
+            Write-Host "  WARN legacy moondream port $MoondreamLegacyPort still held by PID $($legacyPids -join ',') (using $MoondreamPort instead)" -ForegroundColor Yellow
+        }
+    }
+    if ($blocked.Count -gt 0) {
+        throw "Ports still in use after kill: $($blocked -join '; '). Run this script as Administrator or reboot."
     }
 }
 
@@ -134,6 +173,37 @@ function Wait-HttpOk {
     return $false
 }
 
+# Wait until Moondream /health reports model_loaded=true (CPU warmup ~15-60s)
+function Wait-MoondreamReady {
+    param(
+        [string]$Url,
+        [string]$Label,
+        [int]$TimeoutSec = 120
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $r = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 5
+            if ($r.StatusCode -eq 200) {
+                $body = $r.Content | ConvertFrom-Json
+                if ($body.model_loaded -eq $true) {
+                    Write-Host "  OK  $Label $Url (model_loaded)" -ForegroundColor Green
+                    return $true
+                }
+                if ($body.load_error) {
+                    Write-Host "  FAIL $Label load_error: $($body.load_error)" -ForegroundColor Red
+                    return $false
+                }
+            }
+        } catch {
+            # retry
+        }
+        Start-Sleep -Seconds 2
+    }
+    Write-Host "  FAIL $Label model not loaded after $TimeoutSec sec" -ForegroundColor Red
+    return $false
+}
+
 function Stop-AllBackend {
     Write-Step "Kill all Mochi backend processes"
 
@@ -141,6 +211,10 @@ function Stop-AllBackend {
     Stop-PortListener -Port $XasrPort -Label "x-asr"
     Stop-PortListener -Port $XttsPort -Label "x-tts"
     Stop-PortListener -Port $EmotionPort -Label "emotion2vec"
+    Stop-PortListener -Port $MoondreamPort -Label "moondream"
+    if ($MoondreamLegacyPort -ne $MoondreamPort) {
+        Stop-PortListener -Port $MoondreamLegacyPort -Label "moondream-legacy"
+    }
 
     cmd /c "taskkill /IM server.exe /F >nul 2>&1"
 
@@ -154,12 +228,14 @@ function Stop-AllBackend {
         "tts_server.py",
         "uvicorn app:app",
         "services\emotion2vec",
-        "services/emotion2vec"
+        "services/emotion2vec",
+        "services\moondream",
+        "services/moondream"
     ) -Label "python sidecar"
 
     Start-Sleep -Seconds 2
 
-    foreach ($p in @($ServerPort, $XasrPort, $XttsPort, $EmotionPort)) {
+    foreach ($p in @($ServerPort, $XasrPort, $XttsPort, $EmotionPort, $MoondreamPort, $MoondreamLegacyPort)) {
         if (Test-PortListening $p) {
             Write-Host "  WARN port $p still in use, force kill again" -ForegroundColor Yellow
             Stop-PortListener -Port $p -Label "port-$p"
@@ -167,6 +243,7 @@ function Stop-AllBackend {
     }
 
     Start-Sleep -Milliseconds 800
+    Assert-BackendPortsFree
 
     Write-Host "All backend processes stopped." -ForegroundColor Green
 }
@@ -178,13 +255,35 @@ function Start-Emotion2vecService {
         throw "Missing $startScript"
     }
 
-    # SetupOnly 已由 Ensure-MochiServerModels 完成；此处仅后台拉起 uvicorn
+    # SetupOnly already done by Ensure-MochiServerModels; start uvicorn in background
     & $startScript -Background -RepoRoot $RepoRoot
     if ($LASTEXITCODE -ne 0) { throw "emotion2vec background start failed" }
 
     $mochiLog = Get-MochiDailyLogPath -RepoRoot $RepoRoot -ServiceName "mochi"
     if (-not (Wait-HttpOk "http://127.0.0.1:$EmotionPort/health" "emotion2vec" $HealthTimeoutSec)) {
         throw "emotion2vec health check failed. Sidecar API calls are logged in $mochiLog"
+    }
+}
+
+function Start-MoondreamService {
+    Write-Step "Start moondream (:$MoondreamPort)"
+    $startScript = Join-Path $RepoRoot "services\moondream\start.ps1"
+    if (-not (Test-Path $startScript)) {
+        throw "Missing $startScript"
+    }
+
+    $env:MOONDREAM_PORT = "$MoondreamPort"
+    Stop-PortListener -Port $MoondreamPort -Label "moondream"
+    if ($MoondreamLegacyPort -ne $MoondreamPort) {
+        Stop-PortListener -Port $MoondreamLegacyPort -Label "moondream-legacy"
+    }
+
+    & $startScript -Background -RepoRoot $RepoRoot -Port $MoondreamPort
+    if ($LASTEXITCODE -ne 0) { throw "moondream background start failed" }
+
+    $mochiLog = Get-MochiDailyLogPath -RepoRoot $RepoRoot -ServiceName "mochi"
+    if (-not (Wait-MoondreamReady "http://127.0.0.1:$MoondreamPort/health" "moondream" 180)) {
+        throw "moondream model warmup failed. See $mochiLog"
     }
 }
 
@@ -319,14 +418,7 @@ Write-Host "  repo:    $RepoRoot"
 Write-Host "  logs:    $LogsRoot"
 $mochiLogHint = Get-MochiDailyLogPath -RepoRoot $RepoRoot -ServiceName "mochi"
 Write-Host "  mochi:   $mochiLogHint (Go + sidecar API calls)" -ForegroundColor DarkGray
-Write-Host "  ports:   emotion2vec=$EmotionPort x-asr=$XasrPort x-tts=$XttsPort go=$ServerPort"
-
-Write-Step "Ensure server voice models / venv"
-. (Join-Path $RepoRoot "scripts\lib\ensure-models.ps1")
-Ensure-MochiServerModels -RepoRoot $RepoRoot `
-    -SkipEmotion2vec:$SkipEmotion2vec `
-    -SkipXasr:$SkipXasr `
-    -SkipXtts:$SkipXtts
+Write-Host "  ports:   emotion2vec=$EmotionPort moondream=$MoondreamPort (legacy=$MoondreamLegacyPort) x-asr=$XasrPort x-tts=$XttsPort go=$ServerPort"
 
 Stop-AllBackend
 
@@ -336,11 +428,25 @@ if ($KillOnly) {
     exit 0
 }
 
+Write-Step "Ensure server voice models / venv"
+. (Join-Path $RepoRoot "scripts\lib\ensure-models.ps1")
+Ensure-MochiServerModels -RepoRoot $RepoRoot `
+    -SkipEmotion2vec:$SkipEmotion2vec `
+    -SkipMoondream:$SkipMoondream `
+    -SkipXasr:$SkipXasr `
+    -SkipXtts:$SkipXtts
+
 try {
     if (-not $SkipEmotion2vec) {
         Start-Emotion2vecService
     } else {
         Write-Step "Skip emotion2vec"
+    }
+
+    if (-not $SkipMoondream) {
+        Start-MoondreamService
+    } else {
+        Write-Step "Skip moondream"
     }
 
     if (-not $SkipXasr) {
@@ -360,6 +466,7 @@ try {
     if ($useForegroundGo) {
         Write-Step "All sidecars started; starting Go in foreground"
         Write-Host "  emotion2vec : http://127.0.0.1:$EmotionPort/health" -ForegroundColor Green
+        Write-Host "  moondream   : http://127.0.0.1:$MoondreamPort/health" -ForegroundColor Green
         Write-Host "  x-asr       : ws://127.0.0.1:$XasrPort" -ForegroundColor Green
         Write-Host "  x-tts       : http://127.0.0.1:$XttsPort/health" -ForegroundColor Green
         Write-Host "  Mochi log   : $mochiLogHint" -ForegroundColor DarkGray
@@ -373,6 +480,7 @@ try {
 
     Write-Step "All backend services started"
     Write-Host "  emotion2vec : http://127.0.0.1:$EmotionPort/health" -ForegroundColor Green
+    Write-Host "  moondream   : http://127.0.0.1:$MoondreamPort/health" -ForegroundColor Green
     Write-Host "  x-asr       : ws://127.0.0.1:$XasrPort" -ForegroundColor Green
     Write-Host "  x-tts       : http://127.0.0.1:$XttsPort/health" -ForegroundColor Green
     Write-Host "  Go API      : http://127.0.0.1:$ServerPort" -ForegroundColor Green

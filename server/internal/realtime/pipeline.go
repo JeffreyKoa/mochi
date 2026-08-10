@@ -439,7 +439,12 @@ func (p *Pipeline) finalizeParallelPerception(ctx context.Context, sess *Session
 		return &state
 	}
 
-	if !p.vision.ParallelOwnerFace() && !faceHint.IsUsable() {
+	skipOwnerFace := userText != "" && vision.WantsHardFocusVision(userText, p.vision.ObjectKeywords(), p.vision.SceneKeywords())
+	if skipOwnerFace {
+		sess.CancelVisionWork()
+		faceHint = vision.EmptyHint()
+		log.Printf("[vision][skip] owner_face_parallel session=%s text=%q reason=hard_focus_intent", sess.ID, truncateVisionText(userText, 40))
+	} else if !p.vision.ParallelOwnerFace() && !faceHint.IsUsable() {
 		faceHint = p.vision.DescribeOwnerFace(ctx, jpeg, sess.ID)
 	} else if !faceHint.IsUsable() && sess.visualDone() {
 		faceHint = sess.VisualHint()
@@ -594,7 +599,7 @@ func (p *Pipeline) maybeEarlyPerceptionAnim(ctx context.Context, sess *Session, 
 		hint.UserMood, hint.NeedsEmpathy, hint.Intent, sess.ID)
 }
 
-// awaitOwnerFaceHint 等待 prefetch 或单次 VL。
+// awaitOwnerFaceHint 等待 prefetch 完成；prefetch 在途时不重复 Describe（Moondream 单线程，并发必排队超时）。
 func (p *Pipeline) awaitOwnerFaceHint(ctx context.Context, sess *Session) vision.Hint {
 	if p.vision == nil || !p.autoVisionOnVoiceTurn() || !sess.HasVisionFrame() {
 		return vision.EmptyHint()
@@ -604,11 +609,47 @@ func (p *Pipeline) awaitOwnerFaceHint(ctx context.Context, sess *Session) vision
 		log.Printf("[realtime][vision] prefetch_hit session=%s focus=%s", sess.ID, h.Focus)
 		return h
 	}
-	timeout := p.vision.OwnerFaceWaitTimeout()
-	if waited := sess.WaitForVisualHint(ctx, timeout); waited.IsUsable() || waited.Focus != vision.FocusSkip {
-		log.Printf("[realtime][vision] prefetch_hit session=%s focus=%s after_wait", sess.ID, waited.Focus)
-		return waited
+
+	waitBudget := p.vision.OwnerFaceWaitTimeout()
+	deadline := time.Now().Add(waitBudget)
+	for time.Now().Before(deadline) {
+		if sess.visualDone() {
+			h := sess.VisualHint()
+			log.Printf("[realtime][vision] prefetch_hit session=%s focus=%s after_wait", sess.ID, h.Focus)
+			return h
+		}
+		if !sess.IsVisionPrefetching() {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return vision.EmptyHint()
+		case <-time.After(25 * time.Millisecond):
+		}
 	}
+	if sess.visualDone() {
+		return sess.VisualHint()
+	}
+
+	// prefetch 仍在跑：继续等到结束或 ctx 取消，禁止第二条 /v1/describe
+	if sess.IsVisionPrefetching() {
+		log.Printf("[realtime][vision] prefetch_inflight session=%s wait=until_done", sess.ID)
+		for sess.IsVisionPrefetching() && !sess.visualDone() {
+			select {
+			case <-ctx.Done():
+				return vision.EmptyHint()
+			case <-time.After(25 * time.Millisecond):
+			}
+		}
+		if sess.visualDone() {
+			h := sess.VisualHint()
+			log.Printf("[realtime][vision] prefetch_hit session=%s focus=%s after_inflight", sess.ID, h.Focus)
+			return h
+		}
+		return vision.EmptyHint()
+	}
+
+	// 未启动 prefetch 时才走单次 VL
 	jpeg := sess.TurnVisionJPEG()
 	if len(jpeg) == 0 {
 		return vision.EmptyHint()

@@ -7,6 +7,7 @@ function Ensure-MochiServerModels {
         [Parameter(Mandatory = $true)]
         [string]$RepoRoot,
         [switch]$SkipEmotion2vec,
+        [switch]$SkipMoondream,
         [switch]$SkipXasr,
         [switch]$SkipXtts
     )
@@ -18,7 +19,7 @@ function Ensure-MochiServerModels {
         Write-Host "==> $Msg" -ForegroundColor Cyan
     }
 
-    Write-StepLocal "Ensure server voice runtimes (tools/x-asr, tools/x-tts, services/emotion2vec)"
+    Write-StepLocal "Ensure server runtimes (x-asr, x-tts, emotion2vec, moondream)"
 
     if (-not $SkipXasr) {
         Write-StepLocal "Setup x-asr (tools/x-asr venv + models)"
@@ -40,6 +41,23 @@ function Ensure-MochiServerModels {
         if ($LASTEXITCODE -ne 0) { throw "emotion2vec setup failed" }
     }
 
+    if (-not $SkipMoondream) {
+        Write-StepLocal "Setup moondream (services/moondream venv + deps)"
+        $mdScript = Join-Path $RepoRoot "services\moondream\start.ps1"
+        if (-not (Test-Path $mdScript)) { throw "Missing $mdScript" }
+        & $mdScript -SetupOnly
+        if ($LASTEXITCODE -ne 0) { throw "moondream setup failed" }
+
+        Write-StepLocal "Prefetch moondream2 weights (best-effort)"
+        $dlScript = Join-Path $RepoRoot "services\moondream\download-model.ps1"
+        if (Test-Path $dlScript) {
+            & $dlScript
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "WARN | moondream weight prefetch failed; first /v1/describe will retry download" -ForegroundColor Yellow
+            }
+        }
+    }
+
     Write-Host ""
-    Write-Host "OK | server voice runtimes ready" -ForegroundColor Green
+    Write-Host "OK | server runtimes ready" -ForegroundColor Green
 }

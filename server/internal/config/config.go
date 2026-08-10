@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -422,9 +423,12 @@ func (e *EmotionConfig) applyDefaults() {
 	}
 }
 
-// VisionConfig 视觉感知（Qwen-VL，V1 owner_face + V1.5 object/scene 路由 + V3 并行/早推）。
+// VisionConfig 视觉感知（本地 Moondream sidecar 或 Qwen-VL 云端，V1~V3c 管线共用）。
 type VisionConfig struct {
 	Enabled                 bool     `yaml:"enabled"`
+	// Backend: local_moondream（默认推荐，免费本地）| dashscope_vl（云端 Qwen-VL）
+	Backend                 string   `yaml:"backend"`
+	SidecarURL              string   `yaml:"sidecar_url"`
 	Model                   string   `yaml:"model"`
 	TimeoutMS               int      `yaml:"timeout_ms"`
 	DefaultFocus            string   `yaml:"default_focus"`
@@ -494,8 +498,18 @@ func (v *VisionConfig) PublicClient() VisionPublicConfig {
 }
 
 func (v *VisionConfig) applyDefaults() {
+	if v.Backend == "" {
+		v.Backend = "local_moondream"
+	}
+	if v.SidecarURL == "" {
+		v.SidecarURL = "http://127.0.0.1:8092"
+	}
 	if v.Model == "" {
-		v.Model = "qwen-vl-plus"
+		if strings.EqualFold(v.Backend, "dashscope_vl") {
+			v.Model = "qwen-vl-plus"
+		} else {
+			v.Model = "moondream2"
+		}
 	}
 	if v.TimeoutMS == 0 {
 		v.TimeoutMS = 5000
@@ -513,7 +527,14 @@ func (v *VisionConfig) applyDefaults() {
 		v.ClassifyTimeoutMS = 400
 	}
 	if v.Tier1FastTimeoutMS == 0 {
-		v.Tier1FastTimeoutMS = 1000
+		// 与 vision.timeout_ms 对齐，避免 prefetch 未完成时又发起第二条 /v1/describe
+		if v.TimeoutMS > 2000 {
+			v.Tier1FastTimeoutMS = v.TimeoutMS - 2000
+		} else if v.TimeoutMS > 0 {
+			v.Tier1FastTimeoutMS = v.TimeoutMS
+		} else {
+			v.Tier1FastTimeoutMS = 28000
+		}
 	}
 	if v.Tier1SlowTimeoutMS == 0 {
 		v.Tier1SlowTimeoutMS = 3000

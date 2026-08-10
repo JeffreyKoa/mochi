@@ -33,6 +33,10 @@ func (s *Service) CharBudget() int {
 	return 1400
 }
 
+// briefQueryLimit 单次从 DB 拉取的 approved 条目上限。
+// 编译预算约 1400 字，按重要度排序后前 150 条足够覆盖 prompt；避免 pet 下数千条全表扫描拖死连接池。
+const briefQueryLimit = 150
+
 func (s *Service) GetCompiled(ctx context.Context, petID uint64) (string, error) {
 	if s == nil || s.db == nil || !s.Enabled() {
 		return "", nil
@@ -59,7 +63,9 @@ func (s *Service) GetBrief(ctx context.Context, petID uint64) (models.UserBrief,
 	}
 	var entries []models.UserBriefEntry
 	s.db.WithContext(ctx).Where("pet_id = ? AND status = ?", petID, "approved").
-		Order("importance DESC, updated_at DESC").Find(&entries)
+		Order("importance DESC, updated_at DESC").
+		Limit(briefQueryLimit).
+		Find(&entries)
 
 	var pending []models.UserBriefEntry
 	if s.cfg.WriteApproval {
@@ -203,6 +209,7 @@ func (s *Service) Recompile(ctx context.Context, petID uint64) error {
 	if err := s.db.WithContext(ctx).
 		Where("pet_id = ? AND status = ?", petID, "approved").
 		Order("importance DESC, updated_at DESC").
+		Limit(briefQueryLimit).
 		Find(&entries).Error; err != nil {
 		return err
 	}
