@@ -156,6 +156,29 @@ function Get-MochiYamlModuleSwitches {
     return ,$moduleSwitchResult
 }
 
+function Get-YamlString {
+    param(
+        [string[]]$Lines,
+        [int]$StartIndex,
+        [string]$Key,
+        [int]$MaxIndex = -1
+    )
+    if ($MaxIndex -ge 0) {
+        $end = $MaxIndex
+    } else {
+        $end = $Lines.Count - 1
+    }
+    for ($i = $StartIndex; $i -le $end; $i++) {
+        $line = $Lines[$i]
+        if ($line -match '^\S' -and $i -gt $StartIndex) { break }
+        $pattern = '^\s+' + [regex]::Escape($Key) + '\s*:\s*(\S+)\s*(#.*)?$'
+        if ($line -match $pattern) {
+            return $Matches[1]
+        }
+    }
+    return $null
+}
+
 function Test-MochiModuleNeedsLocalSidecar {
     param(
         [string]$RepoRoot,
@@ -167,13 +190,27 @@ function Test-MochiModuleNeedsLocalSidecar {
     $cfgPath = Get-MochiConfigPath -RepoRoot $RepoRoot
     if (-not (Test-Path $cfgPath)) { return $true }
 
-    $text = Get-Content -Path $cfgPath -Raw -Encoding UTF8
-    $remotePattern = '(?ms)modules:\s*\r?\n(?:[ \t]+[^\r\n]+\r?\n)*?[ \t]+' + [regex]::Escape($ModuleName) + '\s*:\s*\r?\n(?:[ \t]+[^\r\n]+\r?\n)*?[ \t]+provider\s*:\s*remote'
-    if ($text -match $remotePattern) {
-        return $false
+    # 用行解析替代嵌套 lazy 正则，避免大 config.yaml 上灾难性回溯卡死 restart-backend
+    $lines = Get-Content -Path $cfgPath -Encoding UTF8
+
+    $modulesIdx = Find-YamlSectionLine -Lines $lines -SectionName 'modules'
+    if ($modulesIdx -ge 0) {
+        $modulesEnd = Get-YamlSectionEndIndex -Lines $lines -SectionIndex $modulesIdx
+        $modIdx = Find-YamlChildSectionLine -Lines $lines -ParentIndex $modulesIdx -SectionName $ModuleName -ChildIndentSpaces 2
+        if ($modIdx -ge 0 -and $modIdx -le $modulesEnd) {
+            $provider = Get-YamlString -Lines $lines -StartIndex ($modIdx + 1) -Key 'provider' -MaxIndex $modulesEnd
+            if ($provider -eq 'remote') { return $false }
+        }
     }
-    if ($ModuleName -eq 'vision' -and $text -match '(?ms)^vision:\s*\r?\n(?:[ \t]+[^\r\n]+\r?\n)*?[ \t]+backend\s*:\s*dashscope_vl') {
-        return $false
+
+    if ($ModuleName -eq 'vision') {
+        $visionIdx = Find-YamlSectionLine -Lines $lines -SectionName 'vision'
+        if ($visionIdx -ge 0) {
+            $visionEnd = Get-YamlSectionEndIndex -Lines $lines -SectionIndex $visionIdx
+            $backend = Get-YamlString -Lines $lines -StartIndex ($visionIdx + 1) -Key 'backend' -MaxIndex $visionEnd
+            if ($backend -eq 'dashscope_vl') { return $false }
+        }
     }
+
     return $true
 }

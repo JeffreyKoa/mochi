@@ -48,13 +48,12 @@ function Ensure-MochiServerModels {
         & $mdScript -SetupOnly
         if ($LASTEXITCODE -ne 0) { throw "moondream setup failed" }
 
-        Write-StepLocal "Prefetch moondream2 weights (best-effort)"
+        Write-StepLocal "Prefetch moondream2 weights"
         $dlScript = Join-Path $RepoRoot "services\moondream\download-model.ps1"
-        if (Test-Path $dlScript) {
-            & $dlScript
-            if ($LASTEXITCODE -ne 0) {
-                Write-Host "WARN | moondream weight prefetch failed; first /v1/describe will retry download" -ForegroundColor Yellow
-            }
+        if (-not (Test-Path $dlScript)) { throw "Missing $dlScript" }
+        & $dlScript
+        if ($LASTEXITCODE -ne 0) {
+            throw "moondream weight download failed; run: services\moondream\download-model.ps1"
         }
     }
 

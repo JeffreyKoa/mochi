@@ -8,10 +8,23 @@ $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Python = Join-Path $Root ".venv\Scripts\python.exe"
+
+# 与 start.ps1 一致：优先 legacy .venv，否则 LocalAppData
+function Resolve-MoondreamVenv {
+    $defaultVenv = Join-Path $env:LOCALAPPDATA "Mochi\moondream-venv"
+    $legacyVenv = Join-Path $Root ".venv"
+    if ($env:MOONDREAM_VENV) { return $env:MOONDREAM_VENV }
+    if (Test-Path $legacyVenv) { return $legacyVenv }
+    return $defaultVenv
+}
+
+$Python = Join-Path (Resolve-MoondreamVenv) "Scripts\python.exe"
 if (-not (Test-Path $Python)) {
     Write-Error "Missing venv. Run .\start.ps1 -SetupOnly first."
 }
+
+# 国内默认走 HF 镜像（与 start.ps1 一致）
+if (-not $env:HF_ENDPOINT) { $env:HF_ENDPOINT = "https://hf-mirror.com" }
 
 $repo = if ($env:MOONDREAM_MODEL -in @("moondream2", "vikhyatk/moondream2", "", $null)) {
     "vikhyatk/moondream2"
@@ -41,7 +54,11 @@ AutoModelForCausalLM.from_pretrained(repo, revision=revision, trust_remote_code=
 print('OK')
 "@
 
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 & $Python -c $pyCode
-if ($LASTEXITCODE -ne 0) { exit 1 }
+$pyExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+if ($pyExit -ne 0) { exit $pyExit }
 
 Write-Host "Moondream2 weights ready in HuggingFace cache." -ForegroundColor Green
