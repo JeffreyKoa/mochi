@@ -36,6 +36,8 @@ import PetView from '@/views/PetView.vue'
 import ChatPanel from '@/components/chat/ChatPanel.vue'
 import SettingsPanel from '@/components/growth/SettingsPanel.vue'
 import AdoptView from '@/views/AdoptView.vue'
+import SetupWizard from '@/components/setup/SetupWizard.vue'
+import { shouldShowSetupWizard } from '@/services/moduleSetup'
 
 const auth = useAuthStore()
 const pet = usePetStore()
@@ -48,6 +50,7 @@ const loadError = ref('')
 const shellReady = ref(false)
 const showOnboarding = ref(false)
 const showAdopt = ref(false)
+const showSetupWizard = ref(false)
 const winLabel = ref('browser')
 const wsInitialized = ref(false)
 const popupPanelMode = ref<'chat' | 'settings' | null>(null)
@@ -322,6 +325,7 @@ async function loadUserData() {
     try {
       await growth.fetchBondAndBrief()
       showOnboarding.value = growth.onboardingRequired
+      maybeShowSetupWizard()
       await applySidePanelLayout()
     } catch (e) {
       console.warn('[load] bond/brief optional, skipped', e)
@@ -469,7 +473,18 @@ async function onLoginSuccess() {
 
 function onOnboardingDone() {
   showOnboarding.value = false
+  maybeShowSetupWizard()
   void applySidePanelLayout()
+}
+
+function maybeShowSetupWizard() {
+  if (shouldShowSetupWizard() && auth.isLoggedIn && !showAdopt.value && !showOnboarding.value) {
+    showSetupWizard.value = true
+  }
+}
+
+function onSetupWizardDone() {
+  showSetupWizard.value = false
 }
 
 async function onAdopted() {
@@ -501,6 +516,7 @@ onUnmounted(() => {
 
 <template>
   <div class="app-root" :class="{ 'app-root--chat-popup': isChatWindow }">
+    <SetupWizard v-if="showSetupWizard" @done="onSetupWizardDone" />
     <!-- Vite browser dev -->
     <template v-if="isBrowserDev">
       <LoginView v-if="ready && !auth.isLoggedIn" @success="onLoginSuccess" />

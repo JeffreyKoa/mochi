@@ -17,7 +17,6 @@ import (
 	"github.com/mochi-ai/server/internal/emotion"
 	"github.com/mochi-ai/server/internal/text"
 	"github.com/mochi-ai/server/internal/vision"
-	"github.com/mochi-ai/server/pkg/modelmeta"
 	"github.com/mochi-ai/server/pkg/opus"
 )
 
@@ -25,6 +24,7 @@ import (
 type Pipeline struct {
 	chat      *chat.Service
 	cfg       config.RealtimeConfig
+	appCfg    *config.Config
 	asr       ASRRecognizer
 	tts       TTSSynthesizer
 	ttsFormat string
@@ -45,6 +45,7 @@ func NewPipeline(chatSvc *chat.Service, cfg config.RealtimeConfig, appCfg *confi
 	p := &Pipeline{
 		chat:          chatSvc,
 		cfg:           cfg,
+		appCfg:        appCfg,
 		ttsFormat:     "mp3",
 		apiKey:        apiKey,
 		asrSampleRate: cfg.ASR.SampleRate,
@@ -54,14 +55,16 @@ func NewPipeline(chatSvc *chat.Service, cfg config.RealtimeConfig, appCfg *confi
 	if p.minAcousticConf <= 0 {
 		p.minAcousticConf = 0.65
 	}
-	if appCfg.Emotion.Acoustic.Enabled && appCfg.Emotion.Acoustic.URL != "" {
+	if appCfg.IsEmotionModuleEnabled() && appCfg.Emotion.Acoustic.URL != "" {
 		p.acoustic = emotion.NewHTTPAcousticClient(
 			appCfg.Emotion.Acoustic.URL,
 			time.Duration(appCfg.Emotion.Acoustic.TimeoutMS)*time.Millisecond,
 			cfg.ASR.SampleRate,
 		)
 	}
-	p.vision = vision.NewService(appCfg.AI, appCfg.Vision)
+	if appCfg.IsVisionModuleEnabled() {
+		p.vision = vision.NewService(appCfg.AI, appCfg.Vision, appCfg.EffectiveVisionProvider())
+	}
 	if p.vision != nil && p.vision.Enabled() {
 		log.Printf("[vision] pipeline enabled model=%s timeout_ms=%d min_conf=%.2f prefetch=%v parallel=%v early_anim=%v",
 			appCfg.Vision.Model, appCfg.Vision.TimeoutMS, appCfg.Vision.MinExpressionConfidence,
@@ -69,19 +72,14 @@ func NewPipeline(chatSvc *chat.Service, cfg config.RealtimeConfig, appCfg *confi
 	} else {
 		log.Printf("[vision] pipeline disabled (config vision.enabled=false)")
 	}
-	switch strings.ToLower(cfg.ASR.Provider) {
-	case "dashscope":
-		log.Printf("[realtime] asr.provider=dashscope removed; use xasr")
-	case "xasr", "sherpa":
-		wsURL := cfg.XASR.WSURL
-		p.asr = newXasrASR(wsURL, cfg.ASR.SampleRate, "sherpa-streaming-zh")
-		modelmeta.LogCall("asr_startup", modelmeta.VendorLocalXASR, "sherpa-streaming-zh", "endpoint="+wsURL)
-		log.Printf("[realtime] asr.provider=xasr ws=%s sample_rate=%d", wsURL, cfg.ASR.SampleRate)
-	case "none":
-		log.Printf("[realtime] asr.provider=none (client-side STT / text_input only)")
-	}
 
-	p.tts, p.ttsFormat = buildTTSSynth(cfg, ttsPreferMP3(cfg, false))
+	p.asr = BuildASRRecognizer(appCfg, cfg)
+
+	if appCfg.IsTTSEnabled() {
+		p.tts, p.ttsFormat = BuildTTSSynth(appCfg, cfg, ttsPreferMP3(cfg, false))
+	} else {
+		log.Printf("[realtime] tts module disabled (modules.tts.enabled=false)")
+	}
 	gateCfg := cfg.Gate
 	if strings.TrimSpace(gateCfg.Model) == "" {
 		gateCfg.Model = appCfg.AI.ModelCode
@@ -129,25 +127,23 @@ func (p *Pipeline) getTTSForSession(ctx context.Context, sess *Session) sessionT
 	}
 
 	profile := ResolveVoice(pet.Gender, pet.LifeStage, string(pet.PersonalityJSON))
-	synth, fmtStr := buildTTSSynth(p.cfg, preferMP3)
-	if synth != nil {
-		return sessionTTSBundle{synth: synth, format: fmtStr, baseline: profile}
+	if p.appCfg != nil {
+		synth, fmtStr := BuildTTSSynth(p.appCfg, p.cfg, preferMP3)
+		if synth != nil {
+			return sessionTTSBundle{synth: synth, format: fmtStr, baseline: profile}
+		}
 	}
 	return sessionTTSBundle{synth: p.tts, format: p.ttsFormat, baseline: profile}
 }
 
+// buildTTSSynth 保留供旧测试引用；新代码请用 BuildTTSSynth。
 func buildTTSSynth(cfg config.RealtimeConfig, preferMP3 bool) (TTSSynthesizer, string) {
 	format := "mp3"
 	provider := strings.ToLower(strings.TrimSpace(cfg.TTS.Provider))
 	if provider == "none" {
-		log.Printf("[realtime] tts.provider=none (client-side TTS)")
 		return nil, format
 	}
-
 	switch provider {
-	case "dashscope":
-		log.Printf("[realtime] tts.provider=dashscope removed; use xtts")
-		return nil, format
 	case "xtts", "x-tts", "matcha":
 		baseURL := cfg.XTTS.BaseURL
 		if baseURL == "" {
@@ -157,11 +153,8 @@ func buildTTSSynth(cfg config.RealtimeConfig, preferMP3 bool) (TTSSynthesizer, s
 		if timeout <= 0 {
 			timeout = 30 * time.Second
 		}
-		log.Printf("[realtime] tts.provider=xtts base_url=%s speed=%.2f timeout_ms=%d", baseURL, cfg.XTTS.Speed, cfg.XTTS.TimeoutMS)
-		modelmeta.LogCall("tts_startup", modelmeta.VendorLocalXTTS, "matcha-zh-en", "endpoint="+baseURL)
 		return newXttsSynth(baseURL, cfg.XTTS.Speed, timeout), "wav"
 	default:
-		log.Printf("[realtime] tts.provider=%s unknown; no synthesizer", provider)
 		return nil, format
 	}
 }

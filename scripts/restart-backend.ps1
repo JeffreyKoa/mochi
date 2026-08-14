@@ -38,7 +38,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RepoRoot = Resolve-Path (Join-Path $ScriptDir "..")
+$RepoRoot = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 $LogsRoot = Join-Path $RepoRoot "logs"
 $MoondreamLegacyPort = 8092
 
@@ -47,6 +47,7 @@ $env:MOONDREAM_PORT = "$MoondreamPort"
 
 New-Item -ItemType Directory -Force -Path $LogsRoot | Out-Null
 . (Join-Path $RepoRoot "scripts\lib\daily-log.ps1")
+. (Join-Path $RepoRoot "scripts\lib\read-config-modules.ps1")
 
 function Write-Step([string]$Msg) {
     Write-Host ""
@@ -422,10 +423,42 @@ Write-Host "  ports:   emotion2vec=$EmotionPort moondream=$MoondreamPort (legacy
 
 Stop-AllBackend
 
+# Load module switches from config (modules.*.enabled); CLI -Skip* overrides
+$getModuleScript = Join-Path $RepoRoot "scripts\get-module-switches.ps1"
+if (-not (Test-Path -LiteralPath $getModuleScript)) {
+    throw "Missing module switch helper: $getModuleScript"
+}
+$moduleSwitches = & $getModuleScript -RepoRoot $RepoRoot
+if ($null -eq $moduleSwitches) {
+    throw "Get-MochiYamlModuleSwitches returned null (RepoRoot=$RepoRoot)"
+}
+
 if ($KillOnly) {
     Write-Host ""
     Write-Host "KillOnly: done." -ForegroundColor Green
     exit 0
+}
+
+if (-not $SkipXasr -and -not $moduleSwitches['asr']) {
+    $SkipXasr = $true
+    Write-Host "  config: modules.asr.enabled=false -> skip x-asr" -ForegroundColor DarkGray
+}
+if (-not $SkipXtts -and -not $moduleSwitches['tts']) {
+    $SkipXtts = $true
+    Write-Host "  config: modules.tts.enabled=false -> skip x-tts" -ForegroundColor DarkGray
+}
+if (-not $SkipMoondream -and -not $moduleSwitches['vision']) {
+    $SkipMoondream = $true
+    Write-Host "  config: modules.vision.enabled=false -> skip moondream" -ForegroundColor DarkGray
+}
+if (-not $SkipEmotion2vec -and -not $moduleSwitches['emotion']) {
+    $SkipEmotion2vec = $true
+    Write-Host "  config: modules.emotion.enabled=false -> skip emotion2vec" -ForegroundColor DarkGray
+}
+# 远程 provider 无需本地 sidecar
+if (-not $SkipMoondream -and -not (Test-MochiModuleNeedsLocalSidecar -RepoRoot $RepoRoot -ModuleName 'vision')) {
+    $SkipMoondream = $true
+    Write-Host "  config: vision provider=remote -> skip moondream sidecar" -ForegroundColor DarkGray
 }
 
 Write-Step "Ensure server voice models / venv"

@@ -69,6 +69,7 @@ import {
   resetTauriMicrophonePermission,
 } from '@/utils/micPermission'
 import SettingsCard from '@/components/settings/SettingsCard.vue'
+import ModuleSettingsCard from '@/components/settings/ModuleSettingsCard.vue'
 
 type TabId = 'mochi' | 'voice' | 'memory' | 'tasks' | 'me'
 
@@ -955,6 +956,8 @@ onUnmounted(() => {
 
         <!-- 声音 -->
         <template v-else-if="tab === 'voice'">
+          <ModuleSettingsCard />
+
           <SettingsCard title="当前声音" hint="声音会随 TA 长大慢慢变化，不能手动换音色">
             <p class="life-line">{{ voiceProfile.title }}</p>
             <p class="hint">{{ voiceProfile.desc }}</p>

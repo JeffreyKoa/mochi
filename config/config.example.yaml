@@ -1,0 +1,113 @@
+# Mochi 配置示例（复制为 config/config.yaml 后填写密钥）
+# cp config/config.example.yaml config/config.yaml
+
+server:
+  port: 8081
+  mode: release
+
+log:
+  dir: logs/mochi
+
+database:
+  host: 127.0.0.1
+  port: 3306
+  name: mochi
+  user: mochi
+  password: "CHANGE_ME"
+  max_open_conns: 25
+  max_idle_conns: 10
+  conn_max_lifetime: 5m
+  auto_migrate: true
+
+redis:
+  host: 127.0.0.1
+  port: 6379
+  db: 0
+  password: ""
+
+jwt:
+  secret: "CHANGE_ME_DEV_SECRET"
+
+# 主对话 LLM（OpenAI 兼容接口）
+ai:
+  name: "your-model"
+  api_base: "https://your-vendor.example.com/v1"
+  api_key: "YOUR_API_KEY"
+  model_code: "your-model-id"
+  asr_model: "whisper-1"   # 远程 ASR（OpenAI 兼容）
+  tts_model: "tts-1"
+  tts_voice: "alloy"
+  enable_search: false
+
+client:
+  api_base: "http://localhost:8081"
+
+# AI 模块开关：enabled=false 时不启动 sidecar、不下载模型
+modules:
+  asr:
+    enabled: true
+    provider: auto          # local | remote | auto
+  tts:
+    enabled: true
+    provider: auto
+  llm:
+    enabled: true
+    provider: remote
+  vision:
+    enabled: true
+    provider: auto          # local_moondream | dashscope_vl | auto
+  emotion:
+    enabled: true
+    provider: local
+
+capability:
+  asr:
+    min_ram_mb: 4096
+  tts:
+    min_ram_mb: 4096
+  vision:
+    min_ram_mb: 8192
+    min_vram_mb: 4096
+  emotion:
+    min_ram_mb: 4096
+
+realtime:
+  enabled: true
+  stt_mode: cloud
+  tts_mode: cloud
+  asr:
+    provider: xasr
+    sample_rate: 16000
+  tts:
+    provider: xtts
+    sample_rate: 16000
+  xasr:
+    ws_url: "ws://127.0.0.1:8766"
+  xtts:
+    base_url: "http://127.0.0.1:8767"
+
+# 开关见 modules.emotion.enabled
+emotion:
+  acoustic:
+    url: "http://127.0.0.1:8091"
+    timeout_ms: 1200
+    min_confidence: 0.55
+
+# 开关见 modules.vision.enabled
+vision:
+  backend: local_moondream
+  sidecar_url: "http://127.0.0.1:8093"
+  model: moondream2
+  timeout_ms: 30000
+
+growth:
+  enabled: true
+
+companion:
+  proactive_enabled: true
+
+tools:
+  enabled: true
+
+wellness:
+  enabled: true

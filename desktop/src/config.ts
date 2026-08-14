@@ -63,6 +63,19 @@ export interface RealtimePresenceConfig {
 export type SttMode = 'cloud' | 'local' | 'auto'
 export type TtsMode = 'cloud' | 'local' | 'auto'
 
+export interface ModulePublicEntry {
+  enabled: boolean
+  provider: string
+}
+
+export interface ModulesPublicConfig {
+  asr: ModulePublicEntry
+  tts: ModulePublicEntry
+  llm: ModulePublicEntry
+  vision: ModulePublicEntry
+  emotion: ModulePublicEntry
+}
+
 /** X-ASR sidecar 连接与 turn-end 调参（cloud STT 仍用 timing 字段）。 */
 export interface RealtimeXasrConfig {
   wsUrl: string
@@ -140,6 +153,15 @@ export interface ClientConfig {
   eventLoopProbeMs: number
   realtime: RealtimeClientConfig
   companionPresence: CompanionPresenceConfig
+  modules: ModulesPublicConfig
+}
+
+export const DEFAULT_MODULES: ModulesPublicConfig = {
+  asr: { enabled: true, provider: 'auto' },
+  tts: { enabled: true, provider: 'auto' },
+  llm: { enabled: true, provider: 'remote' },
+  vision: { enabled: true, provider: 'auto' },
+  emotion: { enabled: true, provider: 'local' },
 }
 
 export const DEFAULT_SILERO: RealtimeSileroVadConfig = {
@@ -230,6 +252,7 @@ let _clientConfig: ClientConfig = {
   eventLoopProbeMs: 1000,
   realtime: { ...DEFAULT_REALTIME },
   companionPresence: { ...DEFAULT_COMPANION_PRESENCE },
+  modules: { ...DEFAULT_MODULES },
 }
 
 function parseVisionBlock(data: Record<string, unknown>): Pick<
@@ -467,6 +490,24 @@ function parseCompanionBlock(data: Record<string, unknown>): CompanionPresenceCo
   }
 }
 
+function parseModulesBlock(data: Record<string, unknown>): ModulesPublicConfig {
+  const m = (data.modules ?? {}) as Record<string, unknown>
+  const pick = (key: keyof ModulesPublicConfig): ModulePublicEntry => {
+    const block = (m[key] ?? {}) as Record<string, unknown>
+    return {
+      enabled: block.enabled !== false,
+      provider: String(block.provider ?? DEFAULT_MODULES[key].provider),
+    }
+  }
+  return {
+    asr: pick('asr'),
+    tts: pick('tts'),
+    llm: pick('llm'),
+    vision: pick('vision'),
+    emotion: pick('emotion'),
+  }
+}
+
 function applyPublicConfig(base: string, data: Record<string, unknown>) {
   if (typeof data.api_base === 'string' && data.api_base) {
     setApiBase(data.api_base)
@@ -483,6 +524,13 @@ function applyPublicConfig(base: string, data: Record<string, unknown>) {
     ...parseClientBlock(data),
     realtime: parseRealtimeBlock(data.realtime),
     companionPresence: parseCompanionBlock(data),
+    modules: parseModulesBlock(data),
+  }
+  // 拉取硬件能力缓存（供 auto 模式）
+  if (typeof window !== 'undefined') {
+    void import('@/services/moduleSetup').then(({ fetchPublicCapability }) => {
+      fetchPublicCapability().catch(() => {})
+    })
   }
   // 服务端 vision 开关同步到客户端 localStorage
   if (typeof window !== 'undefined') {
@@ -526,19 +574,61 @@ export async function initClientConfig(): Promise<ClientConfig> {
 }
 
 export function resolveSttMode(
-  _cfg: RealtimeClientConfig,
-  _localSupported: boolean,
+  cfg: RealtimeClientConfig,
+  localSupported: boolean,
 ): 'cloud' | 'local' {
-  // Phase4：客户端固定云端 STT（服务端 x-asr）
-  return 'cloud'
+  const mode = cfg.sttMode ?? 'auto'
+  if (mode === 'cloud') return 'cloud'
+  if (mode === 'local') return localSupported ? 'local' : 'cloud'
+
+  // auto：读 capability + modules 决定服务端 STT 或客户端 STT
+  const clientCfg = getClientConfig()
+  if (!clientCfg.modules.asr.enabled) {
+    return localSupported ? 'local' : 'cloud'
+  }
+  const cap = getCachedCapabilitySync()
+  const asr = cap?.modules?.find((m) => m.name === 'asr')
+  if (asr?.status === 'unsupported' || asr?.status === 'remote_ready') {
+    return 'cloud' // 服务端 remote 或 fallback
+  }
+  if (asr?.status === 'disabled') {
+    return localSupported ? 'local' : 'cloud'
+  }
+  return 'cloud' // 默认服务端 x-asr / auto fallback
 }
 
 export function resolveTtsMode(
-  _cfg: RealtimeClientConfig,
-  _localSupported: boolean,
+  cfg: RealtimeClientConfig,
+  localSupported: boolean,
 ): 'cloud' | 'local' {
-  // 服务端 x-tts Matcha 合成
+  const mode = cfg.ttsMode ?? 'auto'
+  if (mode === 'cloud') return 'cloud'
+  if (mode === 'local') return localSupported ? 'local' : 'cloud'
+
+  const clientCfg = getClientConfig()
+  if (!clientCfg.modules.tts.enabled) {
+    return localSupported ? 'local' : 'cloud'
+  }
+  const cap = getCachedCapabilitySync()
+  const tts = cap?.modules?.find((m) => m.name === 'tts')
+  if (tts?.status === 'unsupported' || tts?.status === 'remote_ready') {
+    return 'cloud'
+  }
+  if (tts?.status === 'disabled') {
+    return localSupported ? 'local' : 'cloud'
+  }
   return 'cloud'
+}
+
+function getCachedCapabilitySync(): { modules: { name: string; status: string }[] } | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = localStorage.getItem('mochi_capability_cache_v1')
+    if (!raw) return null
+    return JSON.parse(raw) as { modules: { name: string; status: string }[] }
+  } catch {
+    return null
+  }
 }
 
 /** 用户设置里的 stt_mode 覆盖 public config（设置页保存到 user preferences）。 */

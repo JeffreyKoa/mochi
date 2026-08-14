@@ -3,7 +3,6 @@ package voice
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/mochi-ai/server/internal/config"
 	"github.com/mochi-ai/server/internal/realtime"
@@ -15,23 +14,19 @@ type Service struct {
 }
 
 func NewService(cfg *config.Config) *Service {
+	if cfg == nil {
+		return &Service{}
+	}
 	rt := cfg.Realtime
-	wsURL := rt.XASR.WSURL
-	if wsURL == "" {
-		wsURL = "ws://127.0.0.1:8766"
-	}
-	baseURL := rt.XTTS.BaseURL
-	if baseURL == "" {
-		baseURL = "http://127.0.0.1:8767"
-	}
-	timeout := time.Duration(rt.XTTS.TimeoutMS) * time.Millisecond
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
 	return &Service{
-		asr: realtime.NewXasrASR(wsURL, rt.ASR.SampleRate),
-		tts: realtime.NewXttsSynth(baseURL, rt.XTTS.Speed, timeout),
+		asr: realtime.BuildASRRecognizer(cfg, rt),
+		tts: buildTTSSynthOnly(cfg, rt),
 	}
+}
+
+func buildTTSSynthOnly(cfg *config.Config, rt config.RealtimeConfig) realtime.TTSSynthesizer {
+	synth, _ := realtime.BuildTTSSynth(cfg, rt, true)
+	return synth
 }
 
 func (s *Service) Recognize(ctx context.Context, audio []byte, format string) (string, error) {

@@ -13,6 +13,7 @@ import (
 	"github.com/mochi-ai/server/internal/config"
 	"github.com/mochi-ai/server/internal/pet"
 	"github.com/mochi-ai/server/internal/realtime"
+	"github.com/mochi-ai/server/internal/setup"
 	"github.com/mochi-ai/server/internal/subscribe"
 	"github.com/mochi-ai/server/internal/tools"
 	"github.com/mochi-ai/server/internal/voice"
@@ -45,6 +46,8 @@ type Handlers struct {
 	VisionPublic       config.VisionPublicConfig
 	CompanionPublic    config.CompanionPublicConfig
 	Companion          *companion.Handler
+	ModulesPublic      config.ModulesPublicConfig
+	Setup              *setup.Handler
 }
 
 func Setup(mode string, h Handlers) *gin.Engine {
@@ -73,6 +76,7 @@ func Setup(mode string, h Handlers) *gin.Engine {
 			"vision_enabled":   h.VisionEnabled,
 			"vision":           h.VisionPublic,
 			"companion":        h.CompanionPublic,
+			"modules":          h.ModulesPublic,
 		})
 	})
 
@@ -127,6 +131,9 @@ func Setup(mode string, h Handlers) *gin.Engine {
 			}
 			protected.POST("/pet/onboarding", h.Pet.Onboarding)
 			protected.POST("/subscribe/adopt", h.Subscribe.Adopt)
+			if h.Setup != nil {
+				h.Setup.RegisterRoutes(protected)
+			}
 		}
 	}
 

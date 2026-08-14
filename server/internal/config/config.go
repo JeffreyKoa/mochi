@@ -25,6 +25,8 @@ type Config struct {
 	Wellness  WellnessConfig  `yaml:"wellness"`
 	Emotion   EmotionConfig   `yaml:"emotion"`
 	Vision    VisionConfig    `yaml:"vision"`
+	Modules   ModulesConfig   `yaml:"modules"`
+	Capability CapabilityConfig `yaml:"capability"`
 
 	// Loaded from config/data/* (not in main yaml).
 	configDir        string
@@ -77,6 +79,10 @@ type AIConfig struct {
 	ModelCode       string `yaml:"model_code"`
 	EnableSearch    bool   `yaml:"enable_search"`
 	SearchStrategy  string `yaml:"search_strategy"` // turbo | max
+	// 远程 ASR/TTS（OpenAI 兼容 /audio/* 或厂商等价接口）
+	ASRModel string `yaml:"asr_model"`
+	TTSModel string `yaml:"tts_model"`
+	TTSVoice string `yaml:"tts_voice"`
 }
 
 type ClientConfig struct {
@@ -650,6 +656,15 @@ func (c *Config) applyDefaults() {
 	if c.AI.EnableSearch && c.AI.SearchStrategy == "" {
 		c.AI.SearchStrategy = "turbo"
 	}
+	if c.AI.ASRModel == "" {
+		c.AI.ASRModel = "whisper-1"
+	}
+	if c.AI.TTSModel == "" {
+		c.AI.TTSModel = "tts-1"
+	}
+	if c.AI.TTSVoice == "" {
+		c.AI.TTSVoice = "alloy"
+	}
 	if c.Client.APIBase == "" {
 		c.Client.APIBase = fmt.Sprintf("http://localhost:%d", c.Server.Port)
 	}
@@ -666,6 +681,8 @@ func (c *Config) applyDefaults() {
 	c.Wellness.applyDefaults()
 	c.Emotion.applyDefaults()
 	c.Vision.applyDefaults()
+	c.Capability.applyDefaults()
+	c.syncModulesFromLegacy()
 }
 
 func (c *CompanionConfig) applyDefaults() {

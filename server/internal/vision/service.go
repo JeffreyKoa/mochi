@@ -13,15 +13,16 @@ import (
 
 // Service 调用视觉后端（本地 Moondream sidecar 或 Qwen-VL），按焦点生成 VisualHint。
 type Service struct {
-	cfg    config.VisionConfig
-	vl     *vlClient
-	local  *localMoondreamClient
-	aiBase string
-	aiKey  string
+	cfg          config.VisionConfig
+	vl           *vlClient
+	local        *localMoondreamClient
+	aiBase       string
+	aiKey        string
+	autoFallback bool // auto 模式下本地失败切远程 VL
 }
 
-// NewService 创建视觉服务；未启用时 Describe 直接返回 EmptyHint。
-func NewService(app config.AIConfig, vis config.VisionConfig) *Service {
+// NewService 创建视觉服务；provider 来自 modules.vision.provider（local|remote|auto）。
+func NewService(app config.AIConfig, vis config.VisionConfig, provider string) *Service {
 	timeout := time.Duration(vis.TimeoutMS) * time.Millisecond
 	if timeout <= 0 {
 		timeout = 5 * time.Second
@@ -31,14 +32,29 @@ func NewService(app config.AIConfig, vis config.VisionConfig) *Service {
 		aiBase: app.APIBase,
 		aiKey:  app.APIKey,
 	}
-	if useLocalMoondreamBackend(vis.Backend) {
-		s.local = newLocalMoondreamClient(vis.SidecarURL, vis.Model, timeout)
-	} else {
-		model := vis.Model
-		if model == "" {
-			model = "qwen-vl-plus"
-		}
+	prov := config.NormalizeModuleProvider(provider)
+	if prov == "none" {
+		return s
+	}
+	model := vis.Model
+	if model == "" {
+		model = "qwen-vl-plus"
+	}
+	switch prov {
+	case "remote":
 		s.vl = newVLClient(app.APIBase, app.APIKey, model, timeout)
+	case "local":
+		if useLocalMoondreamBackend(vis.Backend) || vis.Backend == "" {
+			s.local = newLocalMoondreamClient(vis.SidecarURL, vis.Model, timeout)
+		} else {
+			s.vl = newVLClient(app.APIBase, app.APIKey, model, timeout)
+		}
+	default: // auto
+		s.local = newLocalMoondreamClient(vis.SidecarURL, vis.Model, timeout)
+		if strings.TrimSpace(app.APIKey) != "" {
+			s.vl = newVLClient(app.APIBase, app.APIKey, model, timeout)
+			s.autoFallback = true
+		}
 	}
 	return s
 }
@@ -59,10 +75,18 @@ func (s *Service) visionBackendLabel() string {
 	return "dashscope_vl"
 }
 
-// runVLChat 统一视觉推理入口（本地 sidecar 或云端 VL）。
+// runVLChat 统一视觉推理入口（本地 sidecar 或云端 VL；auto 时本地失败 fallback）。
 func (s *Service) runVLChat(ctx context.Context, jpeg []byte, prompt string) (string, error) {
 	if s.local != nil {
-		return s.local.chat(ctx, jpeg, prompt)
+		raw, err := s.local.chat(ctx, jpeg, prompt)
+		if err == nil {
+			return raw, nil
+		}
+		if s.autoFallback && s.vl != nil {
+			log.Printf("[vision] local moondream failed (%v), fallback dashscope_vl", err)
+			return s.vl.chat(ctx, jpeg, prompt)
+		}
+		return "", err
 	}
 	if s.vl != nil {
 		return s.vl.chat(ctx, jpeg, prompt)

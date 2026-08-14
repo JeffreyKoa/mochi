@@ -7,6 +7,7 @@ import (
 	"github.com/mochi-ai/server/internal/auth"
 	"github.com/mochi-ai/server/internal/bond"
 	"github.com/mochi-ai/server/internal/brief"
+	"github.com/mochi-ai/server/internal/capability"
 	"github.com/mochi-ai/server/internal/chat"
 	"github.com/mochi-ai/server/internal/companion"
 	"github.com/mochi-ai/server/internal/config"
@@ -24,6 +25,7 @@ import (
 	"github.com/mochi-ai/server/internal/realtime"
 	"github.com/mochi-ai/server/internal/reflection"
 	"github.com/mochi-ai/server/internal/router"
+	"github.com/mochi-ai/server/internal/setup"
 	"github.com/mochi-ai/server/internal/voice"
 	"github.com/mochi-ai/server/internal/faceprint"
 	"github.com/mochi-ai/server/internal/voiceprint"
@@ -129,6 +131,8 @@ func main() {
 	subscribeSvc := subscribe.NewService(db, catalogSvc)
 	subscribeHandler := subscribe.NewHandler(catalogSvc, subscribeSvc)
 
+	setupHandler := setup.NewHandler(config.LoadedPath())
+
 	r := router.Setup(cfg.ServerMode(), router.Handlers{
 		Auth:            authHandler,
 		Chat:            chatHandler,
@@ -148,11 +152,16 @@ func main() {
 		RealtimePublic:   cfg.Realtime.PublicClient(),
 		WriteApproval:    cfg.Growth.WriteApproval,
 		GrowthEnabled:   cfg.Growth.Enabled,
-		VisionEnabled:   cfg.Vision.Enabled,
+		VisionEnabled:   cfg.IsVisionModuleEnabled(),
 		VisionPublic:    cfg.Vision.PublicClient(),
 		CompanionPublic: cfg.Companion.PublicClient(),
 		Companion:       companionHandler,
+		ModulesPublic:   cfg.PublicModules(),
+		Setup:           setupHandler,
 	})
+
+	capHandler := capability.NewHandler(cfg)
+	capHandler.RegisterRoutes(r)
 
 	addr := ":" + cfg.ServerPort()
 	log.Printf("Mochi server listening on %s (config.yaml)", addr)
