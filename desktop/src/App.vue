@@ -96,7 +96,6 @@ function syncPopupPanelFromPending() {
 }
 
 const isBrowserDev = computed(() => !isTauri())
-const isDev = import.meta.env.DEV
 const isChatWindow = computed(() => winLabel.value === 'chat')
 const isPetShell = computed(() => isBrowserDev.value || isPetWindowLabel(winLabel.value))
 const sidePanelOpen = computed(

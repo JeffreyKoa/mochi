@@ -1,113 +1,243 @@
-# Mochi 配置示例（复制为 config/config.yaml 后填写密钥）
-# cp config/config.example.yaml config/config.yaml
-
-server:
-  port: 8081
-  mode: release
-
-log:
-  dir: logs/mochi
-
-database:
-  host: 127.0.0.1
-  port: 3306
-  name: mochi
-  user: mochi
-  password: "CHANGE_ME"
-  max_open_conns: 25
-  max_idle_conns: 10
-  conn_max_lifetime: 5m
-  auto_migrate: true
-
-redis:
-  host: 127.0.0.1
-  port: 6379
-  db: 0
-  password: ""
-
-jwt:
-  secret: "CHANGE_ME_DEV_SECRET"
-
-# 主对话 LLM（OpenAI 兼容接口）
 ai:
-  name: "your-model"
-  api_base: "https://your-vendor.example.com/v1"
-  api_key: "YOUR_API_KEY"
-  model_code: "your-model-id"
-  asr_model: "whisper-1"   # 远程 ASR（OpenAI 兼容）
-  tts_model: "tts-1"
-  tts_voice: "alloy"
-  enable_search: false
+    # api_base: https://llm-r716jer8vq4n6cyo.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+    # api_key: sk-ws-H.RYDREER.syir.wvhIs3evz8P0Rzwa81Pekrns_-3CyitFq8fI0AiAWymMrQcxUqktx0gjPRWh0WZG39t0y7oeHOM68staOGg
+    # enable_search: true
+    # model_code: deepseek-v4-flash-0731
+    # name: aliyuncs
+    api_base: https://api.xiaomimimo.com/v1
+    api_key: sk-cj7akj8h47gj89694cscxiuu93i9r70ns8ehths8
+    enable_search: true
+    model_code: mimo-v2.5-pro-ultraspeed
+    name: MiMo
 
-client:
-  api_base: "http://localhost:8081"
-
-# AI 模块开关：enabled=false 时不启动 sidecar、不下载模型
-modules:
-  asr:
-    enabled: true
-    provider: auto          # local | remote | auto
-  tts:
-    enabled: true
-    provider: auto
-  llm:
-    enabled: true
-    provider: remote
-  vision:
-    enabled: true
-    provider: auto          # local_moondream | dashscope_vl | auto
-  emotion:
-    enabled: true
-    provider: local
-
+    search_strategy: turbo
 capability:
-  asr:
-    min_ram_mb: 4096
-  tts:
-    min_ram_mb: 4096
-  vision:
-    min_ram_mb: 8192
-    min_vram_mb: 4096
-  emotion:
-    min_ram_mb: 4096
-
-realtime:
-  enabled: true
-  stt_mode: cloud
-  tts_mode: cloud
-  asr:
-    provider: xasr
-    sample_rate: 16000
-  tts:
-    provider: xtts
-    sample_rate: 16000
-  xasr:
-    ws_url: "ws://127.0.0.1:8766"
-  xtts:
-    base_url: "http://127.0.0.1:8767"
-
-# 开关见 modules.emotion.enabled
-emotion:
-  acoustic:
-    url: "http://127.0.0.1:8091"
-    timeout_ms: 1200
-    min_confidence: 0.55
-
-# 开关见 modules.vision.enabled
-vision:
-  backend: local_moondream
-  sidecar_url: "http://127.0.0.1:8093"
-  model: moondream2
-  timeout_ms: 30000
-
-growth:
-  enabled: true
-
+    asr:
+        min_ram_mb: 4096
+    emotion:
+        min_ram_mb: 4096
+    tts:
+        min_ram_mb: 4096
+    vision:
+        min_ram_mb: 8192
+        min_vram_mb: 4096
+client:
+    api_base: http://localhost:8081
 companion:
-  proactive_enabled: true
-
+    evening_greeting: false
+    follow_up_enabled: true
+    max_daily_proactive: 3
+    morning_greeting: true
+    proactive_enabled: true
+    quiet_hours:
+        - 23
+        - 8
+database:
+    auto_migrate: false
+    conn_max_lifetime: 5m
+    host: 43.138.131.124
+    max_idle_conns: 10
+    max_open_conns: 50
+    name: mochi
+    password: baobaoRiJiBo@20260617
+    port: 33066
+    user: root
+emotion:
+    acoustic:
+        min_confidence: 0.55
+        timeout_ms: 1200
+        url: http://127.0.0.1:8091
+growth:
+    enabled: true
+    memory_prompt_char_budget: 600
+    reflection_enabled: true
+    reflection_min_turn_chars: 4
+    style_evolution_enabled: true
+    style_evolution_threshold: 3
+    user_brief_char_budget: 1400
+    write_approval: false
+jwt:
+    secret: 84bb149c2737bbf139f39b66d78f8b70
+log:
+    dir: logs/mochi
+modules:
+    asr:
+        enabled: true
+        provider: auto
+    emotion:
+        enabled: true
+        provider: local
+    llm:
+        enabled: true
+        provider: remote
+    tts:
+        enabled: true
+        provider: auto
+    vision:
+        enabled: false
+        provider: auto
+realtime:
+    asr:
+        model: sherpa-streaming-zh
+        noise_fillers_file: data/asr_noise_fillers.yaml
+        provider: xasr
+        sample_rate: 16000
+    barge_in:
+        barge_in_ms: 800
+        echo_guard_ms: 1800
+        echo_guard_ms_aec: 800
+        peak_threshold: 0.06
+    enabled: true
+    faceprint:
+        check_interval_ms: 2000
+        enabled: true
+        enroll_samples: 3
+        gray_zone_low: 0.28
+        match_threshold: 0.42
+        owner_recent_ms: 8000
+        probe_on_speech_start: true
+        required: false
+    gate:
+        enabled: true
+        fastpath_file: data/gate_fastpath.yaml
+        max_chars: 200
+        max_tokens: 20
+        model: deepseek-v4-flash-0731
+        system_prompt_file: data/gate_system_prompt.txt
+        timeout_ms: 450
+    pipeline:
+        tts_first_min_chars: 3
+        tts_force_flush_chars: 32
+        tts_min_chars: 8
+        tts_punctuation: 。！？，、~.!?,;
+        tts_strong_punctuation: |
+            。！？~!?.
+        tts_weak_punct_min_chars: 8
+        tts_weak_punctuation: ，、,
+    presence:
+        ambient_energy_floor: 0.012
+        ambient_interval_ms: 2000
+        away_timeout_sec: 180
+        enabled: true
+        owner_presence_ttl_sec: 30
+        speech_threshold: 0.3
+    prewarm_enabled: true
+    stt_mode: cloud
+    topic_anchor:
+        enabled: true
+        sticky_turns: 5
+    tts:
+        model: matcha-zh-en
+        opus:
+            application: voip
+            bitrate: 24000
+            frame_ms: 20
+            sample_rate: 48000
+        provider: xtts
+        sample_rate: 16000
+        transport: mp3
+        voice: default
+    tts_mode: cloud
+    vad:
+        endpointing_enabled: false
+        energy_peak: 0.05
+        min_speech_ms: 250
+        model: silero
+        playback_peak: 0.1
+        silence_ms: 700
+        silero:
+            min_speech_ms: 400
+            negative_threshold: 0.35
+            positive_threshold: 0.5
+            pre_speech_pad_ms: 300
+            redemption_ms: 1200
+        tail_speech_peak: 0.015
+        wake_peak: 0.06
+    voiceprint:
+        non_owner_reply_cooldown_ms: 12000
+        owner_recent_ms: 8000
+        reject_streak: 3
+        required: false
+        stream_check_interval_ms: 500
+        threshold: 0.38
+        verify_window_sec: 4
+        wake_probe_sec: 1
+    xasr:
+        chunk_ms: 40
+        min_complete_silence_ms: 700
+        partial_stable_ms: 800
+        silence_ms: 600
+        speech_end_submit_ms: 400
+        unfinished_silence_ms: 2200
+        ws_url: ws://127.0.0.1:8766
+    xtts:
+        base_url: http://127.0.0.1:8767
+        speed: 1
+        timeout_ms: 30000
+redis:
+    db: 0
+    host: 127.0.0.1
+    password: ""
+    port: 6379
+server:
+    mode: release
+    port: 8081
 tools:
-  enabled: true
-
+    enabled: true
+    max_pending_reminders: 50
+    min_rapport_for_suggest: 60
+    min_trust_for_auto_create: 30
+    mode: tool_calling
+    reminder_tick_seconds: 5
+    tool_turn_max_tokens: 256
+vision:
+    auto_on_voice_turn: true
+    backend: local_moondream
+    classify_enabled: true
+    classify_model: deepseek-v4-flash-0731
+    classify_timeout_ms: 450
+    contextual_planner: true
+    default_focus: owner_face
+    early_animation: true
+    early_animation_min_conf: 0.65
+    min_expression_confidence: 0.6
+    model: moondream2
+    object_trigger_keywords:
+        - 这是什么
+        - 看看这个
+        - 帮我看看
+        - 认认这个
+        - 手里
+        - 拿着
+        - 啥东西
+        - 什么东西
+    prefetch_on_frame: true
+    scene_trigger_keywords:
+        - 你看外面
+        - 你看窗外
+        - 看看外面
+        - 你看房间
+    sequential_owner_face: false
+    session_camera: true
+    sidecar_url: http://127.0.0.1:8093
+    snapshot_on_audio_end: true
+    snapshot_on_object_intent: true
+    snapshot_on_speech_start: true
+    tier1_fast_timeout_ms: 28000
+    timeout_ms: 30000
 wellness:
-  enabled: true
+    activity_idle_break_minutes: 5
+    drink_active_minutes: 90
+    enabled: true
+    evening_rest_hour: 22
+    max_daily_nudges: 2
+    meal_windows:
+        dinner:
+            - "18:00"
+            - "19:00"
+        lunch:
+            - "12:00"
+            - "13:00"
+    overwork_active_minutes: 180
+    rest_active_minutes: 120
+    tick_minutes: 10

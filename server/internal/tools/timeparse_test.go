@@ -98,6 +98,28 @@ func TestParseScheduledTime_afternoonWithAdvance(t *testing.T) {
 
 func TestNeedsToolAction_recordPhrase(t *testing.T) {
 	if !NeedsToolAction("龙井茶给我记一下", emotion.Hint{Intent: "chat"}) {
-		t.Fatal("expected todo intent")
+		t.Fatal("expected NeedsToolAction=true for 龙井茶给我记一下")
+	}
+}
+
+func TestParseFireAtWeekday(t *testing.T) {
+	// 2026-07-23 is Thursday (Weekday 4)
+	now := time.Date(2026, 7, 23, 10, 0, 0, 0, loc)
+	fireFriday, ok := ParseFireAt("周五下午3点提醒我开会", now)
+	if !ok {
+		t.Fatal("expected ok for 周五下午3点")
+	}
+	// Friday is 2026-07-24, 15:00
+	if fireFriday.Day() != 24 || fireFriday.Hour() != 15 || fireFriday.Minute() != 0 {
+		t.Fatalf("want 2026-07-24 15:00 got %v", fireFriday)
+	}
+
+	fireNextMonday, ok := ParseFireAt("下周一早上9点提醒我交周报", now)
+	if !ok {
+		t.Fatal("expected ok for 下周一早上9点")
+	}
+	// Next Monday is 2026-07-27, 09:00
+	if fireNextMonday.Day() != 27 || fireNextMonday.Hour() != 9 || fireNextMonday.Minute() != 0 {
+		t.Fatalf("want 2026-07-27 09:00 got %v", fireNextMonday)
 	}
 }

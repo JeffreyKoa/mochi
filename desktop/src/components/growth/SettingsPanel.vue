@@ -445,12 +445,12 @@ function openMeTab() {
 async function refreshLogDirHints() {
   if (!isTauri()) return
   try {
-    clientLogDirHint.value = await getClientLogDir()
+    clientLogDirHint.value = (await getClientLogDir()) ?? ''
   } catch {
     clientLogDirHint.value = ''
   }
   try {
-    voiceLogDirHint.value = await getVoiceLogDir()
+    voiceLogDirHint.value = (await getVoiceLogDir()) ?? ''
   } catch {
     voiceLogDirHint.value = ''
   }

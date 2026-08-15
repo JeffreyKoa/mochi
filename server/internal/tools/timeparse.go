@@ -54,8 +54,11 @@ func ParseFireAt(text string, now time.Time) (time.Time, bool) {
 		now = now.In(loc)
 	}
 	dayOffset := 0
+	hasWeekday := false
 
 	switch {
+	case strings.Contains(text, "大后天"):
+		dayOffset = 3
 	case strings.Contains(text, "后天"):
 		dayOffset = 2
 	case strings.Contains(text, "明天"):
@@ -63,7 +66,14 @@ func ParseFireAt(text string, now time.Time) (time.Time, bool) {
 	case strings.Contains(text, "今天"), strings.Contains(text, "今晚"), strings.Contains(text, "今天晚上"):
 		dayOffset = 0
 	default:
-		return time.Time{}, false
+		// 解析周几 / 星期几 / 礼拜几 (如: "周五", "下周一", "星期三")
+		weekdayOffset, matched := parseWeekdayOffset(text, now)
+		if matched {
+			dayOffset = weekdayOffset
+			hasWeekday = true
+		} else {
+			return time.Time{}, false
+		}
 	}
 
 	hour, minute, ok := extractHourMinute(text)
@@ -87,7 +97,7 @@ func ParseFireAt(text string, now time.Time) (time.Time, bool) {
 	}
 
 	fire := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, loc).AddDate(0, 0, dayOffset)
-	if fire.Before(now) && dayOffset == 0 {
+	if fire.Before(now) && dayOffset == 0 && !hasWeekday {
 		fire = fire.AddDate(0, 0, 1)
 	}
 	return fire, true
@@ -288,3 +298,69 @@ func inferReminderTitle(text string) string {
 		return "提醒"
 	}
 }
+
+// parseWeekdayOffset 解析 "周X", "星期X", "礼拜X", "下周X", "下下周X" 相对于当前日期的天数偏移
+func parseWeekdayOffset(text string, now time.Time) (int, bool) {
+	re := regexp.MustCompile(`(这|本|下下|下)?(?:个)?\s*(?:周|星期|礼拜)\s*([一二三四五六日天\d])`)
+	m := re.FindStringSubmatch(text)
+	if len(m) < 3 {
+		return 0, false
+	}
+
+	prefix := m[1]
+	dayToken := m[2]
+
+	var targetWeekday int
+	switch dayToken {
+	case "1", "一":
+		targetWeekday = 1
+	case "2", "二":
+		targetWeekday = 2
+	case "3", "三":
+		targetWeekday = 3
+	case "4", "四":
+		targetWeekday = 4
+	case "5", "五":
+		targetWeekday = 5
+	case "6", "六":
+		targetWeekday = 6
+	case "7", "日", "天":
+		targetWeekday = 0
+	default:
+		return 0, false
+	}
+
+	// 统一转为周一=1 ... 周日=7 便于自然周跨周计算
+	curr := int(now.Weekday())
+	if curr == 0 {
+		curr = 7
+	}
+	tgt := targetWeekday
+	if tgt == 0 {
+		tgt = 7
+	}
+
+	diff := tgt - curr
+
+	switch prefix {
+	case "下下":
+		if diff <= 0 {
+			return diff + 14, true
+		}
+		return diff + 14, true
+	case "下":
+		if diff <= 0 {
+			// 本周目标日已过（如今天周四，说下周一），下一个周一就是下周一
+			return diff + 7, true
+		}
+		// 本周目标日还没到（如今天周二，说下周五），下周五应为本周五+7天
+		return diff + 7, true
+	default: // "这", "本", 或无前缀 (如 "周五", "这周五")
+		if diff < 0 {
+			// 本周该日已过（如今天周四，说"周一"），默认指下一个周一
+			return diff + 7, true
+		}
+		return diff, true
+	}
+}
+

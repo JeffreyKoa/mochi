@@ -432,18 +432,42 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 					h.pipeline.OnSpeechEnd(ctx, sess, trimPCMForASR(buf), sender)
 					return
 				}
-				restartASR()
+
 				if text == "" {
 					text = lastPartial
 				}
+
 				if text != "" {
 					log.Printf("[realtime] streaming asr final session=%s text=%q bytes=%d", sessionID, text, len(buf))
+					restartASR()
+					beginThinkingTurn()
+					h.pipeline.OnTranscript(ctx, sess, text, sender)
+					lastPartial = ""
+					return
 				}
-				// 流式空结果：无 partial 时直接 dismiss，不走 batch（省 4–6s 且 batch 对空流式常仍为空）
-				if text == "" && len(buf) >= minBatchASRFallbackBytes {
+
+				// 流式空结果：优先使用当前独占的 activeASR 尝试批量识别兜底，避免短语音被吞
+				if len(buf) >= 3200 { // ~100ms+ @16kHz mono
 					trimmed := trimPCMForASR(buf)
+					if xs, ok := activeASR.(*xasrSession); ok && len(trimmed) > 0 {
+						batchText, batchErr := xs.RecognizeBatch(ctx, trimmed)
+						if batchErr == nil && strings.TrimSpace(batchText) != "" {
+							log.Printf("[realtime] streaming asr batch fallback hit session=%s text=%q bytes=%d", sessionID, batchText, len(buf))
+							restartASR()
+							beginThinkingTurn()
+							h.pipeline.OnTranscript(ctx, sess, batchText, sender)
+							lastPartial = ""
+							return
+						}
+						log.Printf("[realtime] streaming asr batch fallback empty session=%s bytes=%d err=%v", sessionID, len(buf), batchErr)
+					}
+
+					// 批量仍为空：先重启复用 WS 备用
+					restartASR()
+
+					// 如果确实没有任何有效文本且无 partial，再执行静默 dismiss
 					if strings.TrimSpace(lastPartial) == "" {
-						log.Printf("[realtime] streaming asr empty skip batch session=%s bytes=%d trimmed=%d",
+						log.Printf("[realtime] streaming asr empty dismiss session=%s bytes=%d trimmed=%d",
 							sessionID, len(buf), len(trimmed))
 						sess.SetTurnPCM(trimmed)
 						sess.SetTurnAudioBytes(len(trimmed))
@@ -453,21 +477,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 						lastPartial = ""
 						return
 					}
-					// 有 partial 线索时在同 WS 上 batch 识别，避免 Recognize 新建连接
-					asrMu.Lock()
-					batchSess := asrSess
-					asrMu.Unlock()
-					if xs, ok := batchSess.(*xasrSession); ok && len(trimmed) > 0 {
-						batchText, batchErr := xs.RecognizeBatch(ctx, trimmed)
-						if batchErr == nil && strings.TrimSpace(batchText) != "" {
-							log.Printf("[realtime] streaming asr batch reuse session=%s text=%q", sessionID, batchText)
-							beginThinkingTurn()
-							h.pipeline.OnTranscript(ctx, sess, batchText, sender)
-							lastPartial = ""
-							return
-						}
-						log.Printf("[realtime] streaming asr batch reuse empty session=%s err=%v", sessionID, batchErr)
-					}
+
 					log.Printf("[realtime] streaming asr empty, batch fallback session=%s bytes=%d trimmed=%d last_partial=%q",
 						sessionID, len(buf), len(trimmed), lastPartial)
 					beginThinkingTurn()
@@ -475,6 +485,8 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 					lastPartial = ""
 					return
 				}
+
+				restartASR()
 				beginThinkingTurn()
 				h.pipeline.OnTranscript(ctx, sess, text, sender)
 				lastPartial = ""
@@ -802,10 +814,24 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 			audioBuf = audioBuf[:0]
 			audioMu.Unlock()
 			vad.Reset()
-			resetASR("utterance_cancel")
 			sess.ClearTurnMedia()
 			sess.SetState(StateIdle)
 			sender.SendAnimation(StateIdle)
+			// 保活 ASR 长连接，避免下一次语音触发时重新经历 5 秒冷启动
+			asrMu.Lock()
+			active := asrSess
+			asrMu.Unlock()
+			if active != nil {
+				if xs, ok := active.(*xasrSession); ok {
+					go func() {
+						_ = xs.Restart(context.Background())
+					}()
+					lastPartial = ""
+					break
+				}
+			}
+			resetASR("utterance_cancel")
+			ensureASR()
 		}
 	}
 }

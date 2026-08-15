@@ -14,6 +14,7 @@ import (
 	"github.com/mochi-ai/server/internal/brief"
 	"github.com/mochi-ai/server/internal/config"
 	"github.com/mochi-ai/server/internal/emotion"
+	"github.com/mochi-ai/server/internal/learning"
 	"github.com/mochi-ai/server/internal/life"
 	"github.com/mochi-ai/server/internal/lifecycle"
 	"github.com/mochi-ai/server/internal/memory"
@@ -624,6 +625,18 @@ func (r *Runtime) Turn(ctx context.Context, input TurnInput) (TurnOutput, error)
 
 	// 4. Build Prompt
 	buildStart := time.Now()
+	var englishCoach *prompt.EnglishCoachPromptConfig
+	if mode, scene, ok := learning.DetectLearningIntent(input.Message); ok {
+		englishCoach = &prompt.EnglishCoachPromptConfig{
+			PetName:     pet.Name,
+			Mode:        mode,
+			Level:       learning.LevelIntermediate,
+			TargetScene: scene,
+			IsVoiceTurn: input.TriggerType == "user_voice",
+		}
+		log.Printf("[agent][learning] english coach active mode=%s scene=%s", mode, scene)
+	}
+
 	messages := prompt.BuildCompanionPrompt(prompt.CompanionContext{
 		PetName:            pet.Name,
 		Personality:        personality,
@@ -637,7 +650,7 @@ func (r *Runtime) Turn(ctx context.Context, input TurnInput) (TurnOutput, error)
 			CurrentTopic: input.TopicAnchor.CurrentTopic,
 			OpenQuestion: input.TopicAnchor.OpenQuestion,
 		},
-		VisualSpeaker: input.VisualSpeaker,
+		VisualSpeaker:      input.VisualSpeaker,
 		Now:                time.Now(),
 		MemoryPromptBudget: memBudget,
 		LifeStage:          ageInfo.Stage,
@@ -647,6 +660,7 @@ func (r *Runtime) Turn(ctx context.Context, input TurnInput) (TurnOutput, error)
 		StyleConfig:        styleCfg,
 		IsFocusWorkMode:    isFocusWorkMode,
 		IsVoiceTurn:        input.TriggerType == "user_voice",
+		EnglishCoach:       englishCoach,
 	})
 	if input.TopicAnchor.CurrentTopic != "" || input.TopicAnchor.OpenQuestion != "" {
 		log.Printf("[topic_anchor] prompt pet=%d topic=%q open=%q",
@@ -805,6 +819,17 @@ func (r *Runtime) applyToolTurn(
 	}
 
 	msgs := appendTimeContext(messages)
+
+	// 1. 优先尝试 Heuristic 规则引擎极速创建（省去一次耗时 1-2s 的同步 ChatWithTools HTTP 请求）
+	if hr, err := r.toolsExec.TryHeuristicCreate(ctx, tools.ExecContext{
+		PetID:   pet.ID,
+		UserID:  userID,
+		UserMsg: userMsg,
+		Bond:    bond,
+	}); err == nil && hr != nil {
+		log.Printf("[Runtime] fast-path heuristic tool create hit: %s", hr.ToolName)
+		return toolTurnResult{messages: tools.AppendHeuristicToolTurn(msgs, hr)}, nil
+	}
 
 	maxTok := r.toolsCfg.ToolTurnMaxTokens
 	if maxTok <= 0 {

@@ -47,6 +47,7 @@ export class RealtimeSession {
   private replacing = false
   /** 本连接是否已发送 client_caps（避免重复日志与状态覆盖）。 */
   private clientCapsSent = false
+  private connectPromise: Promise<void> | null = null
 
   connect(timeoutMs = 12000): Promise<void> {
     const token = getToken()

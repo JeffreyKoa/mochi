@@ -30,6 +30,8 @@ type CompanionContext struct {
 	IsFocusWorkMode    bool
 	// IsVoiceTurn 实时语音回合：允许更长口语回复（4–8 句观点类）。
 	IsVoiceTurn bool
+	// EnglishCoach 英语教练配置 (若非空则注入专属伴学与场景指令)
+	EnglishCoach *EnglishCoachPromptConfig
 }
 
 // TopicAnchorContext 跨 turn 话题锚点（P1），注入 L3。
@@ -43,6 +45,10 @@ func BuildCompanionPrompt(ctx CompanionContext) []ai.Message {
 	contextLayer := BuildContextLayer(ctx)
 	volatile := BuildVolatileLayer(ctx)
 	system := stable + "\n\n" + contextLayer + "\n\n" + volatile
+
+	if ctx.EnglishCoach != nil {
+		system += BuildEnglishCoachInstruction(*ctx.EnglishCoach)
+	}
 
 	messages := []ai.Message{{Role: "system", Content: system}}
 	for _, msg := range ctx.ShortHistory {

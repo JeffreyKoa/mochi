@@ -950,21 +950,21 @@ export const useRealtimeStore = defineStore('realtime', () => {
       endNameWakeProbe(false)
       return
     }
-    // VAD 已报 speech_start 但声纹/分类器误拒：仅极高能量 + VAD 同时命中才 fallback（避免 0.13 分误唤醒）
+    // VAD 已报 speech_start 但声纹/分类器误拒：在能量与人声明显时 fallback（避免声纹微小抖动导致主人被当陌生人无视）
+    const isSpeaking = speechVad?.isSpeaking() ?? false
     if (
-      probe === 'not_speech' &&
-      micLevel.value >= params.wakePeak * 2.5 &&
-      (speechVad?.isSpeaking() ?? false)
+      (probe === 'not_speech' && micLevel.value >= params.wakePeak * 2.0 && isSpeaking) ||
+      (probe === 'not_owner' && micLevel.value >= params.wakePeak * 1.3 && isSpeaking && (lastWakeProbeScore ?? 0) >= 0.22)
     ) {
       if (import.meta.env.DEV) {
-        console.debug('[voiceprint] vad energy wake fallback peak=%s', micLevel.value.toFixed(3))
+        console.debug('[voiceprint] vad energy/score wake fallback peak=%s score=%s', micLevel.value.toFixed(3), lastWakeProbeScore?.toFixed(3) ?? 'null')
       }
       identityGate.markOwnerMatch()
       endNameWakeProbe(false)
       wakeOnSpeech()
       return
     }
-    // 声纹低分（非主人）时不走能量 fallback，避免 resting 空 ASR
+    // 声纹极低分（如背景杂音）才静默忽略
     if (probe === 'not_owner' && import.meta.env.DEV) {
       console.debug('[voiceprint] wake silent reject score=%s', lastWakeProbeScore?.toFixed(3) ?? 'null')
     }

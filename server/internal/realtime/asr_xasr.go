@@ -95,6 +95,7 @@ type xasrSession struct {
 	done        chan struct{}
 	errCh       chan error
 	mu          sync.Mutex
+	writeMu     sync.Mutex
 	finalText   string
 	startCh     chan struct{}
 	finalCh     chan struct{}
@@ -265,6 +266,8 @@ func (s *xasrSession) sendJSON(v any) error {
 		return err
 	}
 	sidecarlog.LogWSOutbound("xasr", s.wsURL, "json", v)
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	return s.conn.WriteMessage(websocket.TextMessage, data)
 }
 
@@ -301,6 +304,8 @@ func (s *xasrSession) sendPCM(pcm []byte, mode string) error {
 	s.stats.AudioBytes += len(pcm)
 	s.mu.Unlock()
 	sidecarlog.LogWSOutboundPCM("xasr", s.wsURL, len(pcm), mode)
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	return s.conn.WriteMessage(websocket.BinaryMessage, pcm)
 }
 
