@@ -44,14 +44,14 @@ function Ensure-MochiServerModels {
     if (-not $SkipMoondream) {
         Write-StepLocal "Setup moondream (services/moondream venv + deps)"
         $mdScript = Join-Path $RepoRoot "services\moondream\start.ps1"
-        if (-not (Test-Path $mdScript)) { throw "Missing $mdScript" }
-        & $mdScript -SetupOnly
+        if (-not (Test-Path -LiteralPath $mdScript)) { throw "Missing $mdScript" }
+        & $mdScript -SetupOnly -RepoRoot $RepoRoot
         if ($LASTEXITCODE -ne 0) { throw "moondream setup failed" }
 
         Write-StepLocal "Prefetch moondream2 weights"
         $dlScript = Join-Path $RepoRoot "services\moondream\download-model.ps1"
-        if (-not (Test-Path $dlScript)) { throw "Missing $dlScript" }
-        & $dlScript
+        if (-not (Test-Path -LiteralPath $dlScript)) { throw "Missing $dlScript" }
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $dlScript -RepoRoot $RepoRoot
         if ($LASTEXITCODE -ne 0) {
             throw "moondream weight download failed; run: services\moondream\download-model.ps1"
         }

@@ -14,7 +14,7 @@ type WSMessage struct {
 
 type Sender interface {
 	Send(msgType string, data any) error
-	SendTTSAudioBinary(audio []byte, format string, seq int64) error
+	SendTTSAudioBinary(audio []byte, format string, seq, ttsEpoch int64) error
 	SendAnimation(state SessionState)
 }
 
@@ -33,8 +33,9 @@ func (s *connSender) Send(msgType string, data any) error {
 	return s.send(WSMessage{IsBinary: false, Data: b})
 }
 
-func (s *connSender) SendTTSAudioBinary(audio []byte, format string, seq int64) error {
-	buf := make([]byte, 10+len(audio))
+func (s *connSender) SendTTSAudioBinary(audio []byte, format string, seq, ttsEpoch int64) error {
+	// 18-byte header: type(1) + format(1) + seq(8) + tts_epoch(8) + audio
+	buf := make([]byte, 18+len(audio))
 	buf[0] = 0x01 // MsgType: TTS Audio Binary
 	formatByte := byte(0x01) // mp3
 	switch format {
@@ -47,7 +48,8 @@ func (s *connSender) SendTTSAudioBinary(audio []byte, format string, seq int64) 
 	}
 	buf[1] = formatByte
 	binary.BigEndian.PutUint64(buf[2:10], uint64(seq))
-	copy(buf[10:], audio)
+	binary.BigEndian.PutUint64(buf[10:18], uint64(ttsEpoch))
+	copy(buf[18:], audio)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

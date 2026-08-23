@@ -100,6 +100,13 @@ func (c *Config) loadDataFiles(configDir string) error {
 	} else {
 		c.NoiseFillers = fillers
 	}
+
+	polishPath := c.resolveDataPath(configDir, c.Realtime.ASR.Polish.HomophonesFile, "data/asr_polish_homophones.yaml")
+	polish, err := loadASRPolishHomophones(polishPath)
+	if err != nil {
+		return err
+	}
+	c.ASRPolishHomophones = polish
 	return nil
 }
 
@@ -150,6 +157,21 @@ func loadNoiseFillers(path string) (map[rune]bool, error) {
 		return nil, nil
 	}
 	return BuildNoiseFillerSet(raw.Fillers), nil
+}
+
+func loadASRPolishHomophones(path string) (ASRPolishHomophones, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ASRPolishHomophones{}, nil
+		}
+		return ASRPolishHomophones{}, fmt.Errorf("read asr polish homophones %s: %w", path, err)
+	}
+	var out ASRPolishHomophones
+	if err := yaml.Unmarshal(data, &out); err != nil {
+		return ASRPolishHomophones{}, fmt.Errorf("parse asr polish homophones %s: %w", path, err)
+	}
+	return out, nil
 }
 
 func loadTextFile(path string) (string, error) {

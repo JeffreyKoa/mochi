@@ -7,12 +7,23 @@ param(
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-$Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$MoondreamRoot = $null
+if ($RepoRoot -ne "") {
+    $MoondreamRoot = Join-Path $RepoRoot "services\moondream"
+}
+if (-not $MoondreamRoot -and $PSCommandPath) {
+    $MoondreamRoot = Split-Path -Parent $PSCommandPath
+}
+if (-not $MoondreamRoot -and $MyInvocation.MyCommand.Path) {
+    $MoondreamRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+if (-not $MoondreamRoot) { throw "Cannot resolve moondream script directory (pass -RepoRoot)" }
+Set-Location $MoondreamRoot
 
 # 与 start.ps1 一致：优先 legacy .venv，否则 LocalAppData
 function Resolve-MoondreamVenv {
     $defaultVenv = Join-Path $env:LOCALAPPDATA "Mochi\moondream-venv"
-    $legacyVenv = Join-Path $Root ".venv"
+    $legacyVenv = Join-Path $MoondreamRoot ".venv"
     if ($env:MOONDREAM_VENV) { return $env:MOONDREAM_VENV }
     if (Test-Path $legacyVenv) { return $legacyVenv }
     return $defaultVenv
@@ -42,21 +53,29 @@ if ($env:HF_ENDPOINT) {
     Write-Host "  tip: set HF_ENDPOINT=https://hf-mirror.com if HuggingFace is slow" -ForegroundColor DarkYellow
 }
 
-$pyCode = @"
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-repo = '$repo'
-revision = '$revision'
-print('downloading tokenizer...')
-AutoTokenizer.from_pretrained(repo, revision=revision, trust_remote_code=True)
-print('downloading model weights (may take several minutes)...')
-AutoModelForCausalLM.from_pretrained(repo, revision=revision, trust_remote_code=True)
-print('OK')
-"@
+# Skip download when weights already exist in local HuggingFace cache (idempotent).
+$cacheCheckPy = Join-Path $MoondreamRoot "check_weights_cache.py"
+if ([string]::IsNullOrWhiteSpace($cacheCheckPy)) {
+    throw "cache check script path unresolved (MoondreamRoot=$MoondreamRoot)"
+}
+if (-not (Test-Path -LiteralPath $cacheCheckPy)) { Write-Error "Missing $cacheCheckPy" }
 
 $prevEap = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
-& $Python -c $pyCode
+& $Python $cacheCheckPy 2>&1 | Out-Null
+$checkExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+
+if ($checkExit -eq 0) {
+    Write-Host "Moondream2 weights already in HuggingFace cache, skip download." -ForegroundColor Green
+    exit 0
+}
+
+$weightsDownloadPy = Join-Path $MoondreamRoot "download_weights.py"
+if (-not (Test-Path -LiteralPath $weightsDownloadPy)) { Write-Error "Missing $weightsDownloadPy" }
+
+$ErrorActionPreference = "Continue"
+& $Python $weightsDownloadPy
 $pyExit = $LASTEXITCODE
 $ErrorActionPreference = $prevEap
 if ($pyExit -ne 0) { exit $pyExit }

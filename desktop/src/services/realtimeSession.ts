@@ -9,11 +9,11 @@ export type RealtimeEvent =
   | { type: 'asr_final'; text: string }
   | { type: 'llm_token'; token: string }
   | { type: 'llm_done'; text: string }
-  | { type: 'tts_audio'; pcm: string; audioBuffer?: ArrayBuffer; format: string; seq: number }
+  | { type: 'tts_audio'; pcm: string; audioBuffer?: ArrayBuffer; format: string; seq: number; ttsEpoch?: number }
   | { type: 'tts_segment_done' }
   | { type: 'tts_stream_start'; codec: string; sampleRate: number; channels: number; frameMs: number; bitrate: number }
   | { type: 'tts_done' }
-  | { type: 'interrupted' }
+  | { type: 'interrupted'; ttsEpoch?: number }
   | { type: 'turn_ack' }
   | { type: 'turn_dismiss'; reason: string }
   | { type: 'turn_metrics'; metrics: TurnMetrics }
@@ -325,6 +325,7 @@ export class RealtimeSession {
           pcm: String(data.pcm),
           format: String(data.format || 'mp3'),
           seq: Number(data.seq),
+          ttsEpoch: data.tts_epoch != null ? Number(data.tts_epoch) : undefined,
         })
         break
       case 'tts_segment_done':
@@ -344,7 +345,10 @@ export class RealtimeSession {
         this.emit({ type: 'tts_done' })
         break
       case 'interrupted':
-        this.emit({ type: 'interrupted' })
+        this.emit({
+          type: 'interrupted',
+          ttsEpoch: data.tts_epoch != null ? Number(data.tts_epoch) : undefined,
+        })
         break
       case 'turn_ack':
         this.emit({ type: 'turn_ack' })
@@ -417,7 +421,16 @@ export class RealtimeSession {
       const high = view.getUint32(2)
       const low = view.getUint32(6)
       const seq = high * 4294967296 + low
-      const audioBuffer = buffer.slice(10)
+      let ttsEpoch: number | undefined
+      let audioBuffer: ArrayBuffer
+      if (buffer.byteLength >= 18) {
+        const epochHigh = view.getUint32(10)
+        const epochLow = view.getUint32(14)
+        ttsEpoch = epochHigh * 4294967296 + epochLow
+        audioBuffer = buffer.slice(18)
+      } else {
+        audioBuffer = buffer.slice(10)
+      }
 
       this.emit({
         type: 'tts_audio',
@@ -425,6 +438,7 @@ export class RealtimeSession {
         audioBuffer,
         format,
         seq,
+        ttsEpoch,
       })
     }
   }

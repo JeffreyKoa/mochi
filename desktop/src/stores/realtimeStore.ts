@@ -1806,10 +1806,22 @@ export const useRealtimeStore = defineStore('realtime', () => {
     }
   }
 
+  function applyTtsEpoch(epoch?: number) {
+    if (epoch != null && epoch > 0) {
+      ttsPlayer.setPlaybackEpoch(epoch)
+      if (import.meta.env.DEV) {
+        console.info('[realtime] tts_epoch=%d', epoch)
+      }
+    } else {
+      ttsPlayer.bumpPlaybackEpoch()
+    }
+  }
+
   function bargeIn() {
     if (phase !== 'agent_speaking') return
     if (!ttsPlayer.hadPlayback && !replyText.value.trim()) return
     cancelTurnAbort()
+    ttsPlayer.bumpPlaybackEpoch()
     stopActiveTtsForCloudSpeak()
     clearTtsWatchdog()
     replyText.value = ''
@@ -2444,7 +2456,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
         serverSessionState.value = 'speaking'
         if (!ttsStartedAt) ttsStartedAt = Date.now()
         statusText.value = 'Mochi 正在说话...（大声说话可打断）'
-        ttsPlayer.enqueue(audio, ev.format, markPlaybackStart, ev.seq)
+        ttsPlayer.enqueue(audio, ev.format, markPlaybackStart, ev.seq, ev.ttsEpoch)
         break
       }
       case 'tts_segment_done':
@@ -2506,7 +2518,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
         break
       case 'interrupted':
         cancelTurnAbort()
-        ttsPlayer.stop()
+        applyTtsEpoch(ev.ttsEpoch)
         clearTtsWatchdog()
         textSending = false
         clearPendingTurnState()

@@ -33,6 +33,7 @@ type Config struct {
 	GateFastpath     GateFastpath
 	GateSystemPrompt string
 	NoiseFillers     map[rune]bool
+	ASRPolishHomophones ASRPolishHomophones
 }
 
 type ServerConfig struct {
@@ -283,10 +284,33 @@ type RealtimePublicConfig struct {
 }
 
 type RealtimeASR struct {
-	Provider         string `yaml:"provider"`
-	Model            string `yaml:"model"`
-	SampleRate       int    `yaml:"sample_rate"`
-	NoiseFillersFile string `yaml:"noise_fillers_file"`
+	Provider         string             `yaml:"provider"`
+	Model            string             `yaml:"model"`
+	SampleRate       int                `yaml:"sample_rate"`
+	NoiseFillersFile string             `yaml:"noise_fillers_file"`
+	Polish           RealtimeASRPolish  `yaml:"polish"`
+}
+
+// RealtimeASRPolish 语音 ASR final 润色（规则 + 可选 LLM）。
+type RealtimeASRPolish struct {
+	Enabled        bool   `yaml:"enabled"`
+	Mode           string `yaml:"mode"` // rules | llm | rules_then_llm
+	MaxChars       int    `yaml:"max_chars"`
+	LLMTimeoutMS   int    `yaml:"llm_timeout_ms"`
+	LLMModel       string `yaml:"llm_model"`
+	HomophonesFile string `yaml:"homophones_file"`
+}
+
+// ASRPolishHomophones 从 data/asr_polish_homophones.yaml 加载。
+type ASRPolishHomophones struct {
+	Replacements   []ASRPolishPair `yaml:"replacements"`
+	PetNameAliases []string        `yaml:"pet_name_aliases"`
+	StripFillers   []string        `yaml:"strip_fillers"`
+}
+
+type ASRPolishPair struct {
+	From string `yaml:"from"`
+	To   string `yaml:"to"`
 }
 
 type RealtimeTTS struct {
@@ -887,6 +911,15 @@ func (r *RealtimeConfig) applyDefaults() {
 	}
 	if r.ASR.SampleRate == 0 {
 		r.ASR.SampleRate = 16000
+	}
+	if r.ASR.Polish.Mode == "" {
+		r.ASR.Polish.Mode = "rules"
+	}
+	if r.ASR.Polish.MaxChars == 0 {
+		r.ASR.Polish.MaxChars = 120
+	}
+	if r.ASR.Polish.LLMTimeoutMS == 0 {
+		r.ASR.Polish.LLMTimeoutMS = 400
 	}
 	if r.TTS.Provider == "" {
 		r.TTS.Provider = "xtts"

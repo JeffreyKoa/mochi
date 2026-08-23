@@ -128,9 +128,15 @@ type LLMDone struct {
 }
 
 type TTSAudio struct {
-	PCM    string `json:"pcm"`    // base64 encoded audio
-	Format string `json:"format"` // mp3 | pcm
-	Seq    int64  `json:"seq"`
+	PCM      string `json:"pcm"`    // base64 encoded audio
+	Format   string `json:"format"` // mp3 | pcm
+	Seq      int64  `json:"seq"`
+	TTSEpoch int64  `json:"tts_epoch,omitempty"`
+}
+
+// InterruptedData barge-in 通知，携带 TTS 代际供客户端丢弃迟到音频。
+type InterruptedData struct {
+	TTSEpoch int64 `json:"tts_epoch"`
 }
 
 type AnimationState struct {
@@ -184,9 +190,10 @@ type TurnDismiss struct {
 
 // TTSSynthSegment 本地 TTS 模式：服务端按句下发 mood prosody，客户端 X-TTS 合成。
 type TTSSynthSegment struct {
-	Text string  `json:"text"`
-	Mood string  `json:"mood,omitempty"`
-	Rate float64 `json:"rate"`
+	Text     string  `json:"text"`
+	Mood     string  `json:"mood,omitempty"`
+	Rate     float64 `json:"rate"`
+	TTSEpoch int64   `json:"tts_epoch,omitempty"`
 }
 
 func marshalMsg(msgType string, data any, seq int64) ([]byte, error) {

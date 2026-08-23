@@ -28,6 +28,7 @@ type Session struct {
 
 	audioSeq int64
 	ttsSeq   int64
+	ttsEpoch int64 // barge-in 代际：递增后丢弃旧 epoch 的 TTS 音频
 
 	pipelineMu     sync.Mutex
 	pipelineCancel context.CancelFunc
@@ -112,6 +113,21 @@ func (s *Session) NextTTSSeq() int64 {
 	return s.ttsSeq
 }
 
+// TTSEpoch 返回当前 TTS 播放代际（barge-in 时递增）。
+func (s *Session) TTSEpoch() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ttsEpoch
+}
+
+// BumpTTSEpoch 递增 TTS 代际并返回新值；在途/迟到合成应丢弃旧代际音频。
+func (s *Session) BumpTTSEpoch() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ttsEpoch++
+	return s.ttsEpoch
+}
+
 // BeginPipeline returns a cancellable context for an active reply pipeline.
 func (s *Session) BeginPipeline(parent context.Context) context.Context {
 	s.pipelineMu.Lock()
@@ -124,15 +140,16 @@ func (s *Session) BeginPipeline(parent context.Context) context.Context {
 	return ctx
 }
 
-// CancelPipeline stops the active reply pipeline (barge-in).
-func (s *Session) CancelPipeline() {
+// CancelPipeline stops the active reply pipeline (barge-in) and bumps TTS epoch.
+func (s *Session) CancelPipeline() int64 {
 	s.pipelineMu.Lock()
-	defer s.pipelineMu.Unlock()
 	if s.pipelineCancel != nil {
 		s.pipelineCancel()
 		s.pipelineCancel = nil
 	}
+	s.pipelineMu.Unlock()
 	s.CancelVisionWork()
+	return s.BumpTTSEpoch()
 }
 
 // EndPipeline clears the pipeline cancel handle after normal completion.

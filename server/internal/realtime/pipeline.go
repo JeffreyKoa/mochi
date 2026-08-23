@@ -30,6 +30,7 @@ type Pipeline struct {
 	ttsFormat string
 	apiKey    string
 	gate      *ResponseGate
+	polisher  *ASRPolisher
 	noiseFillers map[rune]bool
 	acoustic     emotion.AcousticClient
 	vision       *vision.Service
@@ -85,8 +86,18 @@ func NewPipeline(chatSvc *chat.Service, cfg config.RealtimeConfig, appCfg *confi
 		gateCfg.Model = appCfg.AI.ModelCode
 	}
 	p.gate = NewResponseGate(gateCfg, appCfg.GateFastpath, appCfg.GateSystemPrompt, apiKey, appCfg.AI.APIBase)
+	p.polisher = NewASRPolisher(cfg.ASR.Polish, appCfg.ASRPolishHomophones, apiKey, appCfg.AI.APIBase, appCfg.AI.ModelCode, gateCfg.Model)
 	p.noiseFillers = appCfg.NoiseFillers
 	return p
+}
+
+// emitTTSAudio 在 synthEpoch 仍与 session 一致时下发 TTS 二进制帧。
+func emitTTSAudio(sess *Session, send Sender, synthEpoch int64, audio []byte, format string) {
+	if len(audio) == 0 || synthEpoch != sess.TTSEpoch() {
+		return
+	}
+	seq := sess.NextTTSSeq()
+	_ = send.SendTTSAudioBinary(audio, format, seq, synthEpoch)
 }
 
 func ttsPreferMP3(cfg config.RealtimeConfig, clientPreferMP3 bool) bool {
@@ -764,11 +775,12 @@ func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text
 
 	// Always push ASR text to client first so chat/partial UI can show what was heard,
 	// even if noise gate or response gate later dismisses the turn.
-	if withVoice && strings.TrimSpace(text) != "" {
-		_ = send.Send(MsgASRFinal, ASRText{Text: text})
+	rawText := text
+	if withVoice && strings.TrimSpace(rawText) != "" {
+		_ = send.Send(MsgASRFinal, ASRText{Text: rawText})
 	}
 
-	if strings.TrimSpace(text) == "" {
+	if strings.TrimSpace(rawText) == "" {
 		if !withVoice {
 			turnStarted = true
 			_ = send.Send(MsgLLMDone, LLMDone{Text: "你好像还没输入内容？"})
@@ -779,12 +791,26 @@ func (p *Pipeline) onTranscriptWithMode(ctx context.Context, sess *Session, text
 		return
 	}
 
-	// Noise gate: silently dismiss false-trigger ASR results (voice turns only)
-	// before they reach the LLM.
-	if withVoice && p.isNoiseTranscript(text) {
-		log.Printf("[realtime] asr noise dismiss session=%s text=%q audio_bytes=%d reason=filler_only", sess.ID, text, sess.TurnAudioBytes())
+	// Noise gate uses raw transcript（单字语气词等）。
+	if withVoice && p.isNoiseTranscript(rawText) {
+		log.Printf("[realtime] asr noise dismiss session=%s text=%q audio_bytes=%d reason=filler_only", sess.ID, rawText, sess.TurnAudioBytes())
 		p.abortTurnSilent(sess, send, "noise_filler")
 		return
+	}
+
+	text = rawText
+	if withVoice && p.polisher != nil && p.polisher.Enabled() {
+		petName := ""
+		if p.chat != nil {
+			if pet, err := p.chat.GetPetByUser(ctx, sess.UserID); err == nil && pet != nil {
+				petName = pet.Name
+			}
+		}
+		pr := p.polisher.Polish(ctx, rawText, PolishContext{SessionID: sess.ID, PetName: petName})
+		if pr.Changed {
+			log.Printf("[asr_polish] session=%s orig=%q polished=%q reason=%s", sess.ID, pr.Original, pr.Polished, pr.Reason)
+		}
+		text = pr.Polished
 	}
 
 	// Response gate: decide whether this utterance needs a reply at all
@@ -849,17 +875,21 @@ func (p *Pipeline) asyncSynthSegmentWithSynth(ctx context.Context, synth TTSSynt
 }
 
 // runPrefetchSegmentTTS synthesizes segments with one-ahead prefetch to hide inter-sentence gaps.
-func (p *Pipeline) runPrefetchSegmentTTS(ctx context.Context, synth TTSSynthesizer, segCh <-chan ttsSegment, onChunk func([]byte), onSegmentDone func()) error {
+func (p *Pipeline) runPrefetchSegmentTTS(ctx context.Context, sess *Session, synth TTSSynthesizer, segCh <-chan ttsSegment, onChunk func([]byte, int64), onSegmentDone func()) error {
 	var ttsErr error
 
+	var aheadEpoch int64
 	var ahead <-chan segmentSynthResult
 
-	flushSegment := func(res segmentSynthResult) {
-		res = p.playSegmentResult(res, onChunk)
+	flushSegment := func(res segmentSynthResult, synthEpoch int64) {
+		if synthEpoch != sess.TTSEpoch() || ctx.Err() != nil {
+			return
+		}
+		res = p.playSegmentResult(sess, res, onChunk, synthEpoch)
 		if res.err != nil && ttsErr == nil {
 			ttsErr = res.err
 		}
-		if onSegmentDone != nil && len(res.chunks) > 0 {
+		if onSegmentDone != nil && len(res.chunks) > 0 && synthEpoch == sess.TTSEpoch() {
 			onSegmentDone()
 		}
 	}
@@ -869,7 +899,7 @@ func (p *Pipeline) runPrefetchSegmentTTS(ctx context.Context, synth TTSSynthesiz
 		var ok bool
 
 		if ahead != nil {
-			flushSegment(<-ahead)
+			flushSegment(<-ahead, aheadEpoch)
 			ahead = nil
 
 			select {
@@ -877,6 +907,7 @@ func (p *Pipeline) runPrefetchSegmentTTS(ctx context.Context, synth TTSSynthesiz
 				if !ok {
 					return ttsErr
 				}
+				aheadEpoch = sess.TTSEpoch()
 				ahead = p.asyncSynthSegmentWithSynth(ctx, synth, seg)
 			default:
 			}
@@ -888,26 +919,31 @@ func (p *Pipeline) runPrefetchSegmentTTS(ctx context.Context, synth TTSSynthesiz
 			return ttsErr
 		}
 
+		curEpoch := sess.TTSEpoch()
 		cur := p.asyncSynthSegmentWithSynth(ctx, synth, seg)
 
 		select {
 		case nextSeg, nextOK := <-segCh:
 			if nextOK {
+				aheadEpoch = sess.TTSEpoch()
 				ahead = p.asyncSynthSegmentWithSynth(ctx, synth, nextSeg)
 			} else {
-				flushSegment(<-cur)
+				flushSegment(<-cur, curEpoch)
 				return ttsErr
 			}
 		default:
 		}
 
-		flushSegment(<-cur)
+		flushSegment(<-cur, curEpoch)
 	}
 }
 
-func (p *Pipeline) playSegmentResult(res segmentSynthResult, onChunk func([]byte)) segmentSynthResult {
+func (p *Pipeline) playSegmentResult(sess *Session, res segmentSynthResult, onChunk func([]byte, int64), synthEpoch int64) segmentSynthResult {
 	for _, chunk := range res.chunks {
-		onChunk(chunk)
+		if synthEpoch != sess.TTSEpoch() {
+			return segmentSynthResult{chunks: nil, err: res.err}
+		}
+		onChunk(chunk, synthEpoch)
 	}
 	return res
 }
@@ -954,8 +990,8 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		log.Printf("[realtime] tts transport=%s session=%s", ttsFormat, sess.ID)
 	}
 
-	onAudio := func(audio []byte) {
-		if len(audio) == 0 {
+	onAudio := func(audio []byte, synthEpoch int64) {
+		if len(audio) == 0 || synthEpoch != sess.TTSEpoch() {
 			return
 		}
 		select {
@@ -984,16 +1020,14 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 				return
 			}
 			for _, frame := range frames {
-				seq := sess.NextTTSSeq()
-				_ = send.SendTTSAudioBinary(frame, "opus", seq)
+				emitTTSAudio(sess, send, synthEpoch, frame, "opus")
 			}
 		} else {
 			if ttsFormat == "pcm" {
 				log.Printf("[realtime] skip pcm chunk: opus bridge unavailable session=%s", sess.ID)
 				return
 			}
-			seq := sess.NextTTSSeq()
-			_ = send.SendTTSAudioBinary(audio, ttsFormat, seq)
+			emitTTSAudio(sess, send, synthEpoch, audio, ttsFormat)
 		}
 	}
 
@@ -1007,12 +1041,12 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 			onSegmentDone := func() {
 				_ = send.Send(MsgTTSSegmentDone, map[string]any{})
 			}
-			err := p.runPrefetchSegmentTTS(ctx, ttsSynth, segCh, onAudio, onSegmentDone)
+			err := p.runPrefetchSegmentTTS(ctx, sess, ttsSynth, segCh, onAudio, onSegmentDone)
 			if opusBridge != nil {
-				if frames, errFl := opusBridge.Flush(); errFl == nil {
+				flushEpoch := sess.TTSEpoch()
+				if frames, errFl := opusBridge.Flush(); errFl == nil && flushEpoch == sess.TTSEpoch() {
 					for _, frame := range frames {
-						seq := sess.NextTTSSeq()
-						_ = send.SendTTSAudioBinary(frame, "opus", seq)
+						emitTTSAudio(sess, send, flushEpoch, frame, "opus")
 					}
 				}
 			}
@@ -1052,9 +1086,10 @@ func (p *Pipeline) streamLLMAndVoice(ctx context.Context, sess *Session, send Se
 		// 本地 TTS：按句下发 mood prosody，客户端 X-TTS 合成
 		if sess.LocalTTS() {
 			_ = send.Send(MsgTTSSynthSegment, TTSSynthSegment{
-				Text: speakText,
-				Mood: string(tone.Mood),
-				Rate: prosody.Rate,
+				Text:     speakText,
+				Mood:     string(tone.Mood),
+				Rate:     prosody.Rate,
+				TTSEpoch: sess.TTSEpoch(),
 			})
 			return
 		}
@@ -1275,6 +1310,7 @@ func (p *Pipeline) speakAudio(ctx context.Context, sess *Session, send Sender, r
 		speakText = text.StripMoodTags(reply)
 	}
 	opts := ProsodyForMood(tone.Mood, ttsBundle.baseline).ToSynthOptions()
+	synthEpoch := sess.TTSEpoch()
 
 	err := ttsSynth.Synthesize(ctx, speakText, opts, func(audio []byte) {
 		select {
@@ -1282,7 +1318,7 @@ func (p *Pipeline) speakAudio(ctx context.Context, sess *Session, send Sender, r
 			return
 		default:
 		}
-		if len(audio) == 0 {
+		if len(audio) == 0 || synthEpoch != sess.TTSEpoch() {
 			return
 		}
 		chunks++
@@ -1297,8 +1333,7 @@ func (p *Pipeline) speakAudio(ctx context.Context, sess *Session, send Sender, r
 			frames, err := opusBridge.EncodeChunk(audio)
 			if err == nil {
 				for _, frame := range frames {
-					seq := sess.NextTTSSeq()
-					_ = send.SendTTSAudioBinary(frame, "opus", seq)
+					emitTTSAudio(sess, send, synthEpoch, frame, "opus")
 				}
 			}
 		} else {
@@ -1306,16 +1341,14 @@ func (p *Pipeline) speakAudio(ctx context.Context, sess *Session, send Sender, r
 				log.Printf("[realtime] skip pcm chunk in speakAudio: opus bridge unavailable session=%s", sess.ID)
 				return
 			}
-			seq := sess.NextTTSSeq()
-			_ = send.SendTTSAudioBinary(audio, ttsFormat, seq)
+			emitTTSAudio(sess, send, synthEpoch, audio, ttsFormat)
 		}
 	})
 
 	if opusBridge != nil && useOpus {
-		if frames, errFl := opusBridge.Flush(); errFl == nil {
+		if frames, errFl := opusBridge.Flush(); errFl == nil && synthEpoch == sess.TTSEpoch() {
 			for _, frame := range frames {
-				seq := sess.NextTTSSeq()
-				_ = send.SendTTSAudioBinary(frame, "opus", seq)
+				emitTTSAudio(sess, send, synthEpoch, frame, "opus")
 			}
 		}
 	}
@@ -1359,7 +1392,7 @@ func (p *Pipeline) handleCancelled(ctx context.Context, sess *Session, send Send
 	}
 	log.Printf("[realtime] pipeline interrupted session=%s", sess.ID)
 	sess.ClearTurnLatency()
-	_ = send.Send(MsgInterrupted, map[string]any{})
+	_ = send.Send(MsgInterrupted, InterruptedData{TTSEpoch: sess.TTSEpoch()})
 	_ = send.Send(MsgTTSDone, map[string]any{})
 	p.setListening(sess, send)
 	return true
@@ -1426,9 +1459,9 @@ func (p *Pipeline) isNoiseTranscript(text string) bool {
 }
 
 func (p *Pipeline) Interrupt(sess *Session, send Sender) {
-	sess.CancelPipeline()
+	epoch := sess.CancelPipeline()
 	sess.ClearTurnLatency()
-	_ = send.Send(MsgInterrupted, map[string]any{})
+	_ = send.Send(MsgInterrupted, InterruptedData{TTSEpoch: epoch})
 	_ = send.Send(MsgTTSDone, map[string]any{})
 	p.setListening(sess, send)
 }

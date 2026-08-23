@@ -80,6 +80,13 @@ realtime:
     asr:
         model: sherpa-streaming-zh
         noise_fillers_file: data/asr_noise_fillers.yaml
+        polish:
+            enabled: true
+            mode: rules
+            max_chars: 120
+            llm_timeout_ms: 400
+            llm_model: ""
+            homophones_file: data/asr_polish_homophones.yaml
         provider: xasr
         sample_rate: 16000
     barge_in:

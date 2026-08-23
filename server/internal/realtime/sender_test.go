@@ -30,7 +30,7 @@ func TestConnSender_SendTTSAudioBinary(t *testing.T) {
 				},
 			}
 
-			err := sender.SendTTSAudioBinary(rawAudio, tt.format, tt.seq)
+			err := sender.SendTTSAudioBinary(rawAudio, tt.format, tt.seq, 3)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -39,8 +39,8 @@ func TestConnSender_SendTTSAudioBinary(t *testing.T) {
 				t.Errorf("expected IsBinary true")
 			}
 
-			if len(sentMsg.Data) != 10+len(rawAudio) {
-				t.Fatalf("expected payload length %d, got %d", 10+len(rawAudio), len(sentMsg.Data))
+			if len(sentMsg.Data) != 18+len(rawAudio) {
+				t.Fatalf("expected payload length %d, got %d", 18+len(rawAudio), len(sentMsg.Data))
 			}
 
 			if sentMsg.Data[0] != 0x01 {
@@ -56,7 +56,12 @@ func TestConnSender_SendTTSAudioBinary(t *testing.T) {
 				t.Errorf("expected Seq %d, got %d", tt.seq, seq)
 			}
 
-			payload := sentMsg.Data[10:]
+			epoch := binary.BigEndian.Uint64(sentMsg.Data[10:18])
+			if epoch != 3 {
+				t.Errorf("expected TTSEpoch 3, got %d", epoch)
+			}
+
+			payload := sentMsg.Data[18:]
 			if string(payload) != string(rawAudio) {
 				t.Errorf("audio payload mismatch")
 			}

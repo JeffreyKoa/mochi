@@ -1,0 +1,14 @@
+# ASR 润色：同音/常见误识别替换（按顺序应用 strings.ReplaceAll）
+# 宠物名别名请在运行时会与 pet.Name 一并替换；也可在此写固定误识别。
+
+replacements:
+  - from: "一分后"
+    to: "一分钟后"
+  - from: "一半小时"
+    to: "半个小时"
+
+pet_name_aliases: []
+
+strip_fillers:
+  - "那个"
+  - "就是"

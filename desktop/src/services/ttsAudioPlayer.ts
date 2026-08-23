@@ -37,6 +37,8 @@ export class TTSAudioQueue {
   private playbackStarted = false
   private lastSeq = 0
   private seqInitialized = false
+  /** 低于此代际的 TTS 音频一律丢弃（barge-in）。 */
+  private playbackEpoch = 0
 
   /** True if at least one audio chunk actually started playback this turn. */
   get hadPlayback(): boolean {
@@ -50,7 +52,28 @@ export class TTSAudioQueue {
     this.seqInitialized = false
   }
 
-  enqueue(data: string | ArrayBuffer, format = 'mp3', onFirstPlay?: () => void, seq?: number) {
+  /** 同步服务端 TTS 代际；丢弃更旧 epoch 的迟到音频。 */
+  setPlaybackEpoch(epoch: number) {
+    if (epoch > this.playbackEpoch) {
+      this.playbackEpoch = epoch
+    }
+    this.stop()
+  }
+
+  getPlaybackEpoch(): number {
+    return this.playbackEpoch
+  }
+
+  bumpPlaybackEpoch(): number {
+    this.playbackEpoch += 1
+    this.stop()
+    return this.playbackEpoch
+  }
+
+  enqueue(data: string | ArrayBuffer, format = 'mp3', onFirstPlay?: () => void, seq?: number, ttsEpoch?: number) {
+    if (ttsEpoch != null && ttsEpoch < this.playbackEpoch) {
+      return
+    }
     if (onFirstPlay) this.onFirstPlay = onFirstPlay
     if (typeof seq === 'number' && seq > 0) {
       this.trackSeq(seq)
