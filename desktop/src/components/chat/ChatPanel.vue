@@ -67,6 +67,9 @@ const scrollEl = ref<HTMLElement | null>(null)
 const realtimeEnabled = ref(true)
 const auth = useAuthStore()
 let unlistenProactive: (() => void) | null = null
+/** 防抖 side-panel-opened / onMounted 重复 acquireVoice */
+let acquireVoiceFlight: Promise<void> | null = null
+let acquireVoiceLastAt = 0
 let unlistenChatOpened: (() => void) | null = null
 let unlistenSidePanelOpened: (() => void) | null = null
 let unlistenVoiceOwner: (() => void) | null = null
@@ -131,6 +134,18 @@ watch(
 )
 
 async function acquireChatVoice(options?: { autoStartTalk?: boolean }) {
+  const now = Date.now()
+  if (acquireVoiceFlight) return acquireVoiceFlight
+  if (now - acquireVoiceLastAt < 500) return
+  acquireVoiceLastAt = now
+
+  acquireVoiceFlight = acquireChatVoiceInternal(options).finally(() => {
+    acquireVoiceFlight = null
+  })
+  return acquireVoiceFlight
+}
+
+async function acquireChatVoiceInternal(options?: { autoStartTalk?: boolean }) {
   const autoStartTalk = options?.autoStartTalk ?? true
   auth.syncFromStorage()
 
@@ -258,7 +273,6 @@ onMounted(async () => {
         if (mode === 'chat' || !mode) onChatPanelShow()
       }
       unlistenSidePanelOpened = await listen('side-panel-opened', onSidePanelOpened)
-      unlistenChatOpened = await listen('chat-opened', onSidePanelOpened)
     } catch {
       // optional
     }

@@ -193,6 +193,11 @@ function Wait-MoondreamReady {
                 }
                 if ($body.load_error) {
                     Write-Host "  FAIL $Label load_error: $($body.load_error)" -ForegroundColor Red
+                    if ($body.load_error -match '内存不足|虚拟内存|page file|paging file') {
+                        Write-Host "  hint: close memory-heavy apps or enlarge Windows page file, then retry" -ForegroundColor Yellow
+                    } elseif ($body.weights_cached -eq $true -and $body.load_error -match '权重|weights') {
+                        Write-Host "  hint: weights are cached; likely memory or GPU issue, not missing download" -ForegroundColor Yellow
+                    }
                     return $false
                 }
             }

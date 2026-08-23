@@ -51,6 +51,10 @@ async function sleep(ms: number) {
   await new Promise((resolve) => setTimeout(resolve, ms))
 }
 let layoutQueue = Promise.resolve()
+/** 防止连续双击/多事件重复打开 side panel */
+let sidePanelOpenFlight: Promise<boolean> | null = null
+let sidePanelOpenLastAt = 0
+const SIDE_PANEL_OPEN_DEBOUNCE_MS = 700
 
 function runLayoutTask<T>(task: () => Promise<T>): Promise<T> {
   const next = layoutQueue.then(task)
@@ -449,6 +453,13 @@ export async function hideSidePanelPopup(): Promise<void> {
 /** Show chat/settings in a separate popup beside the pet (pet stays 280×280). */
 export async function showSidePanelPopup(mode: SidePanelMode): Promise<boolean> {
   if (!isTauriWindowReady()) return false
+  const now = Date.now()
+  if (now - sidePanelOpenLastAt < SIDE_PANEL_OPEN_DEBOUNCE_MS && sidePanelOpenFlight) {
+    return sidePanelOpenFlight
+  }
+  sidePanelOpenLastAt = now
+
+  const run = async (): Promise<boolean> => {
   const win = getPetTauriWindow()
   if (!win) return false
 
@@ -469,11 +480,8 @@ export async function showSidePanelPopup(mode: SidePanelMode): Promise<boolean> 
     if (!shown) return false
 
     await sleep(80)
-    // 统一用 side-panel-opened 传递 mode；chat-opened 仅聊天模式兼容旧监听
+    // 统一 side-panel-opened；不再重复 emit chat-opened，避免 ChatPanel 双次 acquireVoice
     await emit('side-panel-opened', { mode, token })
-    if (mode === 'chat') {
-      await emit('chat-opened', { mode, token })
-    }
 
     setPopupChatFollowsPet(true)
     return true
@@ -481,6 +489,12 @@ export async function showSidePanelPopup(mode: SidePanelMode): Promise<boolean> 
     console.warn('[panel] showSidePanelPopup', e)
     return false
   }
+  }
+
+  sidePanelOpenFlight = run().finally(() => {
+    sidePanelOpenFlight = null
+  })
+  return sidePanelOpenFlight
 }
 
 export async function hideChatPopupOnly(): Promise<void> {

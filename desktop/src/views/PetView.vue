@@ -92,6 +92,9 @@ async function showWakeFailure(reason: string | undefined) {
 
 let dragWindow: ReturnType<typeof getCurrentWindow> | null = null
 let clickTimer: ReturnType<typeof setTimeout> | null = null
+/** 防抖：连续双击/openChat 只执行一次 */
+let openChatFlight: Promise<void> | null = null
+let openChatLastAt = 0
 let suppressClick = false
 let roamer: PetRoamer | null = null
 let unlistenPetMoved: (() => void) | null = null
@@ -473,6 +476,18 @@ async function closeChatSurface(collapse = true) {
 }
 
 async function openChat() {
+  const now = Date.now()
+  if (openChatFlight) return openChatFlight
+  if (now - openChatLastAt < 600) return
+  openChatLastAt = now
+
+  openChatFlight = openChatInternal().finally(() => {
+    openChatFlight = null
+  })
+  return openChatFlight
+}
+
+async function openChatInternal() {
   closeMenu(false)
 
   if (pet.isChatOpen) {

@@ -219,6 +219,8 @@ export const useRealtimeStore = defineStore('realtime', () => {
   /** Which window may hold /ws/voice: pet | chat | inline (browser single-window). */
   let voiceWindow: VoiceOwner | 'inline' = 'inline'
   let connectFlight: Promise<void> | null = null
+  /** 防止并发 startTalk 重复 init VAD/模型 */
+  let startTalkFlight: Promise<boolean> | null = null
   /** 递增以作废进行中的 connect()，避免后端重启后 connectFlight 永久卡住。 */
   let connectGeneration = 0
 
@@ -2241,6 +2243,16 @@ export const useRealtimeStore = defineStore('realtime', () => {
   }
 
   async function startTalk(): Promise<boolean> {
+    if (recording) return true
+    if (startTalkFlight) return startTalkFlight
+
+    startTalkFlight = startTalkInternal().finally(() => {
+      startTalkFlight = null
+    })
+    return startTalkFlight
+  }
+
+  async function startTalkInternal(): Promise<boolean> {
     if (recording) return true
 
     await initClientConfig().catch(() => {})

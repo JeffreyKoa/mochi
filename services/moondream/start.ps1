@@ -11,7 +11,18 @@ param(
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-$Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+# 兼容 & script.ps1 调用（无 -File 时 MyCommand.Path / PSCommandPath 可能为空）
+$Root = $null
+if ($RepoRoot -ne "") {
+    $Root = Join-Path $RepoRoot "services\moondream"
+}
+if (-not $Root -and $PSCommandPath) {
+    $Root = Split-Path -Parent $PSCommandPath
+}
+if (-not $Root -and $MyInvocation.MyCommand.Path) {
+    $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+if (-not $Root) { throw "Cannot resolve moondream script directory (pass -RepoRoot)" }
 Set-Location $Root
 
 Write-Host "== Mochi Moondream Sidecar ==" -ForegroundColor Cyan
@@ -180,6 +191,17 @@ $env:MOONDREAM_DEVICE = Resolve-MoondreamDevice -PyExe $Python
 Write-Host "  Model : $env:MOONDREAM_MODEL"
 Write-Host "  Device: $env:MOONDREAM_DEVICE"
 Write-Host "  Port  : $env:MOONDREAM_PORT"
+
+# 启动前检测可用内存，避免 safetensors mmap 失败却误报「权重缺失」
+$memCheckPy = Join-Path $Root "weights_util.py"
+if (-not [string]::IsNullOrWhiteSpace($memCheckPy) -and (Test-Path -LiteralPath $memCheckPy)) {
+    $env:MOONDREAM_ROOT = $Root
+    $memWarn = & $Python -c "import os; os.chdir(os.environ['MOONDREAM_ROOT']); from weights_util import check_virtual_memory; print(check_virtual_memory() or '')" 2>$null
+    Remove-Item Env:MOONDREAM_ROOT -ErrorAction SilentlyContinue
+    if ($LASTEXITCODE -eq 0 -and $memWarn) {
+        Write-Host "  WARN  : $memWarn" -ForegroundColor Yellow
+    }
+}
 
 if ($SetupOnly) {
     Write-Host "SetupOnly: skip server start." -ForegroundColor Yellow

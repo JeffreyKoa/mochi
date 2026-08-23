@@ -101,6 +101,7 @@ type xasrSession struct {
 	finalCh     chan struct{}
 	closeOnce   sync.Once
 	connectedAt time.Time
+	ready       bool // 已收到 sidecar started 后才允许 SendAudio
 	stats       sidecarlog.WSSessionStats
 }
 
@@ -110,12 +111,16 @@ type xasrMessage struct {
 }
 
 func (s *xasrSession) resetHandshake() {
+	s.mu.Lock()
+	s.ready = false
+	s.mu.Unlock()
 	s.startCh = make(chan struct{})
 	s.finalCh = make(chan struct{})
 }
 
 func (s *xasrSession) signalStarted() {
 	s.mu.Lock()
+	s.ready = true
 	ch := s.startCh
 	s.mu.Unlock()
 	if ch == nil {
@@ -249,6 +254,13 @@ func (s *xasrSession) readLoop() {
 			s.signalFinal()
 		case "error":
 			sidecarlog.LogWSInbound("xasr", s.wsURL, msg.Type, msg)
+			// 可恢复：下一轮 start 前收到 PCM 会触发；保持 readLoop 存活
+			if strings.Contains(msg.Text, "session not started") {
+				s.mu.Lock()
+				s.ready = false
+				s.mu.Unlock()
+				continue
+			}
 			select {
 			case s.errCh <- fmt.Errorf("xasr: %s", msg.Text):
 			default:
@@ -300,6 +312,10 @@ func (s *xasrSession) sendPCM(pcm []byte, mode string) error {
 		return nil
 	}
 	s.mu.Lock()
+	if !s.ready {
+		s.mu.Unlock()
+		return fmt.Errorf("xasr: session not started")
+	}
 	s.stats.AudioChunks++
 	s.stats.AudioBytes += len(pcm)
 	s.mu.Unlock()

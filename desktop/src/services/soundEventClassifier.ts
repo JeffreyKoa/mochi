@@ -1,7 +1,7 @@
 /**
  * YAMNet sound-event classifier (521-class AudioSet) via ONNX.
  *
- * 模型文件：desktop/public/models/audio/yamnet.onnx
+ * 模型文件：desktop/public/models/audio/yamnet.onnx + yamnet.data
  */
 import * as ort from 'onnxruntime-web/wasm'
 import { fetchOnnxArrayBuffer } from '@/services/onnxFetch'
@@ -9,7 +9,12 @@ import { MODEL_URLS } from '@/services/modelPaths'
 
 const ORT_BASE = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/'
 const MODEL_URL = MODEL_URLS.audioYamnet
+const DATA_URL = '/models/audio/yamnet.data'
 const WINDOW_SAMPLES = 15360 // 0.96 s @ 16 kHz
+
+/** 全局：模型缺失或 WASM 不可用时跳过后续 init，避免主线程反复加载 */
+let yamnetGloballyUnavailable = false
+let yamnetAssetsProbed = false
 
 /** YAMNet AudioSet indices that represent human speech or vocalization. */
 const SPEECH_INDICES = new Set([
@@ -51,9 +56,35 @@ const INDEX_LABELS: Record<number, string> = {
   14: 'Whispering',
 }
 
+/** HEAD 探测模型文件是否存在，避免缺失时反复跑 ONNX WASM。 */
+async function probeYamnetAssets(): Promise<boolean> {
+  if (yamnetAssetsProbed) return !yamnetGloballyUnavailable
+  yamnetAssetsProbed = true
+  try {
+    const [onnxHead, dataHead] = await Promise.all([
+      fetch(MODEL_URL, { method: 'HEAD' }),
+      fetch(DATA_URL, { method: 'HEAD' }),
+    ])
+    if (!onnxHead.ok || !dataHead.ok) {
+      yamnetGloballyUnavailable = true
+      console.warn(
+        '[SoundEventClassifier] yamnet assets missing (run desktop/scripts/download-models.ps1); skip',
+      )
+      return false
+    }
+    return true
+  } catch {
+    yamnetGloballyUnavailable = true
+    console.warn('[SoundEventClassifier] yamnet probe failed; skip')
+    return false
+  }
+}
+
 export class SoundEventClassifier {
   private session: ort.InferenceSession | null = null
   private inputName = ''
+  /** 本实例是否已尝试过 init（成功或失败） */
+  private initAttempted = false
   _available = false
 
   get available(): boolean {
@@ -61,18 +92,24 @@ export class SoundEventClassifier {
   }
 
   async init(): Promise<void> {
+    if (this._available || this.initAttempted || yamnetGloballyUnavailable) return
+    this.initAttempted = true
+
+    if (!(await probeYamnetAssets())) return
+
     try {
       ort.env.logLevel = 'error'
       ort.env.wasm.wasmPaths = ORT_BASE
 
-      // YAMNet 为 external data 格式（yamnet.onnx + yamnet.data），须从 URL 加载
-      await fetchOnnxArrayBuffer('/models/audio/yamnet.data')
+      // YAMNet 为 external data 格式（yamnet.onnx + yamnet.data），须预拉 data
+      await fetchOnnxArrayBuffer(DATA_URL)
       this.session = await ort.InferenceSession.create(MODEL_URL, {
         executionProviders: ['wasm'],
       })
       this.inputName = this.session.inputNames[0] ?? 'input'
       this._available = true
     } catch (e) {
+      yamnetGloballyUnavailable = true
       console.warn('[SoundEventClassifier] init failed (fail-open)', e)
       this._available = false
     }

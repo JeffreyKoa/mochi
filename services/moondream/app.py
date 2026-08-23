@@ -31,6 +31,8 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from PIL import Image
 
+from weights_util import check_virtual_memory, format_load_error, remote_code_cached, weights_cached
+
 _model = None
 _tokenizer = None
 _model_device = ""
@@ -64,16 +66,15 @@ def _resolve_device() -> str:
 
 
 def _hf_repo() -> str:
-    # config.yaml 里的 moondream2 映射到 HF 仓库
-    model = os.getenv("MOONDREAM_MODEL", "moondream2").strip()
-    if model in ("moondream2", "vikhyatk/moondream2"):
-        return "vikhyatk/moondream2"
-    return model
+    from weights_util import hf_repo
+
+    return hf_repo()
 
 
 def _hf_revision() -> str:
-    # 固定 revision，避免 HF 主分支频繁变动
-    return os.getenv("MOONDREAM_REVISION", "2024-08-26").strip()
+    from weights_util import hf_revision
+
+    return hf_revision()
 
 
 def _hf_load_kwargs() -> dict[str, Any]:
@@ -86,6 +87,7 @@ def _hf_load_kwargs() -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "trust_remote_code": True,
         "revision": _hf_revision(),
+        "code_revision": _hf_revision(),
     }
     if offline:
         kwargs["local_files_only"] = True
@@ -110,6 +112,18 @@ def _load_transformers_model():
         revision = _hf_revision()
         dtype = torch.float32 if device == "cpu" else torch.float16
         load_kwargs = _hf_load_kwargs()
+
+        if load_kwargs.get("local_files_only") and not weights_cached():
+            _load_error = (
+                "本地未找到 moondream2 权重；请先运行 "
+                "services/moondream/download-model.ps1"
+            )
+            raise RuntimeError(_load_error)
+
+        mem_err = check_virtual_memory()
+        if mem_err:
+            _load_error = mem_err
+            raise RuntimeError(mem_err)
 
         logging.info(
             "loading moondream transformers repo=%s revision=%s device=%s local_only=%s",
@@ -137,11 +151,10 @@ def _load_transformers_model():
                     **load_kwargs,
                 )
                 model = model.to(device)
-        except OSError as e:
-            _load_error = str(e)
-            raise RuntimeError(
-                "moondream2 weights not found locally; run services/moondream/download-model.ps1 first"
-            ) from e
+        except (OSError, RuntimeError, ValueError, MemoryError) as e:
+            err = format_load_error(e)
+            _load_error = err
+            raise RuntimeError(err) from e
 
         if device != "cuda":
             model = model.to(device)
@@ -275,6 +288,8 @@ def health():
         "hf_repo": _hf_repo(),
         "hf_revision": _hf_revision(),
         "local_only": _hf_load_kwargs().get("local_files_only", False),
+        "weights_cached": weights_cached(),
+        "remote_code_cached": remote_code_cached(),
     }
 
 

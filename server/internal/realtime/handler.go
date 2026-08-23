@@ -187,6 +187,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 
 	var asrSess ASRSession
 	var asrMu sync.Mutex
+	var asrFinishing bool
 	var lastPartial string
 	// provider=none 时客户端本地 STT，服务端不创建 ASR session
 	streamingASR := h.pipeline != nil && h.pipeline.ASRConfigured()
@@ -359,6 +360,9 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 
 		go func() {
 			defer func() {
+				asrMu.Lock()
+				asrFinishing = false
+				asrMu.Unlock()
 				h.sessions.SetUserProcessing(userID, false)
 				processingMu.Lock()
 				processing = false
@@ -379,6 +383,7 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 			}
 
 			asrMu.Lock()
+			asrFinishing = true
 			activeASR := asrSess
 			asrSess = nil
 			asrMu.Unlock()
@@ -660,17 +665,18 @@ func (h *Handler) serveConn(ctx context.Context, conn *websocket.Conn, userID ui
 			audioBuf = append(audioBuf, pcm...)
 			audioMu.Unlock()
 
-			// 流式 ASR：无 session 时懒创建；SendAudio 失败则重建 session 并重发本包
+			// 流式 ASR：Finish 进行中不新建 session，避免 orphan 连接吞音频
 			asrMu.Lock()
 			curASR := asrSess
+			finishing := asrFinishing
 			asrMu.Unlock()
-			if curASR == nil && (st == StateListening || st == StateIdle) {
+			if curASR == nil && !finishing && (st == StateListening || st == StateIdle) {
 				ensureASR()
 				asrMu.Lock()
 				curASR = asrSess
 				asrMu.Unlock()
 			}
-			if curASR != nil {
+			if curASR != nil && !finishing {
 				if err := curASR.SendAudio(pcm); err != nil {
 					log.Printf("[realtime] asr send error session=%s: %v", sessionID, err)
 					resetASR("asr_send_error")
